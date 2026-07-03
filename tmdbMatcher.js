@@ -10,6 +10,18 @@
 const TMDB_BASE = "https://api.themoviedb.org/3";
 
 /**
+ * TV Time appends disambiguators to titles that collide with another
+ * show, e.g. "Hostages (IL)", "Touch (2012)", "House of Cards (US)".
+ * Sending that suffix straight into TMDB's search query returns zero
+ * results — TMDB doesn't parse it as a hint, it just pollutes the
+ * text match. Strip it before searching; keep the original title
+ * around separately for scoring/display.
+ */
+function stripDisambiguator(title) {
+  return title.replace(/\s*\([^)]*\)\s*$/, "").trim();
+}
+
+/**
  * Searches TMDB for a show title and returns ranked candidates.
  * @param {string} title
  * @returns {Promise<Array<{id:number, name:string, first_air_date:string, popularity:number}>>}
@@ -18,10 +30,24 @@ async function searchShow(title) {
   const apiKey = process.env.TMDB_API_KEY;
   if (!apiKey) throw new Error("TMDB_API_KEY is not set in environment");
 
-  const url = `${TMDB_BASE}/search/tv?api_key=${apiKey}&query=${encodeURIComponent(title)}&include_adult=false`;
+  const cleanedTitle = stripDisambiguator(title);
+  const url = `${TMDB_BASE}/search/tv?api_key=${apiKey}&query=${encodeURIComponent(cleanedTitle)}&include_adult=false`;
   const res = await fetch(url);
   if (!res.ok) throw new Error(`TMDB search failed: ${res.status}`);
   const data = await res.json();
+
+  // Fallback: a few titles (e.g. non-Latin-script originals) may only
+  // match with the suffix intact — retry once with the raw title if
+  // the cleaned version found nothing.
+  if ((data.results || []).length === 0 && cleanedTitle !== title) {
+    const fallbackUrl = `${TMDB_BASE}/search/tv?api_key=${apiKey}&query=${encodeURIComponent(title)}&include_adult=false`;
+    const fallbackRes = await fetch(fallbackUrl);
+    if (fallbackRes.ok) {
+      const fallbackData = await fallbackRes.json();
+      return fallbackData.results || [];
+    }
+  }
+
   return data.results || [];
 }
 
