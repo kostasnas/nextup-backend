@@ -1,0 +1,19 @@
+{
+  "name": "nextup-backend",
+  "version": "1.0.0",
+  "description": "Nextup backend — TV show tracking API with TV Time import",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "express": "^4.19.2",
+    "cors": "^2.8.5",
+    "multer": "^1.4.5-lts.1",
+    "papaparse": "^5.4.1",
+    "@supabase/supabase-js": "^2.45.0"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
