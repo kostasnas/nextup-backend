@@ -5,6 +5,7 @@ const multer = require("multer");
 const { createClient } = require("@supabase/supabase-js");
 const { parseGdprExport } = require("./importParser");
 const { matchShows } = require("./tmdbMatcher");
+const { syncShowProgress } = require("./episodeSync");
 
 const app = express();
 app.use(cors());
@@ -62,7 +63,7 @@ app.post(
       for (const show of matched) {
         if (show.match.status === "matched") {
           matchedCount++;
-          await upsertShowProgress(userId, show);
+          await upsertShowProgress(userId, show, job.id);
         } else {
           unmatchedCount++;
           await supabase.from("import_unmatched").insert({
@@ -91,7 +92,7 @@ app.post(
   }
 );
 
-async function upsertShowProgress(userId, show) {
+async function upsertShowProgress(userId, show, jobId) {
   const tmdbId = show.match.tmdbId;
 
   let { data: existingShow } = await supabase.from("shows").select("id").eq("tmdb_id", tmdbId).single();
@@ -116,10 +117,19 @@ async function upsertShowProgress(userId, show) {
     { onConflict: "user_id,show_id" }
   );
 
-  // Episode-level marking (up to episodesSeenCount) happens once the
-  // show's full episode list has been fetched from TMDB and cached
-  // in the `episodes` table — left as a follow-up call, not inline
-  // here, to keep this endpoint from timing out on large libraries.
+  // Record this show against the job so the episode-sync step (a
+  // separate, heavier call — see /import/:jobId/sync-episodes) knows
+  // what to process. Kept out of this request to avoid timing out on
+  // large libraries: syncing 270+ shows' full episode lists from TMDB
+  // takes several minutes.
+  if (jobId) {
+    await supabase.from("import_job_shows").insert({
+      import_job_id: jobId,
+      show_id: showRowId,
+      tmdb_id: tmdbId,
+      episodes_seen_count: show.episodesSeenCount || 0,
+    });
+  }
 }
 
 // Lets the frontend show progress while a large import is running.
@@ -127,6 +137,49 @@ app.get("/import/status/:jobId", async (req, res) => {
   const { data, error } = await supabase.from("import_jobs").select("*").eq("id", req.params.jobId).single();
   if (error) return res.status(404).json({ error: "Job not found" });
   res.json(data);
+});
+
+// Fetches full episode lists from TMDB for every show in this import
+// job, caches them, and marks the right number of episodes watched.
+// This is the heavy step (270+ shows × several TMDB calls each), run
+// as its own request so the initial import/tvtime call stays fast.
+// If this proves too slow for Render's request timeout in practice,
+// the fix is to process in batches (e.g. 20 shows per call, called
+// repeatedly by the frontend) rather than rewriting the sync logic.
+app.post("/import/:jobId/sync-episodes", async (req, res) => {
+  const { jobId } = req.params;
+  const { userId } = req.body;
+  if (!userId) return res.status(400).json({ error: "userId is required" });
+
+  const { data: jobShows, error } = await supabase
+    .from("import_job_shows")
+    .select("*")
+    .eq("import_job_id", jobId)
+    .eq("synced", false);
+  if (error) return res.status(500).json({ error: error.message });
+
+  let syncedCount = 0;
+  let failedCount = 0;
+  const failures = [];
+
+  for (const jobShow of jobShows) {
+    try {
+      await syncShowProgress(supabase, {
+        userId,
+        showRowId: jobShow.show_id,
+        tmdbId: jobShow.tmdb_id,
+        episodesSeenCount: jobShow.episodes_seen_count,
+      });
+      await supabase.from("import_job_shows").update({ synced: true }).eq("id", jobShow.id);
+      syncedCount++;
+    } catch (err) {
+      failedCount++;
+      failures.push({ tmdbId: jobShow.tmdb_id, error: err.message });
+      console.error(`Episode sync failed for tmdb_id ${jobShow.tmdb_id}:`, err.message);
+    }
+  }
+
+  res.json({ totalShows: jobShows.length, syncedCount, failedCount, failures: failures.slice(0, 10) });
 });
 
 // Returns unmatched shows for the manual-review UI, with candidate options.
@@ -147,7 +200,7 @@ app.post("/import/unmatched/:rowId/resolve", async (req, res) => {
     .single();
   if (error) return res.status(500).json({ error: error.message });
 
-  await upsertShowProgress(userId, { title: row.raw_title, match: { tmdbId }, episodesSeenCount: 0, isArchived: false });
+  await upsertShowProgress(userId, { title: row.raw_title, match: { tmdbId }, episodesSeenCount: 0, isArchived: false }, row.import_job_id);
   res.json({ ok: true });
 });
 
