@@ -95,13 +95,19 @@ app.post(
 async function upsertShowProgress(userId, show, jobId) {
   const tmdbId = show.match.tmdbId;
 
-  let { data: existingShow } = await supabase.from("shows").select("id").eq("tmdb_id", tmdbId).single();
+  const { data: existingShow } = await supabase.from("shows").select("id, poster_path").eq("tmdb_id", tmdbId).single();
 
-  let showRowId = existingShow?.id;
-  if (!showRowId) {
+  let showRowId;
+  if (existingShow) {
+    showRowId = existingShow.id;
+    // Backfill poster_path if we now have one and didn't before — never overwrite with null.
+    if (show.match.posterPath && !existingShow.poster_path) {
+      await supabase.from("shows").update({ poster_path: show.match.posterPath }).eq("id", showRowId);
+    }
+  } else {
     const { data: newShow, error } = await supabase
       .from("shows")
-      .insert({ tmdb_id: tmdbId, title: show.title })
+      .insert({ tmdb_id: tmdbId, title: show.title, poster_path: show.match.posterPath || null })
       .select()
       .single();
     if (error) throw error;
