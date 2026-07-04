@@ -128,7 +128,7 @@ async function matchShow(tvTimeTitle) {
   const CONFIDENCE_THRESHOLD = 0.85;
 
   if (best.score >= CONFIDENCE_THRESHOLD) {
-    return { status: "matched", tmdbId: best.id, confidence: best.score, candidates: scored.slice(0, 5) };
+    return { status: "matched", tmdbId: best.id, posterPath: best.poster_path || null, confidence: best.score, candidates: scored.slice(0, 5) };
   }
 
   // Not confident enough — surface top candidates for the user to pick,
