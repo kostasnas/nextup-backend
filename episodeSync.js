@@ -52,7 +52,11 @@ async function fetchAllEpisodes(tmdbId) {
     return a.episode_number - b.episode_number;
   });
 
-  return episodes;
+  // "Ended" / "Canceled" mean no more episodes are coming — needed to
+  // decide whether "watched everything released so far" means the
+  // show is completed, or just that the user is caught up on an
+  // ongoing show.
+  return { episodes, showStatus: show.status };
 }
 
 /**
@@ -99,13 +103,28 @@ async function markProgress(supabase, userId, cachedEpisodes, episodesSeenCount)
 }
 
 /**
- * Full pipeline for one show: fetch from TMDB, cache, mark progress.
+ * Full pipeline for one show: fetch from TMDB, cache, mark progress,
+ * and flip user_watchlist to 'completed' if the show has ended and
+ * the user has watched every episode.
  */
 async function syncShowProgress(supabase, { userId, showRowId, tmdbId, episodesSeenCount }) {
-  const episodes = await fetchAllEpisodes(tmdbId);
+  const { episodes, showStatus } = await fetchAllEpisodes(tmdbId);
   const cached = await cacheEpisodes(supabase, showRowId, episodes);
   const markedCount = await markProgress(supabase, userId, cached, episodesSeenCount);
-  return { totalEpisodes: cached.length, markedCount };
+
+  const showHasEnded = showStatus === "Ended" || showStatus === "Canceled";
+  const watchedEverything = cached.length > 0 && episodesSeenCount >= cached.length;
+
+  if (showHasEnded && watchedEverything) {
+    await supabase
+      .from("user_watchlist")
+      .update({ status: "completed" })
+      .eq("user_id", userId)
+      .eq("show_id", showRowId)
+      .neq("status", "dropped"); // don't resurrect a show the user explicitly dropped
+  }
+
+  return { totalEpisodes: cached.length, markedCount, showStatus };
 }
 
 module.exports = { fetchAllEpisodes, cacheEpisodes, markProgress, syncShowProgress };
