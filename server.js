@@ -121,6 +121,7 @@ async function upsertShowProgress(userId, show, jobId) {
       user_id: userId,
       show_id: showRowId,
       status: show.isArchived ? "dropped" : show.episodesSeenCount > 0 ? "watching" : "planned",
+      updated_at: new Date().toISOString(),
     },
     { onConflict: "user_id,show_id" }
   );
