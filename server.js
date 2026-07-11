@@ -43,6 +43,8 @@ app.post(
       }
 
       const { shows, stats } = parseGdprExport(files);
+      const watchingCandidates = shows.filter((s) => s.episodesSeenCount > 0).length;
+      console.log(`Parsed ${shows.length} shows, ${watchingCandidates} have episodesSeenCount > 0. Sample:`, shows.slice(0, 3));
 
       const { data: job, error: jobError } = await supabase
         .from("import_jobs")
@@ -84,7 +86,7 @@ app.post(
         })
         .eq("id", job.id);
 
-      res.json({ jobId: job.id, matchedCount, unmatchedCount, totalShows: stats.totalShows });
+      res.json({ jobId: job.id, matchedCount, unmatchedCount, totalShows: stats.totalShows, watchingCandidates, warning: stats.warning });
     } catch (err) {
       console.error("Import failed:", err);
       res.status(500).json({ error: err.message });
