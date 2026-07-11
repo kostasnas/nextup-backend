@@ -68,12 +68,19 @@ function parseGdprExport(files) {
       };
     });
 
+  const withEpisodeData = results.filter((s) => s.episodesSeenCount > 0).length;
+  const suspiciouslyEmpty = results.length > 0 && withEpisodeData / results.length < 0.1;
+
   return {
     shows: results,
     stats: {
       totalShows: results.length,
       followedShows: results.filter((s) => s.isFollowed).length,
       ratedShows: results.filter((s) => s.rating !== null).length,
+      withEpisodeData,
+      warning: suspiciouslyEmpty
+        ? "Fewer than 10% of shows have episode counts — double-check that user_tv_show_data.csv was uploaded to the right field, it's the source of nb_episodes_seen."
+        : null,
     },
   };
 }
