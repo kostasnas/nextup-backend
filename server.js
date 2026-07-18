@@ -212,6 +212,64 @@ app.post("/import/unmatched/:rowId/resolve", async (req, res) => {
   await upsertShowProgress(userId, { title: row.raw_title, match: { tmdbId }, episodesSeenCount: 0, isArchived: false }, row.import_job_id);
   res.json({ ok: true });
 });
+// AI recommendation chat. Uses Groq (openai/gpt-oss-120b) grounded
+// with a summary of the user's watch history so suggestions aren't
+// generic. GROQ_API_KEY must be set in Render's environment.
+app.post("/ai/chat", async (req, res) => {
+  try {
+    const { userId, message, history = [] } = req.body;
+    if (!userId || !message) return res.status(400).json({ error: "userId and message are required" });
+
+    const { data: watchlist } = await supabase
+      .from("user_watchlist")
+      .select("status, shows(title)")
+      .eq("user_id", userId)
+      .in("status", ["watching", "completed"])
+      .order("updated_at", { ascending: false })
+      .limit(60);
+
+    const completedTitles = (watchlist || [])
+      .filter((w) => w.status === "completed")
+      .map((w) => w.shows?.title)
+      .filter(Boolean);
+    const watchingTitles = (watchlist || [])
+      .filter((w) => w.status === "watching")
+      .map((w) => w.shows?.title)
+      .filter(Boolean);
+
+    const systemPrompt = `You are Nextup's TV show recommendation assistant. Give concise, specific recommendations (2-4 shows max per answer), each with a one-sentence reason tied to the user's taste. Avoid generic disclaimers or long intros — get straight to the recommendations.
+
+User's completed shows: ${completedTitles.slice(0, 40).join(", ") || "none yet"}
+User's currently watching: ${watchingTitles.slice(0, 20).join(", ") || "none yet"}`;
+
+    const groqRes = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${process.env.GROQ_API_KEY}`,
+      },
+      body: JSON.stringify({
+        model: "openai/gpt-oss-120b",
+        messages: [{ role: "system", content: systemPrompt }, ...history, { role: "user", content: message }],
+        temperature: 0.7,
+        max_tokens: 500,
+      }),
+    });
+
+    if (!groqRes.ok) {
+      const errText = await groqRes.text();
+      throw new Error(`Groq API error (${groqRes.status}): ${errText}`);
+    }
+    const groqData = await groqRes.json();
+    const reply = groqData.choices?.[0]?.message?.content || "Sorry, I couldn't come up with a suggestion right now.";
+    res.json({ reply });
+  } catch (err) {
+    console.error("AI chat failed:", err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`Nextup backend running on port ${PORT}`));
