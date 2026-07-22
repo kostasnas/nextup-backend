@@ -1,7 +1,8 @@
-// server.js — Nextup backend
+// server.js — Nextup/Scenera backend
 const express = require("express");
 const cors = require("cors");
 const multer = require("multer");
+const AdmZip = require("adm-zip");
 const { createClient } = require("@supabase/supabase-js");
 const { parseGdprExport } = require("./importParser");
 const { matchShows } = require("./tmdbMatcher");
@@ -22,8 +23,55 @@ app.get("/", (req, res) => {
   res.json({ status: "ok", service: "nextup-backend" });
 });
 
-// Accepts the 4 CSV files from a TV Time GDPR export, matches shows
-// against TMDB, and stores results as an import_job the frontend can poll.
+// Shared by both import routes (individual files or a whole zip) —
+// takes the 4 CSV contents as strings, matches against TMDB, and
+// records everything the same way either route got here.
+async function processImport(userId, files) {
+  const { shows, stats } = parseGdprExport(files);
+  const watchingCandidates = shows.filter((s) => s.episodesSeenCount > 0).length;
+  console.log(`Parsed ${shows.length} shows, ${watchingCandidates} have episodesSeenCount > 0. Sample:`, shows.slice(0, 3));
+
+  const { data: job, error: jobError } = await supabase
+    .from("import_jobs")
+    .insert({ user_id: userId, source: "tvtime", status: "matching", total_records: stats.totalShows })
+    .select()
+    .single();
+  if (jobError) throw jobError;
+
+  const matched = await matchShows(shows);
+
+  let matchedCount = 0;
+  let unmatchedCount = 0;
+
+  for (const show of matched) {
+    if (show.match.status === "matched") {
+      matchedCount++;
+      await upsertShowProgress(userId, show, job.id);
+    } else {
+      unmatchedCount++;
+      await supabase.from("import_unmatched").insert({
+        import_job_id: job.id,
+        raw_title: show.title,
+        candidate_tmdb_ids: show.match.candidates.map((c) => c.id),
+      });
+    }
+  }
+
+  await supabase
+    .from("import_jobs")
+    .update({
+      status: unmatchedCount > 0 ? "needs_review" : "completed",
+      matched_records: matchedCount,
+      unmatched_records: unmatchedCount,
+      completed_at: new Date().toISOString(),
+    })
+    .eq("id", job.id);
+
+  return { jobId: job.id, matchedCount, unmatchedCount, totalShows: stats.totalShows, watchingCandidates, warning: stats.warning };
+}
+
+// Accepts the 4 CSV files from a TV Time GDPR export individually
+// (the original flow — kept for anyone who already extracted them).
 app.post(
   "/import/tvtime",
   upload.fields([
@@ -42,57 +90,47 @@ app.post(
         files[`${field}.csv`] = arr[0].buffer.toString("utf8");
       }
 
-      const { shows, stats } = parseGdprExport(files);
-      const watchingCandidates = shows.filter((s) => s.episodesSeenCount > 0).length;
-      console.log(`Parsed ${shows.length} shows, ${watchingCandidates} have episodesSeenCount > 0. Sample:`, shows.slice(0, 3));
-
-      const { data: job, error: jobError } = await supabase
-        .from("import_jobs")
-        .insert({ user_id: userId, source: "tvtime", status: "matching", total_records: stats.totalShows })
-        .select()
-        .single();
-      if (jobError) throw jobError;
-
-      // Matching happens synchronously here for simplicity. For 300+ shows
-      // this can take a couple of minutes (rate-limited TMDB calls) — if
-      // that proves too slow in practice, move this to a background job
-      // and have the frontend poll /import/status/:jobId instead.
-      const matched = await matchShows(shows);
-
-      let matchedCount = 0;
-      let unmatchedCount = 0;
-
-      for (const show of matched) {
-        if (show.match.status === "matched") {
-          matchedCount++;
-          await upsertShowProgress(userId, show, job.id);
-        } else {
-          unmatchedCount++;
-          await supabase.from("import_unmatched").insert({
-            import_job_id: job.id,
-            raw_title: show.title,
-            candidate_tmdb_ids: show.match.candidates.map((c) => c.id),
-          });
-        }
-      }
-
-      await supabase
-        .from("import_jobs")
-        .update({
-          status: unmatchedCount > 0 ? "needs_review" : "completed",
-          matched_records: matchedCount,
-          unmatched_records: unmatchedCount,
-          completed_at: new Date().toISOString(),
-        })
-        .eq("id", job.id);
-
-      res.json({ jobId: job.id, matchedCount, unmatchedCount, totalShows: stats.totalShows, watchingCandidates, warning: stats.warning });
+      const result = await processImport(userId, files);
+      res.json(result);
     } catch (err) {
       console.error("Import failed:", err);
       res.status(500).json({ error: err.message });
     }
   }
 );
+
+// Simpler flow: accepts the whole GDPR export .zip as one upload and
+// finds the 4 needed CSVs inside it automatically (they can be
+// nested in a subfolder, filenames are matched case-insensitively).
+const NEEDED_FILES = ["user_tv_show_data.csv", "show_seen_episode_latest.csv", "followed_tv_show.csv", "tv_show_rate.csv"];
+
+app.post("/import/tvtime-zip", upload.single("export_zip"), async (req, res) => {
+  try {
+    const userId = req.body.user_id;
+    if (!userId) return res.status(400).json({ error: "user_id is required" });
+    if (!req.file) return res.status(400).json({ error: "export_zip file is required" });
+
+    const zip = new AdmZip(req.file.buffer);
+    const entries = zip.getEntries();
+
+    const files = {};
+    for (const needed of NEEDED_FILES) {
+      const entry = entries.find((e) => e.entryName.toLowerCase().endsWith(needed));
+      if (!entry) {
+        return res.status(400).json({
+          error: `Could not find ${needed} inside the uploaded zip. Make sure you uploaded the full TV Time GDPR export.`,
+        });
+      }
+      files[needed] = entry.getData().toString("utf8");
+    }
+
+    const result = await processImport(userId, files);
+    res.json(result);
+  } catch (err) {
+    console.error("Zip import failed:", err);
+    res.status(500).json({ error: err.message });
+  }
+});
 
 async function upsertShowProgress(userId, show, jobId) {
   const tmdbId = show.match.tmdbId;
@@ -102,7 +140,6 @@ async function upsertShowProgress(userId, show, jobId) {
   let showRowId;
   if (existingShow) {
     showRowId = existingShow.id;
-    // Backfill poster_path if we now have one and didn't before — never overwrite with null.
     if (show.match.posterPath && !existingShow.poster_path) {
       await supabase.from("shows").update({ poster_path: show.match.posterPath }).eq("id", showRowId);
     }
@@ -126,11 +163,6 @@ async function upsertShowProgress(userId, show, jobId) {
     { onConflict: "user_id,show_id" }
   );
 
-  // Record this show against the job so the episode-sync step (a
-  // separate, heavier call — see /import/:jobId/sync-episodes) knows
-  // what to process. Kept out of this request to avoid timing out on
-  // large libraries: syncing 270+ shows' full episode lists from TMDB
-  // takes several minutes.
   if (jobId) {
     await supabase.from("import_job_shows").insert({
       import_job_id: jobId,
@@ -141,20 +173,12 @@ async function upsertShowProgress(userId, show, jobId) {
   }
 }
 
-// Lets the frontend show progress while a large import is running.
 app.get("/import/status/:jobId", async (req, res) => {
   const { data, error } = await supabase.from("import_jobs").select("*").eq("id", req.params.jobId).single();
   if (error) return res.status(404).json({ error: "Job not found" });
   res.json(data);
 });
 
-// Fetches full episode lists from TMDB for every show in this import
-// job, caches them, and marks the right number of episodes watched.
-// This is the heavy step (270+ shows × several TMDB calls each), run
-// as its own request so the initial import/tvtime call stays fast.
-// If this proves too slow for Render's request timeout in practice,
-// the fix is to process in batches (e.g. 20 shows per call, called
-// repeatedly by the frontend) rather than rewriting the sync logic.
 app.post("/import/:jobId/sync-episodes", async (req, res) => {
   const { jobId } = req.params;
   const { userId } = req.body;
@@ -191,14 +215,12 @@ app.post("/import/:jobId/sync-episodes", async (req, res) => {
   res.json({ totalShows: jobShows.length, syncedCount, failedCount, failures: failures.slice(0, 10) });
 });
 
-// Returns unmatched shows for the manual-review UI, with candidate options.
 app.get("/import/:jobId/unmatched", async (req, res) => {
   const { data, error } = await supabase.from("import_unmatched").select("*").eq("import_job_id", req.params.jobId);
   if (error) return res.status(500).json({ error: error.message });
   res.json(data);
 });
 
-// User picks the correct show from candidates (or "none of these").
 app.post("/import/unmatched/:rowId/resolve", async (req, res) => {
   const { tmdbId, userId } = req.body;
   const { data: row, error } = await supabase
@@ -212,6 +234,7 @@ app.post("/import/unmatched/:rowId/resolve", async (req, res) => {
   await upsertShowProgress(userId, { title: row.raw_title, match: { tmdbId }, episodesSeenCount: 0, isArchived: false }, row.import_job_id);
   res.json({ ok: true });
 });
+
 // AI recommendation chat. Uses Groq (openai/gpt-oss-120b) grounded
 // with a summary of the user's watch history so suggestions aren't
 // generic. GROQ_API_KEY must be set in Render's environment.
@@ -237,7 +260,7 @@ app.post("/ai/chat", async (req, res) => {
       .map((w) => w.shows?.title)
       .filter(Boolean);
 
-    const systemPrompt = `You are Nextup's TV show recommendation assistant. Give concise, specific recommendations (2-4 shows max per answer), each with a one-sentence reason tied to the user's taste. Avoid generic disclaimers or long intros — get straight to the recommendations.
+    const systemPrompt = `You are Scenera's TV show recommendation assistant. Give concise, specific recommendations (2-4 shows max per answer), each with a one-sentence reason tied to the user's taste. Avoid generic disclaimers or long intros — get straight to the recommendations.
 
 User's completed shows: ${completedTitles.slice(0, 40).join(", ") || "none yet"}
 User's currently watching: ${watchingTitles.slice(0, 20).join(", ") || "none yet"}`;
@@ -268,8 +291,6 @@ User's currently watching: ${watchingTitles.slice(0, 20).join(", ") || "none yet
     res.status(500).json({ error: err.message });
   }
 });
-
-
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`Nextup backend running on port ${PORT}`));
