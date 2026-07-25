@@ -23,13 +23,14 @@ app.get("/", (req, res) => {
   res.json({ status: "ok", service: "nextup-backend" });
 });
 
-// Shared by both import routes (individual files or a whole zip) —
-// takes the 4 CSV contents as strings, matches against TMDB, and
-// records everything the same way either route got here.
+// Shared by both import routes (individual files or a whole zip).
 async function processImport(userId, files) {
-  const { shows, stats } = parseGdprExport(files);
+  const { shows, episodeLogByShow, emotionLogByShow, stats } = parseGdprExport(files);
   const watchingCandidates = shows.filter((s) => s.episodesSeenCount > 0).length;
-  console.log(`Parsed ${shows.length} shows, ${watchingCandidates} have episodesSeenCount > 0. Sample:`, shows.slice(0, 3));
+  console.log(
+    `Parsed ${shows.length} shows, ${watchingCandidates} have episodesSeenCount > 0. ` +
+    `Episode log: ${stats.hasEpisodeLog ? "present" : "not present"}, Emotion log: ${stats.hasEmotionLog ? "present" : "not present"}.`
+  );
 
   const { data: job, error: jobError } = await supabase
     .from("import_jobs")
@@ -46,7 +47,10 @@ async function processImport(userId, files) {
   for (const show of matched) {
     if (show.match.status === "matched") {
       matchedCount++;
-      await upsertShowProgress(userId, show, job.id);
+      await upsertShowProgress(userId, show, job.id, {
+        episodeLog: episodeLogByShow[show.title] || null,
+        emotionLog: emotionLogByShow[show.title] || null,
+      });
     } else {
       unmatchedCount++;
       await supabase.from("import_unmatched").insert({
@@ -70,8 +74,8 @@ async function processImport(userId, files) {
   return { jobId: job.id, matchedCount, unmatchedCount, totalShows: stats.totalShows, watchingCandidates, warning: stats.warning };
 }
 
-// Accepts the 4 CSV files from a TV Time GDPR export individually
-// (the original flow — kept for anyone who already extracted them).
+// Individual-files flow. seen_episode_source / episode_emotion are
+// OPTIONAL — only present in the fuller "download all my data" export.
 app.post(
   "/import/tvtime",
   upload.fields([
@@ -79,6 +83,8 @@ app.post(
     { name: "show_seen_episode_latest", maxCount: 1 },
     { name: "followed_tv_show", maxCount: 1 },
     { name: "tv_show_rate", maxCount: 1 },
+    { name: "seen_episode_source", maxCount: 1 },
+    { name: "episode_emotion", maxCount: 1 },
   ]),
   async (req, res) => {
     try {
@@ -99,10 +105,10 @@ app.post(
   }
 );
 
-// Simpler flow: accepts the whole GDPR export .zip as one upload and
-// finds the 4 needed CSVs inside it automatically (they can be
-// nested in a subfolder, filenames are matched case-insensitively).
-const NEEDED_FILES = ["user_tv_show_data.csv", "show_seen_episode_latest.csv", "followed_tv_show.csv", "tv_show_rate.csv"];
+// Whole-zip flow. The 4 core files are required; the 2 richer files
+// are used automatically if present in the zip, skipped otherwise.
+const REQUIRED_FILES = ["user_tv_show_data.csv", "show_seen_episode_latest.csv", "followed_tv_show.csv", "tv_show_rate.csv"];
+const OPTIONAL_FILES = ["seen_episode_source.csv", "episode_emotion.csv"];
 
 app.post("/import/tvtime-zip", upload.single("export_zip"), async (req, res) => {
   try {
@@ -114,7 +120,7 @@ app.post("/import/tvtime-zip", upload.single("export_zip"), async (req, res) => 
     const entries = zip.getEntries();
 
     const files = {};
-    for (const needed of NEEDED_FILES) {
+    for (const needed of REQUIRED_FILES) {
       const entry = entries.find((e) => e.entryName.toLowerCase().endsWith(needed));
       if (!entry) {
         return res.status(400).json({
@@ -122,6 +128,10 @@ app.post("/import/tvtime-zip", upload.single("export_zip"), async (req, res) => 
         });
       }
       files[needed] = entry.getData().toString("utf8");
+    }
+    for (const optional of OPTIONAL_FILES) {
+      const entry = entries.find((e) => e.entryName.toLowerCase().endsWith(optional));
+      if (entry) files[optional] = entry.getData().toString("utf8");
     }
 
     const result = await processImport(userId, files);
@@ -132,7 +142,7 @@ app.post("/import/tvtime-zip", upload.single("export_zip"), async (req, res) => 
   }
 });
 
-async function upsertShowProgress(userId, show, jobId) {
+async function upsertShowProgress(userId, show, jobId, extras = {}) {
   const tmdbId = show.match.tmdbId;
 
   const { data: existingShow } = await supabase.from("shows").select("id, poster_path").eq("tmdb_id", tmdbId).single();
@@ -169,6 +179,8 @@ async function upsertShowProgress(userId, show, jobId) {
       show_id: showRowId,
       tmdb_id: tmdbId,
       episodes_seen_count: show.episodesSeenCount || 0,
+      episode_log: extras.episodeLog || null,
+      emotion_log: extras.emotionLog || null,
     });
   }
 }
@@ -202,6 +214,8 @@ app.post("/import/:jobId/sync-episodes", async (req, res) => {
         showRowId: jobShow.show_id,
         tmdbId: jobShow.tmdb_id,
         episodesSeenCount: jobShow.episodes_seen_count,
+        episodeLog: jobShow.episode_log,
+        emotionLog: jobShow.emotion_log,
       });
       await supabase.from("import_job_shows").update({ synced: true }).eq("id", jobShow.id);
       syncedCount++;
@@ -231,7 +245,7 @@ app.post("/import/unmatched/:rowId/resolve", async (req, res) => {
     .single();
   if (error) return res.status(500).json({ error: error.message });
 
-  await upsertShowProgress(userId, { title: row.raw_title, match: { tmdbId }, episodesSeenCount: 0, isArchived: false }, row.import_job_id);
+  await upsertShowProgress(userId, { title: row.raw_title, match: { tmdbId }, episodesSeenCount: 0, isArchived: false }, row.import_job_id, {});
   res.json({ ok: true });
 });
 
