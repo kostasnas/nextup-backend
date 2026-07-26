@@ -1,4 +1,6 @@
 // server.js — Nextup/Scenera backend
+require("./instrument.js"); // Sentry — must load before anything else
+const Sentry = require("@sentry/node");
 const express = require("express");
 const cors = require("cors");
 const multer = require("multer");
@@ -305,6 +307,10 @@ User's currently watching: ${watchingTitles.slice(0, 20).join(", ") || "none yet
     res.status(500).json({ error: err.message });
   }
 });
+
+// Sentry's error handler must be registered after all routes,
+// so it can catch anything that throws inside them.
+Sentry.setupExpressErrorHandler(app);
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`Nextup backend running on port ${PORT}`));
