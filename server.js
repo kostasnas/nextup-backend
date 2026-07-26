@@ -21,6 +21,10 @@ const supabase = createClient(
   process.env.SUPABASE_SERVICE_KEY
 );
 
+app.get("/debug-sentry", () => {
+  throw new Error("Sentry test error — this route can be removed once verified");
+});
+
 app.get("/", (req, res) => {
   res.json({ status: "ok", service: "nextup-backend" });
 });
