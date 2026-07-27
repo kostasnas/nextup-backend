@@ -209,23 +209,32 @@ app.post("/import/:jobId/sync-episodes", async (req, res) => {
   let failedCount = 0;
   const failures = [];
 
-  for (const jobShow of jobShows) {
-    try {
-      await syncShowProgress(supabase, {
-        userId,
-        showRowId: jobShow.show_id,
-        tmdbId: jobShow.tmdb_id,
-        episodesSeenCount: jobShow.episodes_seen_count,
-        episodeLog: jobShow.episode_log,
-        emotionLog: jobShow.emotion_log,
-      });
-      await supabase.from("import_job_shows").update({ synced: true }).eq("id", jobShow.id);
-      syncedCount++;
-    } catch (err) {
-      failedCount++;
-      failures.push({ tmdbId: jobShow.tmdb_id, error: err.message });
-      console.error(`Episode sync failed for tmdb_id ${jobShow.tmdb_id}:`, err.message);
-    }
+  // Process several shows at once instead of one-by-one — cuts wall-clock
+  // time significantly for large libraries, while still bounded so we
+  // don't hammer the TMDB API past its rate limit.
+  const CONCURRENCY = 5;
+  for (let i = 0; i < jobShows.length; i += CONCURRENCY) {
+    const batch = jobShows.slice(i, i + CONCURRENCY);
+    await Promise.all(
+      batch.map(async (jobShow) => {
+        try {
+          await syncShowProgress(supabase, {
+            userId,
+            showRowId: jobShow.show_id,
+            tmdbId: jobShow.tmdb_id,
+            episodesSeenCount: jobShow.episodes_seen_count,
+            episodeLog: jobShow.episode_log,
+            emotionLog: jobShow.emotion_log,
+          });
+          await supabase.from("import_job_shows").update({ synced: true }).eq("id", jobShow.id);
+          syncedCount++;
+        } catch (err) {
+          failedCount++;
+          failures.push({ tmdbId: jobShow.tmdb_id, error: err.message });
+          console.error(`Episode sync failed for tmdb_id ${jobShow.tmdb_id}:`, err.message);
+        }
+      })
+    );
   }
 
   res.json({ totalShows: jobShows.length, syncedCount, failedCount, failures: failures.slice(0, 10) });
