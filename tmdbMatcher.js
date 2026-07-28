@@ -8,6 +8,7 @@
 // Never hardcode the key here.
 
 const TMDB_BASE = "https://api.themoviedb.org/3";
+const { throttle } = require("./tmdbThrottle");
 
 /**
  * TV Time appends disambiguators to titles that collide with another
@@ -23,6 +24,9 @@ function stripDisambiguator(title) {
 
 /**
  * Searches TMDB for a show title and returns ranked candidates.
+ * Goes through the shared global throttle (tmdbThrottle.js) so that
+ * many concurrent imports from different users never collectively
+ * exceed TMDB's rate limit.
  * @param {string} title
  * @returns {Promise<Array<{id:number, name:string, first_air_date:string, popularity:number}>>}
  */
@@ -32,20 +36,23 @@ async function searchShow(title) {
 
   const cleanedTitle = stripDisambiguator(title);
   const url = `${TMDB_BASE}/search/tv?api_key=${apiKey}&query=${encodeURIComponent(cleanedTitle)}&include_adult=false`;
-  const res = await fetch(url);
-  if (!res.ok) throw new Error(`TMDB search failed: ${res.status}`);
-  const data = await res.json();
+  const data = await throttle(async () => {
+    const res = await fetch(url);
+    if (!res.ok) throw new Error(`TMDB search failed: ${res.status}`);
+    return res.json();
+  });
 
   // Fallback: a few titles (e.g. non-Latin-script originals) may only
   // match with the suffix intact — retry once with the raw title if
   // the cleaned version found nothing.
   if ((data.results || []).length === 0 && cleanedTitle !== title) {
     const fallbackUrl = `${TMDB_BASE}/search/tv?api_key=${apiKey}&query=${encodeURIComponent(title)}&include_adult=false`;
-    const fallbackRes = await fetch(fallbackUrl);
-    if (fallbackRes.ok) {
-      const fallbackData = await fallbackRes.json();
-      return fallbackData.results || [];
-    }
+    const fallbackData = await throttle(async () => {
+      const res = await fetch(fallbackUrl);
+      if (!res.ok) return { results: [] };
+      return res.json();
+    });
+    return fallbackData.results || [];
   }
 
   return data.results || [];
@@ -58,9 +65,11 @@ async function searchShow(title) {
 async function getShowDetails(tmdbId) {
   const apiKey = process.env.TMDB_API_KEY;
   const url = `${TMDB_BASE}/tv/${tmdbId}?api_key=${apiKey}`;
-  const res = await fetch(url);
-  if (!res.ok) throw new Error(`TMDB show details failed: ${res.status}`);
-  return res.json();
+  return throttle(async () => {
+    const res = await fetch(url);
+    if (!res.ok) throw new Error(`TMDB show details failed: ${res.status}`);
+    return res.json();
+  });
 }
 
 /**
@@ -137,15 +146,21 @@ async function matchShow(tvTimeTitle) {
 }
 
 /**
- * Batch version with basic rate-limit pacing (TMDB free tier: ~50 req/s,
- * but we stay conservative since this runs unattended during import).
+ * Batch version. Requests all go through the shared global throttle
+ * (tmdbThrottle.js), so it's safe to fire several shows' lookups
+ * concurrently — pacing is enforced centrally across the whole server,
+ * not just within this one import job. This also means many users
+ * importing at the same time queue safely instead of each running
+ * their own independent, uncoordinated delay loop.
  */
-async function matchShows(tvTimeShows, { delayMs = 250 } = {}) {
+async function matchShows(tvTimeShows, { concurrency = 5 } = {}) {
   const results = [];
-  for (const show of tvTimeShows) {
-    const match = await matchShow(show.title);
-    results.push({ ...show, match });
-    await new Promise((r) => setTimeout(r, delayMs));
+  for (let i = 0; i < tvTimeShows.length; i += concurrency) {
+    const batch = tvTimeShows.slice(i, i + concurrency);
+    const batchResults = await Promise.all(
+      batch.map(async (show) => ({ ...show, match: await matchShow(show.title) }))
+    );
+    results.push(...batchResults);
   }
   return results;
 }
