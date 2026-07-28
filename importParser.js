@@ -60,7 +60,11 @@ function parseGdprExport(files) {
   const suspiciouslyEmpty = results.length > 0 && withEpisodeData / results.length < 0.1;
 
   // Optional richer files — present only in the fuller export.
-  const episodeLogByShow = files["seen_episode_source.csv"]
+  // tracking-prod-records-v2.csv has ~4x the coverage of seen_episode_source.csv
+  // in real accounts (7000+ vs ~1700 real watch events) — prefer it when present.
+  const episodeLogByShow = files["tracking-prod-records-v2.csv"]
+    ? parseTrackingRecordsV2(files["tracking-prod-records-v2.csv"])
+    : files["seen_episode_source.csv"]
     ? parseEpisodeLog(files["seen_episode_source.csv"])
     : {};
   const emotionLogByShow = files["episode_emotion.csv"]
@@ -89,6 +93,27 @@ function parseGdprExport(files) {
  * Groups real per-episode watch events by show title.
  * @returns {Object.<string, Array<{season:number, episode:number, watchedAt:string|null}>>}
  */
+/**
+ * Groups real per-episode watch events from the richer tracking export
+ * by show title. Filters to just "watch-episode" entries (the file
+ * also has "user-series" and "rewatch-episode" rows we don't need here).
+ * @returns {Object.<string, Array<{season:number, episode:number, watchedAt:string|null}>>}
+ */
+function parseTrackingRecordsV2(fileContent) {
+  const rows = parseCsvFile(fileContent);
+  const byShow = {};
+  for (const row of rows) {
+    if (!row.key || !row.key.startsWith("watch-episode")) continue;
+    const name = row.series_name?.trim();
+    const season = parseIntOrNull(row.season_number);
+    const episode = parseIntOrNull(row.episode_number);
+    if (!name || season === null || episode === null) continue;
+    if (!byShow[name]) byShow[name] = [];
+    byShow[name].push({ season, episode, watchedAt: parseDateOrNull(row.created_at) });
+  }
+  return byShow;
+}
+
 function parseEpisodeLog(fileContent) {
   const rows = parseCsvFile(fileContent);
   const byShow = {};

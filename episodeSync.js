@@ -8,13 +8,16 @@
 // or 'up_to_date' (still ongoing, more episodes expected).
 
 const TMDB_BASE = "https://api.themoviedb.org/3";
+const { throttle } = require("./tmdbThrottle");
 
 async function tmdbFetch(path) {
-  const apiKey = process.env.TMDB_API_KEY;
-  const url = `${TMDB_BASE}${path}${path.includes("?") ? "&" : "?"}api_key=${apiKey}`;
-  const res = await fetch(url);
-  if (!res.ok) throw new Error(`TMDB fetch failed (${res.status}): ${path}`);
-  return res.json();
+  return throttle(async () => {
+    const apiKey = process.env.TMDB_API_KEY;
+    const url = `${TMDB_BASE}${path}${path.includes("?") ? "&" : "?"}api_key=${apiKey}`;
+    const res = await fetch(url);
+    if (!res.ok) throw new Error(`TMDB fetch failed (${res.status}): ${path}`);
+    return res.json();
+  });
 }
 
 async function fetchAllEpisodes(tmdbId) {
@@ -36,7 +39,6 @@ async function fetchAllEpisodes(tmdbId) {
         title: ep.name || null,
       });
     }
-    await new Promise((r) => setTimeout(r, 150));
   }
 
   episodes.sort((a, b) => {

@@ -87,6 +87,7 @@ app.post(
     { name: "tv_show_rate", maxCount: 1 },
     { name: "seen_episode_source", maxCount: 1 },
     { name: "episode_emotion", maxCount: 1 },
+    { name: "tracking-prod-records-v2", maxCount: 1 },
   ]),
   async (req, res) => {
     try {
@@ -110,7 +111,7 @@ app.post(
 // Whole-zip flow. The 4 core files are required; the 2 richer files
 // are used automatically if present in the zip, skipped otherwise.
 const REQUIRED_FILES = ["user_tv_show_data.csv", "show_seen_episode_latest.csv", "followed_tv_show.csv", "tv_show_rate.csv"];
-const OPTIONAL_FILES = ["seen_episode_source.csv", "episode_emotion.csv"];
+const OPTIONAL_FILES = ["seen_episode_source.csv", "episode_emotion.csv", "tracking-prod-records-v2.csv"];
 
 app.post("/import/tvtime-zip", upload.single("export_zip"), async (req, res) => {
   try {
