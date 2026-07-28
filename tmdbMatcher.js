@@ -23,6 +23,32 @@ function stripDisambiguator(title) {
 }
 
 /**
+ * Generates alternative search queries for titles that don't match
+ * TMDB's primary title at all — only tried as a fallback once the
+ * normal search comes up empty/unconfident, so it costs nothing for
+ * the ~97% of shows that already match fine. Handles patterns like:
+ *   "Hinterland – Y Gwyll"        -> "Hinterland", "Y Gwyll"
+ *   "Crime Diaries: The Search"   -> "Crime Diaries", "The Search"
+ *   "Jo Nesbo's Detective Hole"   -> "Detective Hole"
+ */
+function alternativeTitleVariants(title) {
+  const variants = new Set();
+
+  const dashParts = title.split(/\s+[–—-]\s+/);
+  if (dashParts.length > 1) dashParts.forEach((p) => variants.add(p.trim()));
+
+  const colonParts = title.split(":");
+  if (colonParts.length > 1) colonParts.forEach((p) => variants.add(p.trim()));
+
+  const possessiveMatch = title.match(/^.+?'s\s+(.+)$/i);
+  if (possessiveMatch) variants.add(possessiveMatch[1].trim());
+
+  variants.delete(title);
+  variants.delete("");
+  return Array.from(variants);
+}
+
+/**
  * Searches TMDB for a show title and returns ranked candidates.
  * Goes through the shared global throttle (tmdbThrottle.js) so that
  * many concurrent imports from different users never collectively
@@ -115,6 +141,16 @@ function similarity(a, b) {
   return maxLen === 0 ? 1 : 1 - distance / maxLen;
 }
 
+function dedupeByBestScore(scoredCandidates) {
+  const byId = new Map();
+  for (const c of scoredCandidates) {
+    if (!byId.has(c.id) || byId.get(c.id).score < c.score) byId.set(c.id, c);
+  }
+  return Array.from(byId.values()).sort((a, b) => b.score - a.score);
+}
+
+const CONFIDENCE_THRESHOLD = 0.85;
+
 /**
  * Matches one TV Time show against TMDB search results.
  * Returns a confident match, or a list of candidates for manual review.
@@ -125,17 +161,29 @@ function similarity(a, b) {
  */
 async function matchShow(tvTimeTitle) {
   const candidates = await searchShow(tvTimeTitle);
-  if (candidates.length === 0) {
+  let scored = dedupeByBestScore(
+    candidates.map((c) => ({ ...c, score: similarity(tvTimeTitle, c.name) }))
+  );
+
+  // Only spend extra requests chasing alternative titles when the
+  // normal search didn't already find something confident — this
+  // keeps the common case exactly as fast as before.
+  if (!scored.length || scored[0].score < CONFIDENCE_THRESHOLD) {
+    for (const variant of alternativeTitleVariants(tvTimeTitle)) {
+      const variantCandidates = await searchShow(variant);
+      scored = dedupeByBestScore([
+        ...scored,
+        ...variantCandidates.map((c) => ({ ...c, score: similarity(tvTimeTitle, c.name) })),
+      ]);
+      if (scored[0]?.score >= CONFIDENCE_THRESHOLD) break; // good enough, stop trying more variants
+    }
+  }
+
+  if (scored.length === 0) {
     return { status: "no_match", candidates: [] };
   }
 
-  const scored = candidates
-    .map((c) => ({ ...c, score: similarity(tvTimeTitle, c.name) }))
-    .sort((a, b) => b.score - a.score);
-
   const best = scored[0];
-  const CONFIDENCE_THRESHOLD = 0.85;
-
   if (best.score >= CONFIDENCE_THRESHOLD) {
     return { status: "matched", tmdbId: best.id, posterPath: best.poster_path || null, confidence: best.score, candidates: scored.slice(0, 5) };
   }
@@ -165,4 +213,4 @@ async function matchShows(tvTimeShows, { concurrency = 5 } = {}) {
   return results;
 }
 
-module.exports = { searchShow, getShowDetails, matchShow, matchShows, similarity, normalizeTitle };
+module.exports = { searchShow, getShowDetails, matchShow, matchShows, similarity, normalizeTitle, alternativeTitleVariants };
