@@ -5,6 +5,7 @@ const express = require("express");
 const cors = require("cors");
 const multer = require("multer");
 const AdmZip = require("adm-zip");
+const rateLimit = require("express-rate-limit");
 const { createClient } = require("@supabase/supabase-js");
 const { parseGdprExport } = require("./importParser");
 const { matchShows } = require("./tmdbMatcher");
@@ -21,9 +22,47 @@ const supabase = createClient(
   process.env.SUPABASE_SERVICE_KEY
 );
 
+// Wraps an async route handler so any thrown/rejected error is
+// forwarded to Express's error-handling chain via next(err) instead
+// of needing a manual try/catch + res.status(500) in every route.
+// This is what lets Sentry's error handler (registered near the
+// bottom of this file) actually see every real error automatically.
+function asyncHandler(fn) {
+  return (req, res, next) => {
+    Promise.resolve(fn(req, res, next)).catch(next);
+  };
+}
+
+// Verifies the Supabase session JWT sent in the Authorization header
+// and attaches the *real*, server-verified user id as req.userId.
+// Every route that reads or writes a specific user's data uses this
+// instead of trusting a client-supplied user_id field — otherwise
+// anyone who knows the API URL could act as any user.
+async function requireAuth(req, res, next) {
+  const authHeader = req.headers.authorization || "";
+  const token = authHeader.startsWith("Bearer ") ? authHeader.slice(7) : null;
+  if (!token) return res.status(401).json({ error: "Missing Authorization header" });
+
+  const { data, error } = await supabase.auth.getUser(token);
+  if (error || !data.user) return res.status(401).json({ error: "Invalid or expired session" });
+
+  req.userId = data.user.id;
+  next();
+}
+
 app.get("/", (req, res) => {
   res.json({ status: "ok", service: "nextup-backend" });
 });
+
+// Lightweight endpoint that actually touches the database — used as
+// a second UptimeRobot monitor purely to keep the Supabase free-tier
+// project from auto-pausing after a week of total inactivity. Doesn't
+// require auth since it reads nothing user-specific.
+app.get("/health-full", asyncHandler(async (req, res) => {
+  const { error } = await supabase.from("shows").select("id").limit(1);
+  if (error) throw error;
+  res.json({ status: "ok", db: "reachable" });
+}));
 
 // Shared by both import routes (individual files or a whole zip).
 async function processImport(userId, files) {
@@ -76,10 +115,12 @@ async function processImport(userId, files) {
   return { jobId: job.id, matchedCount, unmatchedCount, totalShows: stats.totalShows, watchingCandidates, warning: stats.warning };
 }
 
-// Individual-files flow. seen_episode_source / episode_emotion are
-// OPTIONAL — only present in the fuller "download all my data" export.
+// Individual-files flow. seen_episode_source / episode_emotion /
+// tracking-prod-records-v2 are OPTIONAL — only present in the fuller
+// "download all my data" export.
 app.post(
   "/import/tvtime",
+  requireAuth,
   upload.fields([
     { name: "user_tv_show_data", maxCount: 1 },
     { name: "show_seen_episode_latest", maxCount: 1 },
@@ -89,61 +130,45 @@ app.post(
     { name: "episode_emotion", maxCount: 1 },
     { name: "tracking-prod-records-v2", maxCount: 1 },
   ]),
-  async (req, res) => {
-    try {
-      const userId = req.body.user_id;
-      if (!userId) return res.status(400).json({ error: "user_id is required" });
-
-      const files = {};
-      for (const [field, arr] of Object.entries(req.files)) {
-        files[`${field}.csv`] = arr[0].buffer.toString("utf8");
-      }
-
-      const result = await processImport(userId, files);
-      res.json(result);
-    } catch (err) {
-      console.error("Import failed:", err);
-      res.status(500).json({ error: err.message });
+  asyncHandler(async (req, res) => {
+    const files = {};
+    for (const [field, arr] of Object.entries(req.files)) {
+      files[`${field}.csv`] = arr[0].buffer.toString("utf8");
     }
-  }
+    const result = await processImport(req.userId, files);
+    res.json(result);
+  })
 );
 
-// Whole-zip flow. The 4 core files are required; the 2 richer files
+// Whole-zip flow. The 4 core files are required; the richer files
 // are used automatically if present in the zip, skipped otherwise.
 const REQUIRED_FILES = ["user_tv_show_data.csv", "show_seen_episode_latest.csv", "followed_tv_show.csv", "tv_show_rate.csv"];
 const OPTIONAL_FILES = ["seen_episode_source.csv", "episode_emotion.csv", "tracking-prod-records-v2.csv"];
 
-app.post("/import/tvtime-zip", upload.single("export_zip"), async (req, res) => {
-  try {
-    const userId = req.body.user_id;
-    if (!userId) return res.status(400).json({ error: "user_id is required" });
-    if (!req.file) return res.status(400).json({ error: "export_zip file is required" });
+app.post("/import/tvtime-zip", requireAuth, upload.single("export_zip"), asyncHandler(async (req, res) => {
+  if (!req.file) return res.status(400).json({ error: "export_zip file is required" });
 
-    const zip = new AdmZip(req.file.buffer);
-    const entries = zip.getEntries();
+  const zip = new AdmZip(req.file.buffer);
+  const entries = zip.getEntries();
 
-    const files = {};
-    for (const needed of REQUIRED_FILES) {
-      const entry = entries.find((e) => e.entryName.toLowerCase().endsWith(needed));
-      if (!entry) {
-        return res.status(400).json({
-          error: `Could not find ${needed} inside the uploaded zip. Make sure you uploaded the full TV Time GDPR export.`,
-        });
-      }
-      files[needed] = entry.getData().toString("utf8");
+  const files = {};
+  for (const needed of REQUIRED_FILES) {
+    const entry = entries.find((e) => e.entryName.toLowerCase().endsWith(needed));
+    if (!entry) {
+      return res.status(400).json({
+        error: `Could not find ${needed} inside the uploaded zip. Make sure you uploaded the full TV Time GDPR export.`,
+      });
     }
-    for (const optional of OPTIONAL_FILES) {
-      const entry = entries.find((e) => e.entryName.toLowerCase().endsWith(optional));
-      if (entry) files[optional] = entry.getData().toString("utf8");
-    }
-
-    const result = await processImport(userId, files);
-    res.json(result);
-  } catch (err) {
-    console.error("Zip import failed:", err);
-    res.status(500).json({ error: err.message });
+    files[needed] = entry.getData().toString("utf8");
   }
-});
+  for (const optional of OPTIONAL_FILES) {
+    const entry = entries.find((e) => e.entryName.toLowerCase().endsWith(optional));
+    if (entry) files[optional] = entry.getData().toString("utf8");
+  }
+
+  const result = await processImport(req.userId, files);
+  res.json(result);
+}));
 
 async function upsertShowProgress(userId, show, jobId, extras = {}) {
   const tmdbId = show.match.tmdbId;
@@ -188,23 +213,39 @@ async function upsertShowProgress(userId, show, jobId, extras = {}) {
   }
 }
 
-app.get("/import/status/:jobId", async (req, res) => {
-  const { data, error } = await supabase.from("import_jobs").select("*").eq("id", req.params.jobId).single();
-  if (error) return res.status(404).json({ error: "Job not found" });
-  res.json(data);
-});
+// Fetches an import_jobs row and throws a 403-flavored error if it
+// doesn't belong to the requesting user — used by every /import/:jobId
+// route so one user can never poll or read another user's import.
+async function getOwnedJob(jobId, userId) {
+  const { data, error } = await supabase.from("import_jobs").select("*").eq("id", jobId).single();
+  if (error || !data) {
+    const notFound = new Error("Job not found");
+    notFound.status = 404;
+    throw notFound;
+  }
+  if (data.user_id !== userId) {
+    const forbidden = new Error("Not your import job");
+    forbidden.status = 403;
+    throw forbidden;
+  }
+  return data;
+}
 
-app.post("/import/:jobId/sync-episodes", async (req, res) => {
+app.get("/import/status/:jobId", requireAuth, asyncHandler(async (req, res) => {
+  const job = await getOwnedJob(req.params.jobId, req.userId);
+  res.json(job);
+}));
+
+app.post("/import/:jobId/sync-episodes", requireAuth, asyncHandler(async (req, res) => {
   const { jobId } = req.params;
-  const { userId } = req.body;
-  if (!userId) return res.status(400).json({ error: "userId is required" });
+  await getOwnedJob(jobId, req.userId);
 
   const { data: jobShows, error } = await supabase
     .from("import_job_shows")
     .select("*")
     .eq("import_job_id", jobId)
     .eq("synced", false);
-  if (error) return res.status(500).json({ error: error.message });
+  if (error) throw error;
 
   let syncedCount = 0;
   let failedCount = 0;
@@ -220,7 +261,7 @@ app.post("/import/:jobId/sync-episodes", async (req, res) => {
       batch.map(async (jobShow) => {
         try {
           await syncShowProgress(supabase, {
-            userId,
+            userId: req.userId,
             showRowId: jobShow.show_id,
             tmdbId: jobShow.tmdb_id,
             episodesSeenCount: jobShow.episodes_seen_count,
@@ -239,88 +280,131 @@ app.post("/import/:jobId/sync-episodes", async (req, res) => {
   }
 
   res.json({ totalShows: jobShows.length, syncedCount, failedCount, failures: failures.slice(0, 10) });
-});
+}));
 
-app.get("/import/:jobId/unmatched", async (req, res) => {
+app.get("/import/:jobId/unmatched", requireAuth, asyncHandler(async (req, res) => {
+  await getOwnedJob(req.params.jobId, req.userId);
   const { data, error } = await supabase.from("import_unmatched").select("*").eq("import_job_id", req.params.jobId);
-  if (error) return res.status(500).json({ error: error.message });
+  if (error) throw error;
   res.json(data);
-});
+}));
 
-app.post("/import/unmatched/:rowId/resolve", async (req, res) => {
-  const { tmdbId, userId } = req.body;
+app.post("/import/unmatched/:rowId/resolve", requireAuth, asyncHandler(async (req, res) => {
+  const { tmdbId } = req.body;
   const { data: row, error } = await supabase
     .from("import_unmatched")
-    .update({ resolved_tmdb_id: tmdbId, resolved: true })
+    .select("*, import_jobs!inner(user_id)")
     .eq("id", req.params.rowId)
-    .select()
     .single();
-  if (error) return res.status(500).json({ error: error.message });
+  if (error || !row) return res.status(404).json({ error: "Unmatched row not found" });
+  if (row.import_jobs.user_id !== req.userId) return res.status(403).json({ error: "Not your import job" });
 
-  await upsertShowProgress(userId, { title: row.raw_title, match: { tmdbId }, episodesSeenCount: 0, isArchived: false }, row.import_job_id, {});
+  await supabase.from("import_unmatched").update({ resolved_tmdb_id: tmdbId, resolved: true }).eq("id", req.params.rowId);
+  await upsertShowProgress(req.userId, { title: row.raw_title, match: { tmdbId }, episodesSeenCount: 0, isArchived: false }, row.import_job_id, {});
   res.json({ ok: true });
-});
+}));
 
 // AI recommendation chat. Uses Groq (openai/gpt-oss-120b) grounded
 // with a summary of the user's watch history so suggestions aren't
 // generic. GROQ_API_KEY must be set in Render's environment.
-app.post("/ai/chat", async (req, res) => {
-  try {
-    const { userId, message, history = [] } = req.body;
-    if (!userId || !message) return res.status(400).json({ error: "userId and message are required" });
+//
+// Two layers of abuse/cost protection, since Groq calls cost real
+// money per request:
+//   1. A per-IP rate limit (blunt, catches rapid-fire spam immediately).
+//   2. A per-user daily quota tracked in Supabase (catches a single
+//      account being hammered slowly over a longer window).
+const aiChatRateLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 15,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: "Too many requests — please slow down and try again in a minute." },
+});
 
-    const { data: watchlist } = await supabase
-      .from("user_watchlist")
-      .select("status, shows(title)")
-      .eq("user_id", userId)
-      .in("status", ["watching", "completed"])
-      .order("updated_at", { ascending: false })
-      .limit(60);
+const AI_DAILY_LIMIT = 20; // generous placeholder until the Pro tier's real free-tier limit ships
 
-    const completedTitles = (watchlist || [])
-      .filter((w) => w.status === "completed")
-      .map((w) => w.shows?.title)
-      .filter(Boolean);
-    const watchingTitles = (watchlist || [])
-      .filter((w) => w.status === "watching")
-      .map((w) => w.shows?.title)
-      .filter(Boolean);
+app.post("/ai/chat", requireAuth, aiChatRateLimiter, asyncHandler(async (req, res) => {
+  const { message, history = [] } = req.body;
+  if (!message) return res.status(400).json({ error: "message is required" });
 
-    const systemPrompt = `You are Scenera's TV show recommendation assistant. Give concise, specific recommendations (2-4 shows max per answer), each with a one-sentence reason tied to the user's taste. Avoid generic disclaimers or long intros — get straight to the recommendations.
+  const today = new Date().toISOString().slice(0, 10);
+  const { data: usage } = await supabase
+    .from("ai_usage_daily")
+    .select("count")
+    .eq("user_id", req.userId)
+    .eq("usage_date", today)
+    .single();
+  const currentCount = usage?.count || 0;
+
+  if (currentCount >= AI_DAILY_LIMIT) {
+    return res.status(429).json({ error: "You've reached today's AI chat limit. Try again tomorrow." });
+  }
+
+  const { data: watchlist } = await supabase
+    .from("user_watchlist")
+    .select("status, shows(title)")
+    .eq("user_id", req.userId)
+    .in("status", ["watching", "completed"])
+    .order("updated_at", { ascending: false })
+    .limit(60);
+
+  const completedTitles = (watchlist || [])
+    .filter((w) => w.status === "completed")
+    .map((w) => w.shows?.title)
+    .filter(Boolean);
+  const watchingTitles = (watchlist || [])
+    .filter((w) => w.status === "watching")
+    .map((w) => w.shows?.title)
+    .filter(Boolean);
+
+  const systemPrompt = `You are Scenera's TV show recommendation assistant. Give concise, specific recommendations (2-4 shows max per answer), each with a one-sentence reason tied to the user's taste. Avoid generic disclaimers or long intros — get straight to the recommendations.
 
 User's completed shows: ${completedTitles.slice(0, 40).join(", ") || "none yet"}
 User's currently watching: ${watchingTitles.slice(0, 20).join(", ") || "none yet"}`;
 
-    const groqRes = await fetch("https://api.groq.com/openai/v1/chat/completions", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${process.env.GROQ_API_KEY}`,
-      },
-      body: JSON.stringify({
-        model: "openai/gpt-oss-120b",
-        messages: [{ role: "system", content: systemPrompt }, ...history, { role: "user", content: message }],
-        temperature: 0.7,
-        max_tokens: 500,
-      }),
-    });
+  const groqRes = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${process.env.GROQ_API_KEY}`,
+    },
+    body: JSON.stringify({
+      model: "openai/gpt-oss-120b",
+      messages: [{ role: "system", content: systemPrompt }, ...history, { role: "user", content: message }],
+      temperature: 0.7,
+      max_tokens: 500,
+    }),
+  });
 
-    if (!groqRes.ok) {
-      const errText = await groqRes.text();
-      throw new Error(`Groq API error (${groqRes.status}): ${errText}`);
-    }
-    const groqData = await groqRes.json();
-    const reply = groqData.choices?.[0]?.message?.content || "Sorry, I couldn't come up with a suggestion right now.";
-    res.json({ reply });
-  } catch (err) {
-    console.error("AI chat failed:", err);
-    res.status(500).json({ error: err.message });
+  if (!groqRes.ok) {
+    const errText = await groqRes.text();
+    throw new Error(`Groq API error (${groqRes.status}): ${errText}`);
   }
-});
+  const groqData = await groqRes.json();
+  const reply = groqData.choices?.[0]?.message?.content || "Sorry, I couldn't come up with a suggestion right now.";
 
-// Sentry's error handler must be registered after all routes,
-// so it can catch anything that throws inside them.
+  // Best-effort usage increment — not perfectly race-proof under true
+  // simultaneous double-clicks, but more than sufficient for abuse
+  // prevention (as opposed to precise billing).
+  await supabase.from("ai_usage_daily").upsert(
+    { user_id: req.userId, usage_date: today, count: currentCount + 1 },
+    { onConflict: "user_id,usage_date" }
+  );
+
+  res.json({ reply });
+}));
+
+// Sentry's error handler must be registered after all routes, so it
+// can catch anything forwarded via next(err) from asyncHandler above.
 Sentry.setupExpressErrorHandler(app);
+
+// Final fallback — Sentry's handler captures and re-throws, it
+// doesn't itself send a response, so this sends the actual HTTP
+// response back to the client after Sentry has logged the error.
+app.use((err, req, res, next) => {
+  console.error(err);
+  res.status(err.status || 500).json({ error: err.message || "Internal server error" });
+});
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`Nextup backend running on port ${PORT}`));
