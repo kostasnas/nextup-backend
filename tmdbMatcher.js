@@ -106,7 +106,7 @@ async function getShowDetails(tmdbId) {
 function normalizeTitle(str) {
   return str
     .toLowerCase()
-    .replace(/\(\d{4}\)/g, "") // strip trailing (2018) year markers
+    .replace(/\s*\([^)]*\)\s*$/, "") // strip any trailing parenthetical, not just years — "(US)", "(IL)", "(2018)" all need to go for fair comparison
     .replace(/[^\w\s]/g, "")
     .replace(/\s+/g, " ")
     .trim();
@@ -173,7 +173,12 @@ async function matchShow(tvTimeTitle) {
       const variantCandidates = await searchShow(variant);
       scored = dedupeByBestScore([
         ...scored,
-        ...variantCandidates.map((c) => ({ ...c, score: similarity(tvTimeTitle, c.name) })),
+        // Score against the variant text actually used for this
+        // search, not the full original title — a near-exact match
+        // to "Hinterland" is what we want when the raw title is
+        // "Hinterland – Y Gwyll"; scoring against the full messy
+        // original would drag a correct match's score down for no reason.
+        ...variantCandidates.map((c) => ({ ...c, score: similarity(variant, c.name) })),
       ]);
       if (scored[0]?.score >= CONFIDENCE_THRESHOLD) break; // good enough, stop trying more variants
     }
