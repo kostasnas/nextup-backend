@@ -401,15 +401,18 @@ const { sendDailyUpcomingNotifications } = require("./pushNotifications");
 // Triggers the daily "new episode" push notification sweep. Protected
 // by a shared secret (not a user login) since this is meant to be
 // called once a day by an external scheduler (e.g. cron-job.org), not
-// by the app or by end users.
-app.post("/notifications/send-daily-upcoming", asyncHandler(async (req, res) => {
+// by the app or by end users. Registered for both GET and POST since
+// some free cron services only support GET.
+const notificationsTriggerHandler = asyncHandler(async (req, res) => {
   const providedSecret = req.headers["x-cron-secret"];
   if (!process.env.CRON_SECRET || providedSecret !== process.env.CRON_SECRET) {
     return res.status(401).json({ error: "Unauthorized" });
   }
   const result = await sendDailyUpcomingNotifications(supabase);
   res.json(result);
-}));
+});
+app.get("/notifications/send-daily-upcoming", notificationsTriggerHandler);
+app.post("/notifications/send-daily-upcoming", notificationsTriggerHandler);
 
 Sentry.setupExpressErrorHandler(app);
 
