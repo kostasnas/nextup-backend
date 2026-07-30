@@ -396,6 +396,21 @@ User's currently watching: ${watchingTitles.slice(0, 20).join(", ") || "none yet
 
 // Sentry's error handler must be registered after all routes, so it
 // can catch anything forwarded via next(err) from asyncHandler above.
+const { sendDailyUpcomingNotifications } = require("./pushNotifications");
+
+// Triggers the daily "new episode" push notification sweep. Protected
+// by a shared secret (not a user login) since this is meant to be
+// called once a day by an external scheduler (e.g. cron-job.org), not
+// by the app or by end users.
+app.post("/notifications/send-daily-upcoming", asyncHandler(async (req, res) => {
+  const providedSecret = req.headers["x-cron-secret"];
+  if (!process.env.CRON_SECRET || providedSecret !== process.env.CRON_SECRET) {
+    return res.status(401).json({ error: "Unauthorized" });
+  }
+  const result = await sendDailyUpcomingNotifications(supabase);
+  res.json(result);
+}));
+
 Sentry.setupExpressErrorHandler(app);
 
 // Final fallback — Sentry's handler captures and re-throws, it
