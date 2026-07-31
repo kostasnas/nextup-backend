@@ -6,6 +6,7 @@
 // genuine "hey, something new is here" alert.
 
 const admin = require("firebase-admin");
+const { getShowDetails } = require("./tmdbMatcher");
 
 let initialized = false;
 
@@ -100,4 +101,118 @@ async function sendDailyUpcomingNotifications(supabase) {
   return { notifiedUsers, episodesConsidered: rows.length };
 }
 
-module.exports = { sendDailyUpcomingNotifications };
+/**
+ * Finds shows marked "up_to_date" whose next season premieres within
+ * 5 days (per TMDB's own next_episode_to_air field, since our own
+ * `episodes` table only knows what we've already synced — it won't
+ * know about a season TMDB announced after the person's last import).
+ *
+ * For each such show: flips every affected user's status from
+ * up_to_date -> watching (so it shows up with a countdown in their
+ * Watching list, and in Coming Up), caches the newly-known episode
+ * into our own `episodes` table, and sends a push notification.
+ *
+ * The show returns to "up_to_date" automatically once the person
+ * marks that episode watched — that part is already handled by the
+ * existing finale-detection logic in the app itself, nothing new
+ * needed here for the return trip.
+ */
+async function checkUpcomingPremieres(supabase) {
+  ensureInitialized();
+
+  const { data: upToDateRows, error } = await supabase
+    .from("user_watchlist")
+    .select("user_id, show_id, shows(id, tmdb_id, title, poster_path)")
+    .eq("status", "up_to_date");
+
+  if (error) throw error;
+  if (!upToDateRows || upToDateRows.length === 0) return { showsChecked: 0, showsPromoted: 0, usersNotified: 0 };
+
+  // Group by show so we only hit TMDB once per show, even if many
+  // users have it marked up_to_date.
+  const showsMap = new Map();
+  for (const row of upToDateRows) {
+    if (!row.shows) continue;
+    if (!showsMap.has(row.shows.tmdb_id)) showsMap.set(row.shows.tmdb_id, { show: row.shows, userIds: [] });
+    showsMap.get(row.shows.tmdb_id).userIds.push(row.user_id);
+  }
+
+  const MS_PER_DAY = 24 * 60 * 60 * 1000;
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+
+  let showsPromoted = 0;
+  let usersNotified = 0;
+
+  for (const { show, userIds } of showsMap.values()) {
+    let details;
+    try {
+      details = await getShowDetails(show.tmdb_id);
+    } catch (err) {
+      console.error(`TMDB lookup failed for show ${show.tmdb_id}:`, err.message);
+      continue;
+    }
+
+    const nextEp = details.next_episode_to_air;
+    if (!nextEp || !nextEp.air_date) continue;
+
+    const airDate = new Date(nextEp.air_date + "T00:00:00");
+    const daysUntil = Math.round((airDate.getTime() - today.getTime()) / MS_PER_DAY);
+    if (daysUntil < 0 || daysUntil > 5) continue; // outside the 5-day window
+
+    // Cache this newly-known episode so Coming Up / the Watching
+    // countdown (which read from our own `episodes` table, not TMDB
+    // live) can see it too.
+    await supabase.from("episodes").upsert(
+      {
+        show_id: show.id,
+        tmdb_episode_id: nextEp.id,
+        season_number: nextEp.season_number,
+        episode_number: nextEp.episode_number,
+        air_date: nextEp.air_date,
+        title: nextEp.name || null,
+      },
+      { onConflict: "show_id,season_number,episode_number" }
+    );
+
+    // Only flip users who are STILL up_to_date at this exact moment —
+    // avoids clobbering a status they may have changed manually
+    // in between the query above and this update.
+    await supabase
+      .from("user_watchlist")
+      .update({ status: "watching", updated_at: new Date().toISOString() })
+      .in("user_id", userIds)
+      .eq("show_id", show.id)
+      .eq("status", "up_to_date");
+    showsPromoted++;
+
+    const { data: tokenRows } = await supabase.from("push_tokens").select("user_id, token").in("user_id", userIds);
+    const tokensByUser = new Map();
+    for (const t of tokenRows || []) {
+      if (!tokensByUser.has(t.user_id)) tokensByUser.set(t.user_id, []);
+      tokensByUser.get(t.user_id).push(t.token);
+    }
+
+    const body = daysUntil === 0
+      ? `${show.title} premieres today!`
+      : `${show.title} premieres in ${daysUntil} day${daysUntil === 1 ? "" : "s"}.`;
+
+    for (const userId of userIds) {
+      const tokens = tokensByUser.get(userId);
+      if (!tokens || tokens.length === 0) continue;
+      try {
+        await admin.messaging().sendEachForMulticast({
+          tokens,
+          notification: { title: "New season coming up", body },
+        });
+        usersNotified++;
+      } catch (err) {
+        console.error(`Premiere notification failed for user ${userId}:`, err.message);
+      }
+    }
+  }
+
+  return { showsChecked: showsMap.size, showsPromoted, usersNotified };
+}
+
+module.exports = { sendDailyUpcomingNotifications, checkUpcomingPremieres };
