@@ -20,6 +20,19 @@ function ensureInitialized() {
   initialized = true;
 }
 
+// Explicit Android notification styling — set directly on every
+// message instead of relying solely on the app's AndroidManifest
+// default. This is what actually takes priority on the device; the
+// manifest default is only a fallback for messages that omit this.
+// "ic_stat_name" must match the drawable resource created via
+// Android Studio's Image Asset tool (Notification Icons / Image type).
+const ANDROID_NOTIFICATION_STYLE = {
+  notification: {
+    icon: "ic_stat_name",
+    color: "#E8A33D",
+  },
+};
+
 /**
  * Finds every (user, episode) pair where:
  *   - the episode aired today
@@ -91,6 +104,7 @@ async function sendDailyUpcomingNotifications(supabase) {
       await admin.messaging().sendEachForMulticast({
         tokens,
         notification: { title: "New episode ready to watch", body },
+        android: ANDROID_NOTIFICATION_STYLE,
       });
       notifiedUsers++;
     } catch (err) {
@@ -124,7 +138,6 @@ async function checkUpcomingPremieres(supabase) {
     .from("user_watchlist")
     .select("user_id, show_id, shows(id, tmdb_id, title, poster_path)")
     .eq("status", "up_to_date");
-
   if (error) throw error;
   if (!upToDateRows || upToDateRows.length === 0) return { showsChecked: 0, showsPromoted: 0, usersNotified: 0 };
 
@@ -184,6 +197,7 @@ async function checkUpcomingPremieres(supabase) {
       .in("user_id", userIds)
       .eq("show_id", show.id)
       .eq("status", "up_to_date");
+
     showsPromoted++;
 
     const { data: tokenRows } = await supabase.from("push_tokens").select("user_id, token").in("user_id", userIds);
@@ -204,6 +218,7 @@ async function checkUpcomingPremieres(supabase) {
         await admin.messaging().sendEachForMulticast({
           tokens,
           notification: { title: "New season coming up", body },
+          android: ANDROID_NOTIFICATION_STYLE,
         });
         usersNotified++;
       } catch (err) {
