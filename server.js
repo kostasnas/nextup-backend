@@ -22,22 +22,12 @@ const supabase = createClient(
   process.env.SUPABASE_SERVICE_KEY
 );
 
-// Wraps an async route handler so any thrown/rejected error is
-// forwarded to Express's error-handling chain via next(err) instead
-// of needing a manual try/catch + res.status(500) in every route.
-// This is what lets Sentry's error handler (registered near the
-// bottom of this file) actually see every real error automatically.
 function asyncHandler(fn) {
   return (req, res, next) => {
     Promise.resolve(fn(req, res, next)).catch(next);
   };
 }
 
-// Verifies the Supabase session JWT sent in the Authorization header
-// and attaches the *real*, server-verified user id as req.userId.
-// Every route that reads or writes a specific user's data uses this
-// instead of trusting a client-supplied user_id field — otherwise
-// anyone who knows the API URL could act as any user.
 async function requireAuth(req, res, next) {
   const authHeader = req.headers.authorization || "";
   const token = authHeader.startsWith("Bearer ") ? authHeader.slice(7) : null;
@@ -54,17 +44,12 @@ app.get("/", (req, res) => {
   res.json({ status: "ok", service: "nextup-backend" });
 });
 
-// Lightweight endpoint that actually touches the database — used as
-// a second UptimeRobot monitor purely to keep the Supabase free-tier
-// project from auto-pausing after a week of total inactivity. Doesn't
-// require auth since it reads nothing user-specific.
 app.get("/health-full", asyncHandler(async (req, res) => {
   const { error } = await supabase.from("shows").select("id").limit(1);
   if (error) throw error;
   res.json({ status: "ok", db: "reachable" });
 }));
 
-// Shared by both import routes (individual files or a whole zip).
 async function processImport(userId, files) {
   const { shows, episodeLogByShow, emotionLogByShow, stats } = parseGdprExport(files);
   const watchingCandidates = shows.filter((s) => s.episodesSeenCount > 0).length;
@@ -115,9 +100,6 @@ async function processImport(userId, files) {
   return { jobId: job.id, matchedCount, unmatchedCount, totalShows: stats.totalShows, watchingCandidates, warning: stats.warning };
 }
 
-// Individual-files flow. seen_episode_source / episode_emotion /
-// tracking-prod-records-v2 are OPTIONAL — only present in the fuller
-// "download all my data" export.
 app.post(
   "/import/tvtime",
   requireAuth,
@@ -140,8 +122,6 @@ app.post(
   })
 );
 
-// Whole-zip flow. The 4 core files are required; the richer files
-// are used automatically if present in the zip, skipped otherwise.
 const REQUIRED_FILES = ["user_tv_show_data.csv", "show_seen_episode_latest.csv", "followed_tv_show.csv", "tv_show_rate.csv"];
 const OPTIONAL_FILES = ["seen_episode_source.csv", "episode_emotion.csv", "tracking-prod-records-v2.csv"];
 
@@ -213,9 +193,6 @@ async function upsertShowProgress(userId, show, jobId, extras = {}) {
   }
 }
 
-// Fetches an import_jobs row and throws a 403-flavored error if it
-// doesn't belong to the requesting user — used by every /import/:jobId
-// route so one user can never poll or read another user's import.
 async function getOwnedJob(jobId, userId) {
   const { data, error } = await supabase.from("import_jobs").select("*").eq("id", jobId).single();
   if (error || !data) {
@@ -251,9 +228,6 @@ app.post("/import/:jobId/sync-episodes", requireAuth, asyncHandler(async (req, r
   let failedCount = 0;
   const failures = [];
 
-  // Process several shows at once instead of one-by-one — cuts wall-clock
-  // time significantly for large libraries, while still bounded so we
-  // don't hammer the TMDB API past its rate limit.
   const CONCURRENCY = 5;
   for (let i = 0; i < jobShows.length; i += CONCURRENCY) {
     const batch = jobShows.slice(i, i + CONCURRENCY);
@@ -304,15 +278,6 @@ app.post("/import/unmatched/:rowId/resolve", requireAuth, asyncHandler(async (re
   res.json({ ok: true });
 }));
 
-// AI recommendation chat. Uses Groq (openai/gpt-oss-120b) grounded
-// with a summary of the user's watch history so suggestions aren't
-// generic. GROQ_API_KEY must be set in Render's environment.
-//
-// Two layers of abuse/cost protection, since Groq calls cost real
-// money per request:
-//   1. A per-IP rate limit (blunt, catches rapid-fire spam immediately).
-//   2. A per-user daily quota tracked in Supabase (catches a single
-//      account being hammered slowly over a longer window).
 const aiChatRateLimiter = rateLimit({
   windowMs: 60 * 1000,
   max: 15,
@@ -321,7 +286,7 @@ const aiChatRateLimiter = rateLimit({
   message: { error: "Too many requests — please slow down and try again in a minute." },
 });
 
-const AI_DAILY_LIMIT = 20; // generous placeholder until the Pro tier's real free-tier limit ships
+const AI_DAILY_LIMIT = 20;
 
 app.post("/ai/chat", requireAuth, aiChatRateLimiter, asyncHandler(async (req, res) => {
   const { message, history = [] } = req.body;
@@ -383,9 +348,6 @@ User's currently watching: ${watchingTitles.slice(0, 20).join(", ") || "none yet
   const groqData = await groqRes.json();
   const reply = groqData.choices?.[0]?.message?.content || "Sorry, I couldn't come up with a suggestion right now.";
 
-  // Best-effort usage increment — not perfectly race-proof under true
-  // simultaneous double-clicks, but more than sufficient for abuse
-  // prevention (as opposed to precise billing).
   await supabase.from("ai_usage_daily").upsert(
     { user_id: req.userId, usage_date: today, count: currentCount + 1 },
     { onConflict: "user_id,usage_date" }
@@ -394,35 +356,49 @@ User's currently watching: ${watchingTitles.slice(0, 20).join(", ") || "none yet
   res.json({ reply });
 }));
 
-// Sentry's error handler must be registered after all routes, so it
-// can catch anything forwarded via next(err) from asyncHandler above.
 const { sendDailyUpcomingNotifications, checkUpcomingPremieres } = require("./pushNotifications");
+const { reconcileWatchingStatuses } = require("./statusReconciliation");
 
-// Triggers the daily push notification sweep — both halves:
-//   1. "New episode is out today" for shows already being watched.
-//   2. "Up to date" shows whose next season premieres within 5 days —
-//      promotes them to Watching (with a countdown) and notifies.
+// Triggers the full daily maintenance sweep:
+//   1. Reconcile statuses — catches any "watching" show that's
+//      actually fully caught up and flips it to completed/up_to_date,
+//      so nothing stays stuck from imports or multi-session catch-ups.
+//   2. "New episode is out today" notifications for watching shows.
+//   3. "Up to date" shows premiering within 5 days — promotes to
+//      Watching with a countdown and notifies.
 // Protected by a shared secret since this is meant to be called once
 // a day by an external scheduler (e.g. cron-job.org), not by the app
 // or by end users. Registered for both GET and POST since some free
 // cron services only support GET.
-const notificationsTriggerHandler = asyncHandler(async (req, res) => {
+const dailyMaintenanceHandler = asyncHandler(async (req, res) => {
   const providedSecret = req.headers["x-cron-secret"];
   if (!process.env.CRON_SECRET || providedSecret !== process.env.CRON_SECRET) {
     return res.status(401).json({ error: "Unauthorized" });
   }
+  const reconciliation = await reconcileWatchingStatuses(supabase);
   const dailyResult = await sendDailyUpcomingNotifications(supabase);
   const premiereResult = await checkUpcomingPremieres(supabase);
-  res.json({ dailyEpisodes: dailyResult, upcomingPremieres: premiereResult });
+  res.json({ reconciliation, dailyEpisodes: dailyResult, upcomingPremieres: premiereResult });
 });
-app.get("/notifications/send-daily-upcoming", notificationsTriggerHandler);
-app.post("/notifications/send-daily-upcoming", notificationsTriggerHandler);
+app.get("/notifications/send-daily-upcoming", dailyMaintenanceHandler);
+app.post("/notifications/send-daily-upcoming", dailyMaintenanceHandler);
+
+// Same reconciliation, exposed on its own so it can be run immediately
+// (e.g. to fix already-stuck statuses right now) without waiting for
+// the daily schedule, or re-run manually any time.
+const reconcileOnlyHandler = asyncHandler(async (req, res) => {
+  const providedSecret = req.headers["x-cron-secret"];
+  if (!process.env.CRON_SECRET || providedSecret !== process.env.CRON_SECRET) {
+    return res.status(401).json({ error: "Unauthorized" });
+  }
+  const result = await reconcileWatchingStatuses(supabase);
+  res.json(result);
+});
+app.get("/admin/reconcile-statuses", reconcileOnlyHandler);
+app.post("/admin/reconcile-statuses", reconcileOnlyHandler);
 
 Sentry.setupExpressErrorHandler(app);
 
-// Final fallback — Sentry's handler captures and re-throws, it
-// doesn't itself send a response, so this sends the actual HTTP
-// response back to the client after Sentry has logged the error.
 app.use((err, req, res, next) => {
   console.error(err);
   res.status(err.status || 500).json({ error: err.message || "Internal server error" });
