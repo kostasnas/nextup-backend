@@ -396,20 +396,24 @@ User's currently watching: ${watchingTitles.slice(0, 20).join(", ") || "none yet
 
 // Sentry's error handler must be registered after all routes, so it
 // can catch anything forwarded via next(err) from asyncHandler above.
-const { sendDailyUpcomingNotifications } = require("./pushNotifications");
+const { sendDailyUpcomingNotifications, checkUpcomingPremieres } = require("./pushNotifications");
 
-// Triggers the daily "new episode" push notification sweep. Protected
-// by a shared secret (not a user login) since this is meant to be
-// called once a day by an external scheduler (e.g. cron-job.org), not
-// by the app or by end users. Registered for both GET and POST since
-// some free cron services only support GET.
+// Triggers the daily push notification sweep — both halves:
+//   1. "New episode is out today" for shows already being watched.
+//   2. "Up to date" shows whose next season premieres within 5 days —
+//      promotes them to Watching (with a countdown) and notifies.
+// Protected by a shared secret since this is meant to be called once
+// a day by an external scheduler (e.g. cron-job.org), not by the app
+// or by end users. Registered for both GET and POST since some free
+// cron services only support GET.
 const notificationsTriggerHandler = asyncHandler(async (req, res) => {
   const providedSecret = req.headers["x-cron-secret"];
   if (!process.env.CRON_SECRET || providedSecret !== process.env.CRON_SECRET) {
     return res.status(401).json({ error: "Unauthorized" });
   }
-  const result = await sendDailyUpcomingNotifications(supabase);
-  res.json(result);
+  const dailyResult = await sendDailyUpcomingNotifications(supabase);
+  const premiereResult = await checkUpcomingPremieres(supabase);
+  res.json({ dailyEpisodes: dailyResult, upcomingPremieres: premiereResult });
 });
 app.get("/notifications/send-daily-upcoming", notificationsTriggerHandler);
 app.post("/notifications/send-daily-upcoming", notificationsTriggerHandler);
