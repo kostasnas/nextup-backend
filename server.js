@@ -12,7 +12,29 @@ const { matchShows } = require("./tmdbMatcher");
 const { syncShowProgress } = require("./episodeSync");
 
 const app = express();
+
+// Safety net: an unhandled promise rejection anywhere in the process
+// (not just inside an Express request) crashes the whole Node process
+// by default from Node 15+ — this is exactly what took the backend
+// down earlier (express-rate-limit rejecting outside asyncHandler's
+// try/catch). Reporting to Sentry and NOT exiting keeps the server
+// alive so one bad rejection can't take down every route/user at
+// once. This is a backstop, not a substitute for fixing the actual
+// source — every occurrence here should still get investigated and
+// wrapped properly at its origin, the way we just did for both
+// express-rate-limit (trust proxy, below) and tmdbThrottle.js.
+process.on("unhandledRejection", (reason) => {
+  console.error("Unhandled promise rejection:", reason);
+  Sentry.captureException(reason instanceof Error ? reason : new Error(String(reason)));
+});
+
+// Render sits behind a reverse proxy, so every request arrives with an
+// X-Forwarded-For header. Without this, express-rate-limit throws a
+// validation error outside of asyncHandler's try/catch, which becomes
+// an unhandled promise rejection and crashes the whole Node process.
+// "1" = trust exactly one hop (Render's own proxy) for the client IP.
 app.set("trust proxy", 1);
+
 app.use(cors());
 app.use(express.json());
 
