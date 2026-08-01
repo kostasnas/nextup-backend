@@ -12,6 +12,7 @@ const { matchShows } = require("./tmdbMatcher");
 const { syncShowProgress } = require("./episodeSync");
 
 const app = express();
+app.set("trust proxy", 1);
 app.use(cors());
 app.use(express.json());
 
