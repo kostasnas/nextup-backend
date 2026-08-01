@@ -6,6 +6,7 @@
 // not just for this one update.
 
 const admin = require("firebase-admin");
+const { ensureInitialized } = require("./pushNotifications");
 
 // FCM's sendEachForMulticast accepts at most 500 tokens per call —
 // chunk defensively in case the user base ever grows past that.
@@ -18,6 +19,8 @@ function chunk(array, size) {
 }
 
 async function sendBroadcastNotification(supabase, { title, body }) {
+  ensureInitialized();
+
   if (!title || !body) {
     const err = new Error("title and body are both required");
     err.status = 400;
