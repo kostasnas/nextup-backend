@@ -37,7 +37,17 @@ async function drainQueue() {
 
     const job = queue.shift();
     recentRequestTimestamps.push(Date.now());
-    job();
+    try {
+      job();
+    } catch (err) {
+      // A synchronous throw from job() (e.g. fn() wasn't actually async)
+      // would otherwise reject this whole drainQueue() promise with
+      // nothing downstream to catch it — the same unhandled-rejection
+      // shape that took the server down before. job() itself already
+      // routes normal async failures to the caller via reject(); this
+      // is only a backstop for the synchronous-throw edge case.
+      console.error("tmdbThrottle: job threw synchronously:", err.message);
+    }
   }
   draining = false;
 }
@@ -51,7 +61,12 @@ function throttle(fn) {
     queue.push(() => {
       fn().then(resolve).catch(reject);
     });
-    drainQueue();
+    drainQueue().catch((err) => {
+      // Should be unreachable now that job() is guarded above, but a
+      // fire-and-forget async call with no .catch is exactly the
+      // pattern that caused the earlier crash — never leave one bare.
+      console.error("tmdbThrottle: drainQueue failed:", err.message);
+    });
   });
 }
 
