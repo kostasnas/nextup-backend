@@ -356,7 +356,7 @@ User's currently watching: ${watchingTitles.slice(0, 20).join(", ") || "none yet
   res.json({ reply });
 }));
 
-const { sendDailyUpcomingNotifications, checkUpcomingPremieres } = require("./pushNotifications");
+const { sendDailyUpcomingNotifications, checkUpcomingPremieres, sendDailyEngagementNudge } = require("./pushNotifications");
 const { reconcileWatchingStatuses } = require("./statusReconciliation");
 
 // Triggers the full daily maintenance sweep:
@@ -366,6 +366,9 @@ const { reconcileWatchingStatuses } = require("./statusReconciliation");
 //   2. "New episode is out today" notifications for watching shows.
 //   3. "Up to date" shows premiering within 5 days — promotes to
 //      Watching with a countdown and notifies.
+//   4. A generic daily re-engagement nudge to every registered device
+//      (helps general habit-forming, and specifically helps satisfy
+//      Google Play Closed Testing's daily-engagement review check).
 // Protected by a shared secret since this is meant to be called once
 // a day by an external scheduler (e.g. cron-job.org), not by the app
 // or by end users. Registered for both GET and POST since some free
@@ -383,6 +386,22 @@ const dailyMaintenanceHandler = asyncHandler(async (req, res) => {
 app.get("/notifications/send-daily-upcoming", dailyMaintenanceHandler);
 app.post("/notifications/send-daily-upcoming", dailyMaintenanceHandler);
 
+// Separate endpoint (and separate cron schedule — e.g. 21:00 instead
+// of 18:30) so the generic "did you watch today?" nudge never lands
+// in the same moment as the "new episode is out" notification. Two
+// pushes arriving together read as spam; spread out, each has a
+// clear, distinct reason to exist.
+const engagementNudgeHandler = asyncHandler(async (req, res) => {
+  const providedSecret = req.headers["x-cron-secret"];
+  if (!process.env.CRON_SECRET || providedSecret !== process.env.CRON_SECRET) {
+    return res.status(401).json({ error: "Unauthorized" });
+  }
+  const result = await sendDailyEngagementNudge(supabase);
+  res.json(result);
+});
+app.get("/notifications/send-engagement-nudge", engagementNudgeHandler);
+app.post("/notifications/send-engagement-nudge", engagementNudgeHandler);
+
 // Same reconciliation, exposed on its own so it can be run immediately
 // (e.g. to fix already-stuck statuses right now) without waiting for
 // the daily schedule, or re-run manually any time.
@@ -396,6 +415,20 @@ const reconcileOnlyHandler = asyncHandler(async (req, res) => {
 });
 app.get("/admin/reconcile-statuses", reconcileOnlyHandler);
 app.post("/admin/reconcile-statuses", reconcileOnlyHandler);
+
+// Sends a custom push notification to every registered device —
+// reusable for announcements like "new version available", not tied
+// to any show/episode. Title and body are supplied in the request
+// body, e.g.: { "title": "Update available", "body": "..." }
+const { sendBroadcastNotification } = require("./broadcastNotification");
+app.post("/admin/broadcast", asyncHandler(async (req, res) => {
+  const providedSecret = req.headers["x-cron-secret"];
+  if (!process.env.CRON_SECRET || providedSecret !== process.env.CRON_SECRET) {
+    return res.status(401).json({ error: "Unauthorized" });
+  }
+  const result = await sendBroadcastNotification(supabase, req.body);
+  res.json(result);
+}));
 
 Sentry.setupExpressErrorHandler(app);
 
