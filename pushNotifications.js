@@ -268,4 +268,4 @@ async function sendDailyEngagementNudge(supabase) {
   }
 }
 
-module.exports = { sendDailyUpcomingNotifications, checkUpcomingPremieres, sendDailyEngagementNudge };
+module.exports = { sendDailyUpcomingNotifications, checkUpcomingPremieres, sendDailyEngagementNudge, ensureInitialized };
