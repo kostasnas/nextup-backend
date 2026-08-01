@@ -12,29 +12,12 @@ const { matchShows } = require("./tmdbMatcher");
 const { syncShowProgress } = require("./episodeSync");
 
 const app = express();
-
-// Safety net: an unhandled promise rejection anywhere in the process
-// (not just inside an Express request) crashes the whole Node process
-// by default from Node 15+ — this is exactly what took the backend
-// down earlier (express-rate-limit rejecting outside asyncHandler's
-// try/catch). Reporting to Sentry and NOT exiting keeps the server
-// alive so one bad rejection can't take down every route/user at
-// once. This is a backstop, not a substitute for fixing the actual
-// source — every occurrence here should still get investigated and
-// wrapped properly at its origin, the way we just did for both
-// express-rate-limit (trust proxy, below) and tmdbThrottle.js.
-process.on("unhandledRejection", (reason) => {
-  console.error("Unhandled promise rejection:", reason);
-  Sentry.captureException(reason instanceof Error ? reason : new Error(String(reason)));
-});
-
-// Render sits behind a reverse proxy, so every request arrives with an
-// X-Forwarded-For header. Without this, express-rate-limit throws a
-// validation error outside of asyncHandler's try/catch, which becomes
-// an unhandled promise rejection and crashes the whole Node process.
-// "1" = trust exactly one hop (Render's own proxy) for the client IP.
+// Render sits behind a reverse proxy — without this, express-rate-limit
+// throws on the X-Forwarded-For header it sees, as an unhandled
+// rejection that crashes the whole process (not just the one route).
+// "1" trusts only the immediate proxy hop (Render itself), not an
+// arbitrary chain of forwarded headers.
 app.set("trust proxy", 1);
-
 app.use(cors());
 app.use(express.json());
 
@@ -66,6 +49,26 @@ async function requireAuth(req, res, next) {
 app.get("/", (req, res) => {
   res.json({ status: "ok", service: "nextup-backend" });
 });
+
+const { getWatchProviders, getTopShows } = require("./discover");
+
+// Streaming-provider-aware "Top Shows" — public, cached, no auth
+// needed since results are identical for everyone in the same
+// region. Proxied through here instead of calling TMDB directly from
+// the app so the API key doesn't need to live in the client bundle
+// for this specific feature.
+app.get("/discover/watch-providers", asyncHandler(async (req, res) => {
+  const region = (req.query.region || "US").toUpperCase();
+  const providers = await getWatchProviders(region);
+  res.json(providers);
+}));
+
+app.get("/discover/top-shows", asyncHandler(async (req, res) => {
+  const region = (req.query.region || "US").toUpperCase();
+  const providerId = req.query.provider_id || null;
+  const shows = await getTopShows({ region, providerId });
+  res.json(shows);
+}));
 
 app.get("/health-full", asyncHandler(async (req, res) => {
   const { error } = await supabase.from("shows").select("id").limit(1);
