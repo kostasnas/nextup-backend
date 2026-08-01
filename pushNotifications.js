@@ -230,4 +230,42 @@ async function checkUpcomingPremieres(supabase) {
   return { showsChecked: showsMap.size, showsPromoted, usersNotified };
 }
 
-module.exports = { sendDailyUpcomingNotifications, checkUpcomingPremieres };
+// Simple daily re-engagement nudge — sent to every registered device
+// once a day (via the same cron trigger as everything else). Rotates
+// through a few varied messages so it doesn't feel robotic. This is
+// deliberately generic (not tied to any specific show), partly to
+// keep people in the habit of opening the app, and partly because
+// Google's Closed Testing review specifically checks for consistent
+// daily engagement across the 14-day period — the single most common
+// reason testing tracks get rejected is testers installing once and
+// never opening the app again.
+const ENGAGEMENT_MESSAGES = [
+  { title: "What are you watching tonight?", body: "Check your Watching list and pick up where you left off." },
+  { title: "Did you watch anything today?", body: "Mark it off in Scenera so your stats stay accurate." },
+  { title: "Your shows are waiting", body: "See what's ready to watch in Scenera." },
+];
+
+async function sendDailyEngagementNudge(supabase) {
+  ensureInitialized();
+  const { data: tokenRows, error } = await supabase.from("push_tokens").select("token");
+  if (error) throw error;
+
+  const tokens = [...new Set((tokenRows || []).map((t) => t.token))];
+  if (tokens.length === 0) return { devicesTargeted: 0 };
+
+  const message = ENGAGEMENT_MESSAGES[Math.floor(Math.random() * ENGAGEMENT_MESSAGES.length)];
+
+  try {
+    const result = await admin.messaging().sendEachForMulticast({
+      tokens,
+      notification: { title: message.title, body: message.body },
+      android: ANDROID_NOTIFICATION_STYLE,
+    });
+    return { devicesTargeted: tokens.length, successCount: result.successCount, failureCount: result.failureCount };
+  } catch (err) {
+    console.error("Daily engagement nudge failed:", err.message);
+    return { devicesTargeted: tokens.length, error: err.message };
+  }
+}
+
+module.exports = { sendDailyUpcomingNotifications, checkUpcomingPremieres, sendDailyEngagementNudge };
