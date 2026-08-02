@@ -45,7 +45,12 @@ app.set("trust proxy", 1);
 // meaningfully restrict non-browser callers anyway, and every
 // data-mutating route still requires a valid Supabase JWT regardless
 // of origin.
-const ALLOWED_ORIGINS = ["https://localhost", "http://localhost:5173"];
+// "null" is added for the local broadcast-test-tool.html — browsers
+// send the literal string "null" as Origin when a page is opened
+// directly from disk (file://) rather than served over http(s). Only
+// relevant for that one local testing tool; every real request from
+// the Scenera app itself still comes from https://localhost.
+const ALLOWED_ORIGINS = ["https://localhost", "http://localhost:5173", "null"];
 app.use(cors({
   origin: (origin, callback) => {
     if (!origin || ALLOWED_ORIGINS.includes(origin)) return callback(null, true);
