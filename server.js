@@ -12,6 +12,23 @@ const { matchShows } = require("./tmdbMatcher");
 const { syncShowProgress } = require("./episodeSync");
 
 const app = express();
+
+// Safety net: an unhandled promise rejection anywhere in the process
+// (not just inside an Express request) crashes the whole Node process
+// by default from Node 15+ — this is exactly what took the backend
+// down before (express-rate-limit rejecting outside asyncHandler's
+// try/catch, via the trust-proxy issue fixed below). Reporting to
+// Sentry and NOT exiting keeps the server alive so one bad rejection
+// can't take down every route/user at once. This is a backstop, not
+// a substitute for fixing the actual source — every occurrence here
+// should still get investigated and wrapped properly at its origin,
+// the way we did for express-rate-limit (trust proxy) and
+// tmdbThrottle.js's drainQueue().
+process.on("unhandledRejection", (reason) => {
+  console.error("Unhandled promise rejection:", reason);
+  Sentry.captureException(reason instanceof Error ? reason : new Error(String(reason)));
+});
+
 // Render sits behind a reverse proxy — without this, express-rate-limit
 // throws on the X-Forwarded-For header it sees, as an unhandled
 // rejection that crashes the whole process (not just the one route).
@@ -21,7 +38,22 @@ app.set("trust proxy", 1);
 app.use(cors());
 app.use(express.json());
 
-const upload = multer({ storage: multer.memoryStorage() });
+// Two separate instances since the two import paths have very
+// different realistic sizes. Individual TV Time CSV exports are a
+// few MB at most even for a heavy watch history; the full "download
+// all my data" GDPR zip bundles 50+ files and can be much larger.
+// Without an explicit limit, multer's memoryStorage will happily
+// buffer an arbitrarily large upload straight into RAM on Render's
+// free tier — the same kind of unbounded-resource risk that took the
+// whole process down before, just via a different door.
+const uploadCsv = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 20 * 1024 * 1024 }, // 20MB per individual CSV field
+});
+const uploadZip = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 150 * 1024 * 1024 }, // 150MB for the full GDPR export zip
+});
 
 const supabase = createClient(
   process.env.SUPABASE_URL,
@@ -129,7 +161,7 @@ async function processImport(userId, files) {
 app.post(
   "/import/tvtime",
   requireAuth,
-  upload.fields([
+  uploadCsv.fields([
     { name: "user_tv_show_data", maxCount: 1 },
     { name: "show_seen_episode_latest", maxCount: 1 },
     { name: "followed_tv_show", maxCount: 1 },
@@ -151,7 +183,7 @@ app.post(
 const REQUIRED_FILES = ["user_tv_show_data.csv", "show_seen_episode_latest.csv", "followed_tv_show.csv", "tv_show_rate.csv"];
 const OPTIONAL_FILES = ["seen_episode_source.csv", "episode_emotion.csv", "tracking-prod-records-v2.csv"];
 
-app.post("/import/tvtime-zip", requireAuth, upload.single("export_zip"), asyncHandler(async (req, res) => {
+app.post("/import/tvtime-zip", requireAuth, uploadZip.single("export_zip"), asyncHandler(async (req, res) => {
   if (!req.file) return res.status(400).json({ error: "export_zip file is required" });
 
   const zip = new AdmZip(req.file.buffer);
@@ -459,6 +491,13 @@ app.post("/admin/broadcast", asyncHandler(async (req, res) => {
 Sentry.setupExpressErrorHandler(app);
 
 app.use((err, req, res, next) => {
+  // multer throws a distinct error type (not our own asyncHandler
+  // path) when an upload is rejected for size/shape reasons — surface
+  // that as a normal 400 instead of a generic 500, since it's a
+  // client mistake (or abuse attempt), not a server fault.
+  if (err instanceof multer.MulterError) {
+    return res.status(400).json({ error: `Upload rejected: ${err.message}` });
+  }
   console.error(err);
   res.status(err.status || 500).json({ error: err.message || "Internal server error" });
 });
