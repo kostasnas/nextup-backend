@@ -18,7 +18,7 @@ function chunk(array, size) {
   return out;
 }
 
-async function sendBroadcastNotification(supabase, { title, body }) {
+async function sendBroadcastNotification(supabase, { title, body, test_user_id }) {
   ensureInitialized();
 
   if (!title || !body) {
@@ -27,7 +27,11 @@ async function sendBroadcastNotification(supabase, { title, body }) {
     throw err;
   }
 
-  const { data: tokenRows, error } = await supabase.from("push_tokens").select("token");
+  // test_user_id restricts the send to a single person's devices —
+  // use this to preview a broadcast before firing it at every tester.
+  let query = supabase.from("push_tokens").select("token");
+  if (test_user_id) query = query.eq("user_id", test_user_id);
+  const { data: tokenRows, error } = await query;
   if (error) throw error;
 
   const tokens = [...new Set((tokenRows || []).map((t) => t.token))]; // de-dupe, same device can re-register
