@@ -35,7 +35,23 @@ process.on("unhandledRejection", (reason) => {
 // "1" trusts only the immediate proxy hop (Render itself), not an
 // arbitrary chain of forwarded headers.
 app.set("trust proxy", 1);
-app.use(cors());
+// Capacitor's Android WebView (no custom hostname/androidScheme set
+// in capacitor.config.json) loads the app from https://localhost, so
+// that's the Origin header every real request from the app carries.
+// http://localhost:5173 is Vite's dev server, kept so local `npm run
+// dev` testing keeps working. Requests with no Origin header at all
+// (native HTTP clients, curl, server-to-server, cron pings) are
+// allowed through — CORS is a browser-enforced mechanism and doesn't
+// meaningfully restrict non-browser callers anyway, and every
+// data-mutating route still requires a valid Supabase JWT regardless
+// of origin.
+const ALLOWED_ORIGINS = ["https://localhost", "http://localhost:5173"];
+app.use(cors({
+  origin: (origin, callback) => {
+    if (!origin || ALLOWED_ORIGINS.includes(origin)) return callback(null, true);
+    return callback(new Error("Not allowed by CORS"));
+  },
+}));
 app.use(express.json());
 
 // Two separate instances since the two import paths have very
