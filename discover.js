@@ -74,4 +74,37 @@ async function getTopShows({ region = "US", providerId = null } = {}) {
   return shows;
 }
 
-module.exports = { getWatchProviders, getTopShows };
+/**
+ * Weekly trending shows — TMDB's own algorithm, not region-specific
+ * (the endpoint doesn't accept a watch_region param), so a single
+ * global cache entry serves every user regardless of country.
+ */
+async function getTrending() {
+  const cacheKey = "trending";
+  const cached = getCached(cacheKey);
+  if (cached) return cached;
+
+  const data = await tmdbGet(`/trending/tv/week`);
+  const shows = (data.results || []).slice(0, 20);
+  setCached(cacheKey, shows);
+  return shows;
+}
+
+/**
+ * The full TV genre list — essentially static (TMDB adds/renames
+ * genres extremely rarely), so this is the safest thing to cache of
+ * everything here. One global entry, same 12h TTL as the rest for
+ * simplicity rather than a separate longer-lived cache.
+ */
+async function getGenres() {
+  const cacheKey = "genres";
+  const cached = getCached(cacheKey);
+  if (cached) return cached;
+
+  const data = await tmdbGet(`/genre/tv/list`);
+  const genres = data.genres || [];
+  setCached(cacheKey, genres);
+  return genres;
+}
+
+module.exports = { getWatchProviders, getTopShows, getTrending, getGenres };

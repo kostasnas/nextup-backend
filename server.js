@@ -103,7 +103,7 @@ app.get("/", (req, res) => {
   res.json({ status: "ok", service: "nextup-backend" });
 });
 
-const { getWatchProviders, getTopShows } = require("./discover");
+const { getWatchProviders, getTopShows, getTrending, getGenres } = require("./discover");
 
 // Streaming-provider-aware "Top Shows" — public, cached, no auth
 // needed since results are identical for everyone in the same
@@ -121,6 +121,20 @@ app.get("/discover/top-shows", asyncHandler(async (req, res) => {
   const providerId = req.query.provider_id || null;
   const shows = await getTopShows({ region, providerId });
   res.json(shows);
+}));
+
+// Same reasoning as the two routes above — public, cached, keeps the
+// TMDB key server-side. Also lets the Explore "home" data (trending +
+// genres + providers + top-shows) be prefetched cheaply right after
+// login, since none of it hits TMDB uncached per request.
+app.get("/discover/trending", asyncHandler(async (req, res) => {
+  const shows = await getTrending();
+  res.json(shows);
+}));
+
+app.get("/discover/genres", asyncHandler(async (req, res) => {
+  const genres = await getGenres();
+  res.json(genres);
 }));
 
 app.get("/health-full", asyncHandler(async (req, res) => {
