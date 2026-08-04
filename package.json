@@ -4,7 +4,8 @@
   "description": "Nextup backend — TV show tracking API with TV Time import",
   "main": "server.js",
   "scripts": {
-    "start": "node server.js"
+    "start": "node server.js",
+    "worker": "node worker.js"
   },
   "dependencies": {
     "express": "^4.19.2",
@@ -15,7 +16,8 @@
     "adm-zip": "^0.5.10",
     "@sentry/node": "^8.0.0",
     "express-rate-limit": "^7.1.5",
-    "firebase-admin": "^12.0.0"
+    "firebase-admin": "^12.0.0",
+    "pg-boss": "^10.1.5"
   },
   "engines": {
     "node": ">=18"

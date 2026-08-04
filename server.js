@@ -4,12 +4,10 @@ const Sentry = require("@sentry/node");
 const express = require("express");
 const cors = require("cors");
 const multer = require("multer");
-const AdmZip = require("adm-zip");
 const rateLimit = require("express-rate-limit");
 const { createClient } = require("@supabase/supabase-js");
-const { parseGdprExport } = require("./importParser");
-const { matchShows } = require("./tmdbMatcher");
 const { syncShowProgress } = require("./episodeSync");
+const { getBoss, IMPORT_QUEUE } = require("./queue");
 
 const app = express();
 
@@ -143,56 +141,6 @@ app.get("/health-full", asyncHandler(async (req, res) => {
   res.json({ status: "ok", db: "reachable" });
 }));
 
-async function processImport(userId, files) {
-  const { shows, episodeLogByShow, emotionLogByShow, stats } = parseGdprExport(files);
-  const watchingCandidates = shows.filter((s) => s.episodesSeenCount > 0).length;
-  console.log(
-    `Parsed ${shows.length} shows, ${watchingCandidates} have episodesSeenCount > 0. ` +
-    `Episode log: ${stats.hasEpisodeLog ? "present" : "not present"}, Emotion log: ${stats.hasEmotionLog ? "present" : "not present"}.`
-  );
-
-  const { data: job, error: jobError } = await supabase
-    .from("import_jobs")
-    .insert({ user_id: userId, source: "tvtime", status: "matching", total_records: stats.totalShows })
-    .select()
-    .single();
-  if (jobError) throw jobError;
-
-  const matched = await matchShows(shows);
-
-  let matchedCount = 0;
-  let unmatchedCount = 0;
-
-  for (const show of matched) {
-    if (show.match.status === "matched") {
-      matchedCount++;
-      await upsertShowProgress(userId, show, job.id, {
-        episodeLog: episodeLogByShow[show.title] || null,
-        emotionLog: emotionLogByShow[show.title] || null,
-      });
-    } else {
-      unmatchedCount++;
-      await supabase.from("import_unmatched").insert({
-        import_job_id: job.id,
-        raw_title: show.title,
-        candidate_tmdb_ids: show.match.candidates.map((c) => c.id),
-      });
-    }
-  }
-
-  await supabase
-    .from("import_jobs")
-    .update({
-      status: unmatchedCount > 0 ? "needs_review" : "completed",
-      matched_records: matchedCount,
-      unmatched_records: unmatchedCount,
-      completed_at: new Date().toISOString(),
-    })
-    .eq("id", job.id);
-
-  return { jobId: job.id, matchedCount, unmatchedCount, totalShows: stats.totalShows, watchingCandidates, warning: stats.warning };
-}
-
 app.post(
   "/import/tvtime",
   requireAuth,
@@ -206,85 +154,64 @@ app.post(
     { name: "tracking-prod-records-v2", maxCount: 1 },
   ]),
   asyncHandler(async (req, res) => {
-    const files = {};
-    for (const [field, arr] of Object.entries(req.files)) {
-      files[`${field}.csv`] = arr[0].buffer.toString("utf8");
+    // The heavy work (parsing, TMDB matching) no longer happens here
+    // — this just records the job, stashes the uploaded files
+    // somewhere the worker can reach them, and hands off to the
+    // queue. Responding immediately (instead of only after everything
+    // is matched) means several people uploading at the same moment
+    // no longer compete for the same request-handling process; each
+    // upload is accepted in milliseconds and processed one at a time
+    // by worker.js, in its own separate process.
+    const fieldNames = Object.keys(req.files);
+
+    const { data: job, error: jobError } = await supabase
+      .from("import_jobs")
+      .insert({ user_id: req.userId, source: "tvtime", status: "queued" })
+      .select()
+      .single();
+    if (jobError) throw jobError;
+
+    for (const field of fieldNames) {
+      const buffer = req.files[field][0].buffer;
+      const { error: uploadError } = await supabase.storage
+        .from("import-uploads")
+        .upload(`imports/${job.id}/${field}.csv`, buffer, { contentType: "text/csv", upsert: true });
+      if (uploadError) throw uploadError;
     }
-    const result = await processImport(req.userId, files);
-    res.json(result);
+
+    const boss = await getBoss();
+    await boss.send(IMPORT_QUEUE, { jobId: job.id, userId: req.userId, kind: "csv", fields: fieldNames });
+
+    res.json({ jobId: job.id, status: "queued" });
   })
 );
-
-const REQUIRED_FILES = ["user_tv_show_data.csv", "show_seen_episode_latest.csv", "followed_tv_show.csv", "tv_show_rate.csv"];
-const OPTIONAL_FILES = ["seen_episode_source.csv", "episode_emotion.csv", "tracking-prod-records-v2.csv"];
 
 app.post("/import/tvtime-zip", requireAuth, uploadZip.single("export_zip"), asyncHandler(async (req, res) => {
   if (!req.file) return res.status(400).json({ error: "export_zip file is required" });
 
-  const zip = new AdmZip(req.file.buffer);
-  const entries = zip.getEntries();
+  // Same reasoning as /import/tvtime above: accept and store the raw
+  // upload, enqueue it, respond immediately. Unzipping and validating
+  // that the required TV Time files are actually inside now happens
+  // in the worker — if something's missing, the job's status simply
+  // becomes "failed" with a message in its `error` column, which the
+  // client already polls for via GET /import/status/:jobId.
+  const { data: job, error: jobError } = await supabase
+    .from("import_jobs")
+    .insert({ user_id: req.userId, source: "tvtime", status: "queued" })
+    .select()
+    .single();
+  if (jobError) throw jobError;
 
-  const files = {};
-  for (const needed of REQUIRED_FILES) {
-    const entry = entries.find((e) => e.entryName.toLowerCase().endsWith(needed));
-    if (!entry) {
-      return res.status(400).json({
-        error: `Could not find ${needed} inside the uploaded zip. Make sure you uploaded the full TV Time GDPR export.`,
-      });
-    }
-    files[needed] = entry.getData().toString("utf8");
-  }
-  for (const optional of OPTIONAL_FILES) {
-    const entry = entries.find((e) => e.entryName.toLowerCase().endsWith(optional));
-    if (entry) files[optional] = entry.getData().toString("utf8");
-  }
+  const { error: uploadError } = await supabase.storage
+    .from("import-uploads")
+    .upload(`imports/${job.id}/export.zip`, req.file.buffer, { contentType: "application/zip", upsert: true });
+  if (uploadError) throw uploadError;
 
-  const result = await processImport(req.userId, files);
-  res.json(result);
+  const boss = await getBoss();
+  await boss.send(IMPORT_QUEUE, { jobId: job.id, userId: req.userId, kind: "zip" });
+
+  res.json({ jobId: job.id, status: "queued" });
 }));
-
-async function upsertShowProgress(userId, show, jobId, extras = {}) {
-  const tmdbId = show.match.tmdbId;
-
-  const { data: existingShow } = await supabase.from("shows").select("id, poster_path").eq("tmdb_id", tmdbId).single();
-
-  let showRowId;
-  if (existingShow) {
-    showRowId = existingShow.id;
-    if (show.match.posterPath && !existingShow.poster_path) {
-      await supabase.from("shows").update({ poster_path: show.match.posterPath }).eq("id", showRowId);
-    }
-  } else {
-    const { data: newShow, error } = await supabase
-      .from("shows")
-      .insert({ tmdb_id: tmdbId, title: show.title, poster_path: show.match.posterPath || null })
-      .select()
-      .single();
-    if (error) throw error;
-    showRowId = newShow.id;
-  }
-
-  await supabase.from("user_watchlist").upsert(
-    {
-      user_id: userId,
-      show_id: showRowId,
-      status: show.isArchived ? "dropped" : show.episodesSeenCount > 0 ? "watching" : "planned",
-      updated_at: new Date().toISOString(),
-    },
-    { onConflict: "user_id,show_id" }
-  );
-
-  if (jobId) {
-    await supabase.from("import_job_shows").insert({
-      import_job_id: jobId,
-      show_id: showRowId,
-      tmdb_id: tmdbId,
-      episodes_seen_count: show.episodesSeenCount || 0,
-      episode_log: extras.episodeLog || null,
-      emotion_log: extras.emotionLog || null,
-    });
-  }
-}
 
 async function getOwnedJob(jobId, userId) {
   const { data, error } = await supabase.from("import_jobs").select("*").eq("id", jobId).single();
