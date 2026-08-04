@@ -8,7 +8,7 @@ const AdmZip = require("adm-zip");
 const rateLimit = require("express-rate-limit");
 const { createClient } = require("@supabase/supabase-js");
 const { parseGdprExport } = require("./importParser");
-const { matchShows } = require("./tmdbMatcher");
+const { matchShows, searchShow } = require("./tmdbMatcher");
 const { syncShowProgress } = require("./episodeSync");
 
 const app = express();
@@ -381,6 +381,15 @@ const aiChatRateLimiter = rateLimit({
 
 const AI_DAILY_LIMIT = 20;
 
+// Feature flag — gates the new structured (tappable-card) AI
+// recommendations behind a single specific account so it can be
+// tested live, on the real production backend, without any other
+// tester seeing anything different from today. Once it's confirmed
+// working well, remove this check (and the branch below) so
+// everyone gets it — this is deliberately temporary scaffolding, not
+// meant to stay long-term.
+const STRUCTURED_AI_USER_ID = "47d65eeb-e49b-4854-a5e4-64b468541886"; // knasiovas@gmail.com
+
 app.post("/ai/chat", requireAuth, aiChatRateLimiter, asyncHandler(async (req, res) => {
   const { message, history = [] } = req.body;
   if (!message) return res.status(400).json({ error: "message is required" });
@@ -415,6 +424,77 @@ app.post("/ai/chat", requireAuth, aiChatRateLimiter, asyncHandler(async (req, re
     .map((w) => w.shows?.title)
     .filter(Boolean);
 
+  const isStructured = req.userId === STRUCTURED_AI_USER_ID;
+
+  if (isStructured) {
+    const structuredSystemPrompt = `You are Scenera's TV show recommendation assistant. Based on the conversation and the user's watch history below, recommend 2-4 shows tied to their taste.
+Respond ONLY with a JSON object in exactly this shape, no text outside the JSON: {"recommendations": [{"title": "Show Name", "reason": "one sentence tied to the user's taste"}]}
+
+User's completed shows: ${completedTitles.slice(0, 40).join(", ") || "none yet"}
+User's currently watching: ${watchingTitles.slice(0, 20).join(", ") || "none yet"}`;
+
+    const groqRes = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${process.env.GROQ_API_KEY}`,
+      },
+      body: JSON.stringify({
+        model: "openai/gpt-oss-120b",
+        messages: [{ role: "system", content: structuredSystemPrompt }, ...history, { role: "user", content: message }],
+        temperature: 0.7,
+        max_tokens: 500,
+        response_format: { type: "json_object" },
+      }),
+    });
+
+    if (!groqRes.ok) {
+      const errText = await groqRes.text();
+      throw new Error(`Groq API error (${groqRes.status}): ${errText}`);
+    }
+    const groqData = await groqRes.json();
+
+    let recommendations = [];
+    try {
+      const parsed = JSON.parse(groqData.choices?.[0]?.message?.content || "{}");
+      recommendations = Array.isArray(parsed.recommendations) ? parsed.recommendations : [];
+    } catch (e) {
+      console.error("Failed to parse structured AI response:", e.message);
+    }
+
+    // Look each recommended title up on TMDB so the frontend gets a
+    // real tmdb_id + poster to render as a tappable card — not just a
+    // name. A title the AI recommended but that doesn't resolve to
+    // any TMDB result (rare, but possible — e.g. a slightly garbled
+    // title) is silently dropped rather than shown as a dead card
+    // with nothing to tap into.
+    const resolved = await Promise.all(
+      recommendations.slice(0, 4).map(async (rec) => {
+        try {
+          const results = await searchShow(rec.title);
+          if (!results || results.length === 0) return null;
+          const best = results[0];
+          return {
+            tmdbId: best.id,
+            title: best.name,
+            posterPath: best.poster_path || null,
+            reason: rec.reason || "",
+          };
+        } catch (e) {
+          console.error(`TMDB lookup failed for AI recommendation "${rec.title}":`, e.message);
+          return null;
+        }
+      })
+    );
+
+    await supabase.from("ai_usage_daily").upsert(
+      { user_id: req.userId, usage_date: today, count: currentCount + 1 },
+      { onConflict: "user_id,usage_date" }
+    );
+
+    return res.json({ type: "structured", recommendations: resolved.filter(Boolean) });
+  }
+
   const systemPrompt = `You are Scenera's TV show recommendation assistant. Give concise, specific recommendations (2-4 shows max per answer), each with a one-sentence reason tied to the user's taste. Avoid generic disclaimers or long intros — get straight to the recommendations.
 
 User's completed shows: ${completedTitles.slice(0, 40).join(", ") || "none yet"}
@@ -446,7 +526,7 @@ User's currently watching: ${watchingTitles.slice(0, 20).join(", ") || "none yet
     { onConflict: "user_id,usage_date" }
   );
 
-  res.json({ reply });
+  res.json({ type: "text", reply });
 }));
 
 const { sendDailyUpcomingNotifications, checkUpcomingPremieres, sendDailyEngagementNudge } = require("./pushNotifications");
