@@ -426,13 +426,15 @@ app.post("/ai/chat", requireAuth, aiChatRateLimiter, asyncHandler(async (req, re
 
   const isStructured = req.userId === STRUCTURED_AI_USER_ID;
 
-  if (isStructured) {
-    const structuredSystemPrompt = `You are Scenera's TV show recommendation assistant. Based on the conversation and the user's watch history below, recommend 2-4 shows tied to their taste.
-Respond ONLY with a JSON object in exactly this shape, no text outside the JSON: {"recommendations": [{"title": "Show Name", "reason": "one sentence tied to the user's taste"}]}
+  const systemPrompt = `You are Scenera's TV show recommendation assistant. Give concise, specific recommendations (2-4 shows max per answer), each with a one-sentence reason tied to the user's taste. Avoid generic disclaimers or long intros — get straight to the recommendations.
 
 User's completed shows: ${completedTitles.slice(0, 40).join(", ") || "none yet"}
 User's currently watching: ${watchingTitles.slice(0, 20).join(", ") || "none yet"}`;
 
+  // Shared by both the plain-text path (everyone) and the structured
+  // path's fallback (see catch block below) — one place that knows
+  // how to get an ordinary free-text recommendation out of Groq.
+  async function getFreeTextReply() {
     const groqRes = await fetch("https://api.groq.com/openai/v1/chat/completions", {
       method: "POST",
       headers: {
@@ -441,85 +443,105 @@ User's currently watching: ${watchingTitles.slice(0, 20).join(", ") || "none yet
       },
       body: JSON.stringify({
         model: "openai/gpt-oss-120b",
-        messages: [{ role: "system", content: structuredSystemPrompt }, ...history, { role: "user", content: message }],
+        messages: [{ role: "system", content: systemPrompt }, ...history, { role: "user", content: message }],
         temperature: 0.7,
         max_tokens: 500,
-        response_format: { type: "json_object" },
       }),
     });
-
     if (!groqRes.ok) {
       const errText = await groqRes.text();
       throw new Error(`Groq API error (${groqRes.status}): ${errText}`);
     }
     const groqData = await groqRes.json();
-
-    let recommendations = [];
-    try {
-      const parsed = JSON.parse(groqData.choices?.[0]?.message?.content || "{}");
-      recommendations = Array.isArray(parsed.recommendations) ? parsed.recommendations : [];
-    } catch (e) {
-      console.error("Failed to parse structured AI response:", e.message);
-    }
-
-    // Look each recommended title up on TMDB so the frontend gets a
-    // real tmdb_id + poster to render as a tappable card — not just a
-    // name. A title the AI recommended but that doesn't resolve to
-    // any TMDB result (rare, but possible — e.g. a slightly garbled
-    // title) is silently dropped rather than shown as a dead card
-    // with nothing to tap into.
-    const resolved = await Promise.all(
-      recommendations.slice(0, 4).map(async (rec) => {
-        try {
-          const results = await searchShow(rec.title);
-          if (!results || results.length === 0) return null;
-          const best = results[0];
-          return {
-            tmdbId: best.id,
-            title: best.name,
-            posterPath: best.poster_path || null,
-            reason: rec.reason || "",
-          };
-        } catch (e) {
-          console.error(`TMDB lookup failed for AI recommendation "${rec.title}":`, e.message);
-          return null;
-        }
-      })
-    );
-
-    await supabase.from("ai_usage_daily").upsert(
-      { user_id: req.userId, usage_date: today, count: currentCount + 1 },
-      { onConflict: "user_id,usage_date" }
-    );
-
-    return res.json({ type: "structured", recommendations: resolved.filter(Boolean) });
+    return groqData.choices?.[0]?.message?.content || "Sorry, I couldn't come up with a suggestion right now.";
   }
 
-  const systemPrompt = `You are Scenera's TV show recommendation assistant. Give concise, specific recommendations (2-4 shows max per answer), each with a one-sentence reason tied to the user's taste. Avoid generic disclaimers or long intros — get straight to the recommendations.
+  if (isStructured) {
+    // response_format: json_object asks Groq to enforce valid JSON —
+    // but the model can still occasionally fail that validation on
+    // its own (a real Groq-side error, not a bug in our parsing), and
+    // that must never surface as a hard error to the person testing
+    // this. Any failure here — the Groq call itself, or a response
+    // that yields zero usable recommendations — falls back to the
+    // exact same free-text reply everyone else already gets, so the
+    // conversation always produces *something* useful.
+    try {
+      const structuredSystemPrompt = `You are Scenera's TV show recommendation assistant. Based on the conversation and the user's watch history below, recommend 2-4 shows tied to their taste.
+Respond ONLY with a JSON object in exactly this shape, no text outside the JSON: {"recommendations": [{"title": "Show Name", "reason": "one sentence tied to the user's taste"}]}
 
 User's completed shows: ${completedTitles.slice(0, 40).join(", ") || "none yet"}
 User's currently watching: ${watchingTitles.slice(0, 20).join(", ") || "none yet"}`;
 
-  const groqRes = await fetch("https://api.groq.com/openai/v1/chat/completions", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${process.env.GROQ_API_KEY}`,
-    },
-    body: JSON.stringify({
-      model: "openai/gpt-oss-120b",
-      messages: [{ role: "system", content: systemPrompt }, ...history, { role: "user", content: message }],
-      temperature: 0.7,
-      max_tokens: 500,
-    }),
-  });
+      const groqRes = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${process.env.GROQ_API_KEY}`,
+        },
+        body: JSON.stringify({
+          model: "openai/gpt-oss-120b",
+          messages: [{ role: "system", content: structuredSystemPrompt }, ...history, { role: "user", content: message }],
+          temperature: 0.7,
+          max_tokens: 500,
+          response_format: { type: "json_object" },
+        }),
+      });
 
-  if (!groqRes.ok) {
-    const errText = await groqRes.text();
-    throw new Error(`Groq API error (${groqRes.status}): ${errText}`);
+      if (!groqRes.ok) {
+        const errText = await groqRes.text();
+        throw new Error(`Groq API error (${groqRes.status}): ${errText}`);
+      }
+      const groqData = await groqRes.json();
+      const parsed = JSON.parse(groqData.choices?.[0]?.message?.content || "{}");
+      const recommendations = Array.isArray(parsed.recommendations) ? parsed.recommendations : [];
+
+      // Look each recommended title up on TMDB so the frontend gets a
+      // real tmdb_id + poster to render as a tappable card — not just
+      // a name. A title that doesn't resolve to any TMDB result (rare,
+      // but possible — e.g. a slightly garbled title) is silently
+      // dropped rather than shown as a dead card with nothing to tap.
+      const resolved = await Promise.all(
+        recommendations.slice(0, 4).map(async (rec) => {
+          try {
+            const results = await searchShow(rec.title);
+            if (!results || results.length === 0) return null;
+            const best = results[0];
+            return {
+              tmdbId: best.id,
+              title: best.name,
+              posterPath: best.poster_path || null,
+              reason: rec.reason || "",
+            };
+          } catch (e) {
+            console.error(`TMDB lookup failed for AI recommendation "${rec.title}":`, e.message);
+            return null;
+          }
+        })
+      );
+
+      const filtered = resolved.filter(Boolean);
+      if (filtered.length === 0) {
+        throw new Error("Structured response yielded no matchable recommendations");
+      }
+
+      await supabase.from("ai_usage_daily").upsert(
+        { user_id: req.userId, usage_date: today, count: currentCount + 1 },
+        { onConflict: "user_id,usage_date" }
+      );
+      return res.json({ type: "structured", recommendations: filtered });
+    } catch (e) {
+      console.error("Structured AI response failed, falling back to free text:", e.message);
+      Sentry.captureException(e);
+      const reply = await getFreeTextReply();
+      await supabase.from("ai_usage_daily").upsert(
+        { user_id: req.userId, usage_date: today, count: currentCount + 1 },
+        { onConflict: "user_id,usage_date" }
+      );
+      return res.json({ type: "text", reply });
+    }
   }
-  const groqData = await groqRes.json();
-  const reply = groqData.choices?.[0]?.message?.content || "Sorry, I couldn't come up with a suggestion right now.";
+
+  const reply = await getFreeTextReply();
 
   await supabase.from("ai_usage_daily").upsert(
     { user_id: req.userId, usage_date: today, count: currentCount + 1 },
