@@ -541,7 +541,18 @@ User's currently watching: ${watchingTitles.slice(0, 20).join(", ") || "none yet
 
       const filtered = resolved.filter(Boolean);
       if (filtered.length === 0) {
-        throw new Error("Structured response yielded no matchable, not-already-tracked recommendations");
+        // Not a bug — the model can legitimately end up recommending
+        // only shows that turn out to already be tracked, or titles
+        // that don't resolve on TMDB. Handled here directly (not via
+        // the catch block below) so this expected, recoverable case
+        // doesn't get reported to Sentry as if it were an error.
+        console.log("Structured AI response had no usable recommendations after filtering — falling back to free text");
+        const reply = await getFreeTextReply();
+        await supabase.from("ai_usage_daily").upsert(
+          { user_id: req.userId, usage_date: today, count: currentCount + 1 },
+          { onConflict: "user_id,usage_date" }
+        );
+        return res.json({ type: "text", reply });
       }
 
       await supabase.from("ai_usage_daily").upsert(
