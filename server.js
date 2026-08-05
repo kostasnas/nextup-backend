@@ -455,7 +455,16 @@ User's currently watching: ${watchingTitles.slice(0, 40).join(", ") || "none yet
       throw new Error(`Groq API error (${groqRes.status}): ${errText}`);
     }
     const groqData = await groqRes.json();
-    return groqData.choices?.[0]?.message?.content || "Sorry, I couldn't come up with a suggestion right now.";
+    const content = groqData.choices?.[0]?.message?.content;
+    if (!content) {
+      // This has been happening specifically when the person writes
+      // in Greek — logging the actual shape Groq returned instead of
+      // guessing why, so the next occurrence is diagnosable from
+      // Render logs rather than a repeat of "no idea why."
+      console.error("Groq returned no content. finish_reason:", groqData.choices?.[0]?.finish_reason, "full choice:", JSON.stringify(groqData.choices?.[0]));
+      Sentry.captureMessage("Groq free-text reply had empty content", { extra: { groqChoice: groqData.choices?.[0] } });
+    }
+    return content || "Sorry, I couldn't come up with a suggestion right now.";
   }
 
   if (isStructured) {
