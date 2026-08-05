@@ -447,7 +447,7 @@ User's currently watching: ${watchingTitles.slice(0, 40).join(", ") || "none yet
         model: "openai/gpt-oss-120b",
         messages: [{ role: "system", content: systemPrompt }, ...history, { role: "user", content: message }],
         temperature: 0.7,
-        max_tokens: 500,
+        max_tokens: 1500, // this model produces an internal reasoning trace before the actual reply, which can consume the whole token budget on its own for large watchlists (Sentry: finish_reason "length" with empty content, full reasoning trace)
       }),
     });
     if (!groqRes.ok) {
@@ -493,7 +493,7 @@ User's currently watching: ${watchingTitles.slice(0, 40).join(", ") || "none yet
       const structuredSystemPrompt = `You are Scenera's TV show recommendation assistant. Based on the conversation and the user's watch history below, recommend 5-6 shows tied to their taste — more than you'd normally suggest, since some may turn out to already be on the user's list and get filtered out before they're shown.
 Respond ONLY with a JSON object in exactly this shape, no text outside the JSON: {"recommendations": [{"title": "Show Name", "reason": "one sentence tied to the user's taste"}]}
 
-Do NOT recommend anything in the user's completed or currently-watching lists below — only suggest shows they haven't already tracked.
+Try to avoid the user's completed/watching lists below where it's obvious, but don't spend time meticulously cross-checking every title against them — a separate system already filters out anything already tracked before the person sees it, so a few overlaps here are fine and expected.
 
 User's completed shows: ${completedTitles.slice(0, 80).join(", ") || "none yet"}
 User's currently watching: ${watchingTitles.slice(0, 40).join(", ") || "none yet"}`;
@@ -508,7 +508,7 @@ User's currently watching: ${watchingTitles.slice(0, 40).join(", ") || "none yet
           model: "openai/gpt-oss-120b",
           messages: [{ role: "system", content: structuredSystemPrompt }, ...history, { role: "user", content: message }],
           temperature: 0.7,
-          max_tokens: 800, // was 500 — Groq was truncating mid-JSON before it could close the object, which fails json_object validation entirely (Sentry NODE-EXPRESS-6: "max completion tokens reached")
+          max_tokens: 1500, // was 500, then 800 — same root cause as the free-text path: this model's internal reasoning trace can consume the whole budget before the actual JSON content, especially for large watchlists
           response_format: { type: "json_object" },
         }),
       });
