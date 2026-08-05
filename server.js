@@ -428,6 +428,8 @@ app.post("/ai/chat", requireAuth, aiChatRateLimiter, asyncHandler(async (req, re
 
   const systemPrompt = `You are Scenera's TV show recommendation assistant. Give concise, specific recommendations (2-4 shows max per answer), each with a one-sentence reason tied to the user's taste. Avoid generic disclaimers or long intros — get straight to the recommendations.
 
+Do NOT recommend anything in the user's completed or currently-watching lists below — only suggest shows they haven't already tracked.
+
 User's completed shows: ${completedTitles.slice(0, 40).join(", ") || "none yet"}
 User's currently watching: ${watchingTitles.slice(0, 20).join(", ") || "none yet"}`;
 
@@ -466,8 +468,23 @@ User's currently watching: ${watchingTitles.slice(0, 20).join(", ") || "none yet
     // exact same free-text reply everyone else already gets, so the
     // conversation always produces *something* useful.
     try {
+      // Every show the user has EVER tracked, any status (not just
+      // completed/watching above, which were only ever meant as taste
+      // context) — used below as a deterministic backstop. The prompt
+      // instruction is a strong hint, but models can still slip, so
+      // this cross-check guarantees a show already on the user's list
+      // never gets recommended back to them, regardless of what the
+      // model actually returns.
+      const { data: trackedRows } = await supabase
+        .from("user_watchlist")
+        .select("shows(tmdb_id)")
+        .eq("user_id", req.userId);
+      const trackedTmdbIds = new Set((trackedRows || []).map((r) => r.shows?.tmdb_id).filter(Boolean));
+
       const structuredSystemPrompt = `You are Scenera's TV show recommendation assistant. Based on the conversation and the user's watch history below, recommend 2-4 shows tied to their taste.
 Respond ONLY with a JSON object in exactly this shape, no text outside the JSON: {"recommendations": [{"title": "Show Name", "reason": "one sentence tied to the user's taste"}]}
+
+Do NOT recommend anything in the user's completed or currently-watching lists below — only suggest shows they haven't already tracked.
 
 User's completed shows: ${completedTitles.slice(0, 40).join(", ") || "none yet"}
 User's currently watching: ${watchingTitles.slice(0, 20).join(", ") || "none yet"}`;
@@ -482,7 +499,7 @@ User's currently watching: ${watchingTitles.slice(0, 20).join(", ") || "none yet
           model: "openai/gpt-oss-120b",
           messages: [{ role: "system", content: structuredSystemPrompt }, ...history, { role: "user", content: message }],
           temperature: 0.7,
-          max_tokens: 500,
+          max_tokens: 800, // was 500 — Groq was truncating mid-JSON before it could close the object, which fails json_object validation entirely (Sentry NODE-EXPRESS-6: "max completion tokens reached")
           response_format: { type: "json_object" },
         }),
       });
@@ -498,14 +515,17 @@ User's currently watching: ${watchingTitles.slice(0, 20).join(", ") || "none yet
       // Look each recommended title up on TMDB so the frontend gets a
       // real tmdb_id + poster to render as a tappable card — not just
       // a name. A title that doesn't resolve to any TMDB result (rare,
-      // but possible — e.g. a slightly garbled title) is silently
-      // dropped rather than shown as a dead card with nothing to tap.
+      // but possible — e.g. a slightly garbled title), or that turns
+      // out to already be on the user's list (the backstop above),
+      // is silently dropped rather than shown as a dead or redundant
+      // card.
       const resolved = await Promise.all(
         recommendations.slice(0, 4).map(async (rec) => {
           try {
             const results = await searchShow(rec.title);
             if (!results || results.length === 0) return null;
             const best = results[0];
+            if (trackedTmdbIds.has(best.id)) return null;
             return {
               tmdbId: best.id,
               title: best.name,
@@ -521,7 +541,7 @@ User's currently watching: ${watchingTitles.slice(0, 20).join(", ") || "none yet
 
       const filtered = resolved.filter(Boolean);
       if (filtered.length === 0) {
-        throw new Error("Structured response yielded no matchable recommendations");
+        throw new Error("Structured response yielded no matchable, not-already-tracked recommendations");
       }
 
       await supabase.from("ai_usage_daily").upsert(
