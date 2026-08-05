@@ -413,7 +413,7 @@ app.post("/ai/chat", requireAuth, aiChatRateLimiter, asyncHandler(async (req, re
     .eq("user_id", req.userId)
     .in("status", ["watching", "completed"])
     .order("updated_at", { ascending: false })
-    .limit(60);
+    .limit(120);
 
   const completedTitles = (watchlist || [])
     .filter((w) => w.status === "completed")
@@ -430,8 +430,8 @@ app.post("/ai/chat", requireAuth, aiChatRateLimiter, asyncHandler(async (req, re
 
 Do NOT recommend anything in the user's completed or currently-watching lists below — only suggest shows they haven't already tracked.
 
-User's completed shows: ${completedTitles.slice(0, 40).join(", ") || "none yet"}
-User's currently watching: ${watchingTitles.slice(0, 20).join(", ") || "none yet"}`;
+User's completed shows: ${completedTitles.slice(0, 80).join(", ") || "none yet"}
+User's currently watching: ${watchingTitles.slice(0, 40).join(", ") || "none yet"}`;
 
   // Shared by both the plain-text path (everyone) and the structured
   // path's fallback (see catch block below) — one place that knows
@@ -481,13 +481,13 @@ User's currently watching: ${watchingTitles.slice(0, 20).join(", ") || "none yet
         .eq("user_id", req.userId);
       const trackedTmdbIds = new Set((trackedRows || []).map((r) => r.shows?.tmdb_id).filter(Boolean));
 
-      const structuredSystemPrompt = `You are Scenera's TV show recommendation assistant. Based on the conversation and the user's watch history below, recommend 2-4 shows tied to their taste.
+      const structuredSystemPrompt = `You are Scenera's TV show recommendation assistant. Based on the conversation and the user's watch history below, recommend 5-6 shows tied to their taste — more than you'd normally suggest, since some may turn out to already be on the user's list and get filtered out before they're shown.
 Respond ONLY with a JSON object in exactly this shape, no text outside the JSON: {"recommendations": [{"title": "Show Name", "reason": "one sentence tied to the user's taste"}]}
 
 Do NOT recommend anything in the user's completed or currently-watching lists below — only suggest shows they haven't already tracked.
 
-User's completed shows: ${completedTitles.slice(0, 40).join(", ") || "none yet"}
-User's currently watching: ${watchingTitles.slice(0, 20).join(", ") || "none yet"}`;
+User's completed shows: ${completedTitles.slice(0, 80).join(", ") || "none yet"}
+User's currently watching: ${watchingTitles.slice(0, 40).join(", ") || "none yet"}`;
 
       const groqRes = await fetch("https://api.groq.com/openai/v1/chat/completions", {
         method: "POST",
@@ -520,7 +520,7 @@ User's currently watching: ${watchingTitles.slice(0, 20).join(", ") || "none yet
       // is silently dropped rather than shown as a dead or redundant
       // card.
       const resolved = await Promise.all(
-        recommendations.slice(0, 4).map(async (rec) => {
+        recommendations.slice(0, 6).map(async (rec) => {
           try {
             const results = await searchShow(rec.title);
             if (!results || results.length === 0) return null;
@@ -539,7 +539,7 @@ User's currently watching: ${watchingTitles.slice(0, 20).join(", ") || "none yet
         })
       );
 
-      const filtered = resolved.filter(Boolean);
+      const filtered = resolved.filter(Boolean).slice(0, 5);
       if (filtered.length === 0) {
         // Not a bug — the model can legitimately end up recommending
         // only shows that turn out to already be tracked, or titles
