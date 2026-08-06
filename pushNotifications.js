@@ -268,4 +268,30 @@ async function sendDailyEngagementNudge(supabase) {
   }
 }
 
-module.exports = { sendDailyUpcomingNotifications, checkUpcomingPremieres, sendDailyEngagementNudge, ensureInitialized };
+/**
+ * Sends a push notification to a single user's device(s) — distinct
+ * from the broadcast/bulk-send functions above, which target many
+ * users at once. Used for one-to-one events like "someone sent you a
+ * friend request," where only one specific person needs to know.
+ */
+async function sendPushToUser(supabase, userId, { title, body }) {
+  ensureInitialized();
+
+  const { data: tokenRows } = await supabase.from("push_tokens").select("token").eq("user_id", userId);
+  const tokens = [...new Set((tokenRows || []).map((t) => t.token))];
+  if (tokens.length === 0) return { devicesTargeted: 0 };
+
+  try {
+    const result = await admin.messaging().sendEachForMulticast({
+      tokens,
+      notification: { title, body },
+      android: ANDROID_NOTIFICATION_STYLE,
+    });
+    return { devicesTargeted: tokens.length, successCount: result.successCount, failureCount: result.failureCount };
+  } catch (err) {
+    console.error(`Push send failed for user ${userId}:`, err.message);
+    return { devicesTargeted: tokens.length, error: err.message };
+  }
+}
+
+module.exports = { sendDailyUpcomingNotifications, checkUpcomingPremieres, sendDailyEngagementNudge, sendPushToUser, ensureInitialized };
