@@ -10,6 +10,7 @@ const { createClient } = require("@supabase/supabase-js");
 const { parseGdprExport } = require("./importParser");
 const { matchShows, searchShow } = require("./tmdbMatcher");
 const { syncShowProgress } = require("./episodeSync");
+const { sendFriendRequest, listFriends, acceptFriendRequest, declineFriendRequest, removeFriend, getFriendFavorites } = require("./friends");
 
 const app = express();
 
@@ -96,6 +97,7 @@ async function requireAuth(req, res, next) {
   if (error || !data.user) return res.status(401).json({ error: "Invalid or expired session" });
 
   req.userId = data.user.id;
+  req.userEmail = data.user.email;
   next();
 }
 
@@ -380,6 +382,50 @@ const aiChatRateLimiter = rateLimit({
 });
 
 const AI_DAILY_LIMIT = 20;
+
+// Feature flag — friend connections are being tried out live with
+// two specific accounts before rolling out to everyone. Returns 404
+// (not 403) for anyone else, so the feature is fully invisible
+// rather than visibly "forbidden" for testers who don't have it yet.
+const FRIENDS_FEATURE_EMAILS = ["knasiovas@gmail.com", "brati.arieta@gmail.com"];
+function requireFriendsFeature(req, res, next) {
+  if (!FRIENDS_FEATURE_EMAILS.includes(req.userEmail)) {
+    return res.status(404).json({ error: "Not found" });
+  }
+  next();
+}
+
+app.post("/friends/request", requireAuth, requireFriendsFeature, asyncHandler(async (req, res) => {
+  const { email } = req.body;
+  if (!email) return res.status(400).json({ error: "email is required" });
+  const result = await sendFriendRequest(supabase, req.userId, email);
+  res.json(result);
+}));
+
+app.get("/friends", requireAuth, requireFriendsFeature, asyncHandler(async (req, res) => {
+  const result = await listFriends(supabase, req.userId);
+  res.json(result);
+}));
+
+app.post("/friends/:id/accept", requireAuth, requireFriendsFeature, asyncHandler(async (req, res) => {
+  const result = await acceptFriendRequest(supabase, req.params.id, req.userId);
+  res.json(result);
+}));
+
+app.post("/friends/:id/decline", requireAuth, requireFriendsFeature, asyncHandler(async (req, res) => {
+  const result = await declineFriendRequest(supabase, req.params.id, req.userId);
+  res.json(result);
+}));
+
+app.delete("/friends/:id", requireAuth, requireFriendsFeature, asyncHandler(async (req, res) => {
+  const result = await removeFriend(supabase, req.params.id, req.userId);
+  res.json(result);
+}));
+
+app.get("/friends/:id/favorites", requireAuth, requireFriendsFeature, asyncHandler(async (req, res) => {
+  const result = await getFriendFavorites(supabase, req.params.id, req.userId);
+  res.json(result);
+}));
 
 app.post("/ai/chat", requireAuth, aiChatRateLimiter, asyncHandler(async (req, res) => {
   const { message, history = [] } = req.body;
