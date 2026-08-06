@@ -381,15 +381,6 @@ const aiChatRateLimiter = rateLimit({
 
 const AI_DAILY_LIMIT = 20;
 
-// Feature flag — gates the new structured (tappable-card) AI
-// recommendations behind a single specific account so it can be
-// tested live, on the real production backend, without any other
-// tester seeing anything different from today. Once it's confirmed
-// working well, remove this check (and the branch below) so
-// everyone gets it — this is deliberately temporary scaffolding, not
-// meant to stay long-term.
-const STRUCTURED_AI_USER_ID = "47d65eeb-e49b-4854-a5e4-64b468541886"; // knasiovas@gmail.com
-
 app.post("/ai/chat", requireAuth, aiChatRateLimiter, asyncHandler(async (req, res) => {
   const { message, history = [] } = req.body;
   if (!message) return res.status(400).json({ error: "message is required" });
@@ -423,8 +414,6 @@ app.post("/ai/chat", requireAuth, aiChatRateLimiter, asyncHandler(async (req, re
     .filter((w) => w.status === "watching")
     .map((w) => w.shows?.title)
     .filter(Boolean);
-
-  const isStructured = req.userId === STRUCTURED_AI_USER_ID;
 
   const systemPrompt = `You are Scenera's TV show recommendation assistant. Give concise, specific recommendations (2-4 shows max per answer), each with a one-sentence reason tied to the user's taste. Avoid generic disclaimers or long intros — get straight to the recommendations.
 
@@ -467,21 +456,20 @@ User's currently watching: ${watchingTitles.slice(0, 40).join(", ") || "none yet
     return content || "Sorry, I couldn't come up with a suggestion right now.";
   }
 
-  if (isStructured) {
-    // response_format: json_object asks Groq to enforce valid JSON —
-    // but the model can still occasionally fail that validation on
-    // its own (a real Groq-side error, not a bug in our parsing), and
-    // that must never surface as a hard error to the person testing
-    // this. Any failure here — the Groq call itself, or a response
-    // that yields zero usable recommendations — falls back to the
-    // exact same free-text reply everyone else already gets, so the
-    // conversation always produces *something* useful.
-    try {
-      // Every show the user has EVER tracked, any status (not just
-      // completed/watching above, which were only ever meant as taste
-      // context) — used below as a deterministic backstop. The prompt
-      // instruction is a strong hint, but models can still slip, so
-      // this cross-check guarantees a show already on the user's list
+  // response_format: json_object asks Groq to enforce valid JSON —
+  // but the model can still occasionally fail that validation on its
+  // own (a real Groq-side error, not a bug in our parsing), and that
+  // must never surface as a hard error to the person using this. Any
+  // failure here — the Groq call itself, or a response that yields
+  // zero usable recommendations — falls back to a plain-text reply
+  // (getFreeTextReply below), so the conversation always produces
+  // *something* useful.
+  try {
+    // Every show the user has EVER tracked, any status (not just
+    // completed/watching above, which were only ever meant as taste
+    // context) — used below as a deterministic backstop. The prompt
+    // instruction is a strong hint, but models can still slip, so
+    // this cross-check guarantees a show already on the user's list
       // never gets recommended back to them, regardless of what the
       // model actually returns.
       const { data: trackedRows } = await supabase
@@ -579,16 +567,6 @@ User's currently watching: ${watchingTitles.slice(0, 40).join(", ") || "none yet
       );
       return res.json({ type: "text", reply });
     }
-  }
-
-  const reply = await getFreeTextReply();
-
-  await supabase.from("ai_usage_daily").upsert(
-    { user_id: req.userId, usage_date: today, count: currentCount + 1 },
-    { onConflict: "user_id,usage_date" }
-  );
-
-  res.json({ type: "text", reply });
 }));
 
 const { sendDailyUpcomingNotifications, checkUpcomingPremieres, sendDailyEngagementNudge } = require("./pushNotifications");
