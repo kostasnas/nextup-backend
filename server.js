@@ -9,7 +9,7 @@ const rateLimit = require("express-rate-limit");
 const { createClient } = require("@supabase/supabase-js");
 const { parseGdprExport } = require("./importParser");
 const { matchShows, searchShow } = require("./tmdbMatcher");
-const { syncShowProgress } = require("./episodeSync");
+const { syncShowProgress, fetchAllEpisodes, cacheEpisodes } = require("./episodeSync");
 const { sendFriendRequest, listFriends, acceptFriendRequest, declineFriendRequest, removeFriend, getFriendFavorites } = require("./friends");
 
 const app = express();
@@ -394,6 +394,42 @@ function requireFriendsFeature(req, res, next) {
   }
   next();
 }
+
+// Gives the frontend everything it needs to detect a "gap" in
+// watched episodes across ALL seasons at once — the show detail
+// screen otherwise only ever knows about the single season currently
+// being viewed, which isn't enough to notice "you marked episode 5
+// but never marked 1-4" if those earlier episodes are in a season
+// the person never opened this visit. Reuses the same
+// fetchAllEpisodes/cacheEpisodes pipeline the import already relies
+// on, rather than duplicating that TMDB-fetching logic here.
+app.get("/shows/:tmdbId/full-progress", requireAuth, asyncHandler(async (req, res) => {
+  const tmdbId = req.params.tmdbId;
+
+  const { data: showRow } = await supabase.from("shows").select("id").eq("tmdb_id", tmdbId).single();
+  if (!showRow) {
+    // Not tracked at all yet — nothing could possibly be marked
+    // watched, so there's no gap to detect. (In practice the frontend
+    // only calls this once a show is already tracked, since that's
+    // the only way to mark an episode watched in the first place.)
+    return res.json({ episodes: [], watchedEpisodeIds: [], showStatus: null });
+  }
+
+  const { episodes, showStatus } = await fetchAllEpisodes(tmdbId);
+  const cached = await cacheEpisodes(supabase, showRow.id, episodes);
+
+  const { data: watchedRows } = await supabase
+    .from("watched_episodes")
+    .select("episode_id")
+    .eq("user_id", req.userId)
+    .in("episode_id", cached.map((e) => e.id));
+
+  res.json({
+    episodes: cached.map((e) => ({ id: e.id, season_number: e.season_number, episode_number: e.episode_number })),
+    watchedEpisodeIds: (watchedRows || []).map((w) => w.episode_id),
+    showStatus,
+  });
+}));
 
 app.post("/friends/request", requireAuth, requireFriendsFeature, asyncHandler(async (req, res) => {
   const { email } = req.body;
