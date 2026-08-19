@@ -438,6 +438,44 @@ app.post("/friends/request", requireAuth, requireFriendsFeature, asyncHandler(as
   res.json(result);
 }));
 
+// Real, in-app account deletion — required by Google Play policy
+// alongside the web-based deletion link already in delete-account.html
+// (that page stays as the fallback for someone who's already
+// uninstalled the app). Deletes every row this account owns first —
+// regardless of whether foreign keys cascade automatically — then
+// deletes the auth.users row itself last, so nothing is ever left
+// pointing at a user_id that no longer exists.
+app.delete("/account", requireAuth, asyncHandler(async (req, res) => {
+  const userId = req.userId;
+
+  await supabase.from("watched_episodes").delete().eq("user_id", userId);
+  await supabase.from("user_watchlist").delete().eq("user_id", userId);
+  await supabase.from("ai_usage_daily").delete().eq("user_id", userId);
+  await supabase.from("push_tokens").delete().eq("user_id", userId);
+  await supabase.from("friend_connections").delete().or(`requester_id.eq.${userId},recipient_id.eq.${userId}`);
+
+  // Best-effort — import history and the avatar file aren't core
+  // personal-identity data once disconnected from the account, so a
+  // failure here shouldn't block the actual account deletion below.
+  try {
+    await supabase.from("import_jobs").delete().eq("user_id", userId);
+  } catch (e) {
+    console.error(`Import history cleanup failed for ${userId} (non-fatal):`, e.message);
+  }
+  try {
+    await supabase.storage.from("avatars").remove([
+      `${userId}/avatar.jpg`, `${userId}/avatar.jpeg`, `${userId}/avatar.png`, `${userId}/avatar.webp`,
+    ]);
+  } catch (e) {
+    console.error(`Avatar cleanup failed for ${userId} (non-fatal):`, e.message);
+  }
+
+  const { error } = await supabase.auth.admin.deleteUser(userId);
+  if (error) throw error;
+
+  res.json({ ok: true });
+}));
+
 app.get("/friends", requireAuth, requireFriendsFeature, asyncHandler(async (req, res) => {
   const result = await listFriends(supabase, req.userId);
   res.json(result);
