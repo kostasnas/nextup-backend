@@ -508,13 +508,15 @@ app.post("/ai/chat", requireAuth, aiChatRateLimiter, asyncHandler(async (req, re
   const today = new Date().toISOString().slice(0, 10);
   const { data: usage } = await supabase
     .from("ai_usage_daily")
-    .select("count")
+    .select("count, bonus_messages")
     .eq("user_id", req.userId)
     .eq("usage_date", today)
     .single();
   const currentCount = usage?.count || 0;
+  // Extra allowance earned by watching a rewarded ad — see POST /ai/bonus.
+  const bonusMessages = usage?.bonus_messages || 0;
 
-  if (currentCount >= AI_DAILY_LIMIT) {
+  if (currentCount >= AI_DAILY_LIMIT + bonusMessages) {
     return res.status(429).json({ error: "You've reached today's AI chat limit. Try again tomorrow." });
   }
 
@@ -687,6 +689,32 @@ User's currently watching: ${watchingTitles.slice(0, 40).join(", ") || "none yet
       );
       return res.json({ type: "text", reply });
     }
+}));
+
+// Called after the client confirms a rewarded ad was watched to
+// completion (AdMob's Rewarded event). Capped at one grant per
+// calendar day per user so someone can't just keep replaying ads for
+// unlimited free AI chat — this is the same trade-off apps that offer
+// "watch an ad for a bonus" always make.
+const AI_BONUS_MESSAGES = 3;
+app.post("/ai/bonus", requireAuth, asyncHandler(async (req, res) => {
+  const today = new Date().toISOString().slice(0, 10);
+  const { data: usage } = await supabase
+    .from("ai_usage_daily")
+    .select("count, bonus_messages")
+    .eq("user_id", req.userId)
+    .eq("usage_date", today)
+    .single();
+
+  if ((usage?.bonus_messages || 0) > 0) {
+    return res.status(429).json({ error: "You've already claimed today's bonus messages." });
+  }
+
+  const payload = { user_id: req.userId, usage_date: today, bonus_messages: AI_BONUS_MESSAGES };
+  if (!usage) payload.count = 0;
+  await supabase.from("ai_usage_daily").upsert(payload, { onConflict: "user_id,usage_date" });
+
+  res.json({ ok: true, bonusMessages: AI_BONUS_MESSAGES });
 }));
 
 const { sendDailyUpcomingNotifications, checkUpcomingPremieres, sendDailyEngagementNudge } = require("./pushNotifications");
