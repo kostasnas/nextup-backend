@@ -383,6 +383,35 @@ const aiChatRateLimiter = rateLimit({
 
 const AI_DAILY_LIMIT = 20;
 
+// Must exactly match the entitlement identifier configured in the
+// RevenueCat dashboard ("Scenera Pro").
+const REVENUECAT_ENTITLEMENT_ID = "Scenera Pro";
+const REVENUECAT_SECRET_KEY = process.env.REVENUECAT_SECRET_KEY;
+
+// Asks RevenueCat directly whether this user currently holds an
+// active "Scenera Pro" entitlement — the RevenueCat app_user_id is
+// always the same as our own Supabase user id (see how the SDK is
+// configured on the frontend), so no extra mapping is needed.
+// Fails closed (treats errors as "not Pro") rather than open, since
+// the failure mode of under-granting Pro is a minor inconvenience,
+// while over-granting it would mean unlimited free AI usage.
+async function isUserPro(userId) {
+  try {
+    const res = await fetch(`https://api.revenuecat.com/v1/subscribers/${userId}`, {
+      headers: { Authorization: `Bearer ${REVENUECAT_SECRET_KEY}` },
+    });
+    if (!res.ok) return false;
+    const data = await res.json();
+    const entitlement = data.subscriber?.entitlements?.[REVENUECAT_ENTITLEMENT_ID];
+    if (!entitlement) return false;
+    if (!entitlement.expires_date) return true; // non-expiring entitlement
+    return new Date(entitlement.expires_date) > new Date();
+  } catch (e) {
+    console.error("RevenueCat Pro check failed:", e.message);
+    return false;
+  }
+}
+
 // Feature flag — friend connections are being tried out live with
 // two specific accounts before rolling out to everyone. Returns 404
 // (not 403) for anyone else, so the feature is fully invisible
@@ -515,8 +544,9 @@ app.post("/ai/chat", requireAuth, aiChatRateLimiter, asyncHandler(async (req, re
   const currentCount = usage?.count || 0;
   // Extra allowance earned by watching a rewarded ad — see POST /ai/bonus.
   const bonusMessages = usage?.bonus_messages || 0;
+  const pro = await isUserPro(req.userId);
 
-  if (currentCount >= AI_DAILY_LIMIT + bonusMessages) {
+  if (!pro && currentCount >= AI_DAILY_LIMIT + bonusMessages) {
     return res.status(429).json({ error: "You've reached today's AI chat limit. Try again tomorrow." });
   }
 
