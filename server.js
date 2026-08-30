@@ -384,8 +384,9 @@ const aiChatRateLimiter = rateLimit({
 const AI_DAILY_LIMIT = 20;
 
 // Must exactly match the entitlement identifier configured in the
-// RevenueCat dashboard ("Scenera Pro").
-const REVENUECAT_ENTITLEMENT_ID = "Scenera Pro";
+// Must exactly match the entitlement IDENTIFIER configured in the
+// RevenueCat dashboard — "scenera_pro" (not the display name "Scenera Pro").
+const REVENUECAT_ENTITLEMENT_ID = "scenera_pro";
 const REVENUECAT_SECRET_KEY = process.env.REVENUECAT_SECRET_KEY;
 
 // Asks RevenueCat directly whether this user currently holds an
