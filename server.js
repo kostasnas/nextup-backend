@@ -413,14 +413,13 @@ async function isUserPro(userId) {
   }
 }
 
-// Feature flag — friend connections are being tried out live with
-// two specific accounts before rolling out to everyone. Returns 404
-// (not 403) for anyone else, so the feature is fully invisible
-// rather than visibly "forbidden" for testers who don't have it yet.
-const FRIENDS_FEATURE_EMAILS = ["knasiovas@gmail.com", "brati.arieta@gmail.com"];
-function requireFriendsFeature(req, res, next) {
-  if (!FRIENDS_FEATURE_EMAILS.includes(req.userEmail)) {
-    return res.status(404).json({ error: "Not found" });
+// Friends is a Pro perk. Returns 403 (not 404) for non-Pro users —
+// unlike the old email-allowlist version, the feature is now meant to
+// be visible-but-locked in the UI (an upsell), not hidden entirely.
+async function requireFriendsFeature(req, res, next) {
+  const pro = await isUserPro(req.userId);
+  if (!pro) {
+    return res.status(403).json({ error: "Friends requires Scenera Pro." });
   }
   next();
 }
