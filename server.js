@@ -547,7 +547,10 @@ app.post("/ai/chat", requireAuth, aiChatRateLimiter, asyncHandler(async (req, re
   const pro = await isUserPro(req.userId);
 
   if (!pro && currentCount >= AI_DAILY_LIMIT + bonusMessages) {
-    return res.status(429).json({ error: "You've reached today's AI chat limit. Try again tomorrow." });
+    return res.status(429).json({
+      error: "You've reached today's AI chat limit. Try again tomorrow.",
+      bonusAvailable: bonusMessages === 0,
+    });
   }
 
   const { data: watchlist } = await supabase
