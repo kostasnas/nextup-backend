@@ -505,22 +505,22 @@ app.delete("/account", requireAuth, asyncHandler(async (req, res) => {
   res.json({ ok: true });
 }));
 
-app.get("/friends", requireAuth, requireFriendsFeature, asyncHandler(async (req, res) => {
+app.get("/friends", requireAuth, asyncHandler(async (req, res) => {
   const result = await listFriends(supabase, req.userId);
   res.json(result);
 }));
 
-app.post("/friends/:id/accept", requireAuth, requireFriendsFeature, asyncHandler(async (req, res) => {
+app.post("/friends/:id/accept", requireAuth, asyncHandler(async (req, res) => {
   const result = await acceptFriendRequest(supabase, req.params.id, req.userId);
   res.json(result);
 }));
 
-app.post("/friends/:id/decline", requireAuth, requireFriendsFeature, asyncHandler(async (req, res) => {
+app.post("/friends/:id/decline", requireAuth, asyncHandler(async (req, res) => {
   const result = await declineFriendRequest(supabase, req.params.id, req.userId);
   res.json(result);
 }));
 
-app.delete("/friends/:id", requireAuth, requireFriendsFeature, asyncHandler(async (req, res) => {
+app.delete("/friends/:id", requireAuth, asyncHandler(async (req, res) => {
   const result = await removeFriend(supabase, req.params.id, req.userId);
   res.json(result);
 }));
