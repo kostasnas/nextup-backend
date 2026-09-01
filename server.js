@@ -381,7 +381,7 @@ const aiChatRateLimiter = rateLimit({
   message: { error: "Too many requests — please slow down and try again in a minute." },
 });
 
-const AI_DAILY_LIMIT = 20;
+const AI_DAILY_LIMIT = 5;
 
 // Must exactly match the entitlement identifier configured in the
 // Must exactly match the entitlement IDENTIFIER configured in the
