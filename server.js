@@ -6,6 +6,7 @@ const cors = require("cors");
 const multer = require("multer");
 const AdmZip = require("adm-zip");
 const rateLimit = require("express-rate-limit");
+const helmet = require("helmet");
 const { createClient } = require("@supabase/supabase-js");
 const { parseGdprExport } = require("./importParser");
 const { matchShows, searchShow } = require("./tmdbMatcher");
@@ -36,6 +37,19 @@ process.on("unhandledRejection", (reason) => {
 // "1" trusts only the immediate proxy hop (Render itself), not an
 // arbitrary chain of forwarded headers.
 app.set("trust proxy", 1);
+app.use(helmet());
+
+// Catches abuse/flooding across every endpoint, not just AI chat —
+// generous enough that no real user should ever hit it in normal use.
+// The stricter aiChatRateLimiter below still applies on top of this
+// for that one specifically expensive route.
+app.use(rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 300,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: "Too many requests — please slow down and try again later." },
+}));
 // Capacitor's Android WebView (no custom hostname/androidScheme set
 // in capacitor.config.json) loads the app from https://localhost, so
 // that's the Origin header every real request from the app carries.
