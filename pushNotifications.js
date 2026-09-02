@@ -247,7 +247,18 @@ const ENGAGEMENT_MESSAGES = [
 
 async function sendDailyEngagementNudge(supabase) {
   ensureInitialized();
-  const { data: tokenRows, error } = await supabase.from("push_tokens").select("token");
+
+  // Only nudge people who genuinely seem to have drifted away — not
+  // everyone, every day. A token's updated_at refreshes every time the
+  // app opens (see App.jsx's push registration effect), so "hasn't
+  // updated in N days" is a reliable stand-in for "hasn't opened the
+  // app in N days."
+  const INACTIVE_AFTER_DAYS = 5;
+  const cutoff = new Date(Date.now() - INACTIVE_AFTER_DAYS * 24 * 60 * 60 * 1000).toISOString();
+  const { data: tokenRows, error } = await supabase
+    .from("push_tokens")
+    .select("token")
+    .lt("updated_at", cutoff);
   if (error) throw error;
 
   const tokens = [...new Set((tokenRows || []).map((t) => t.token))];
