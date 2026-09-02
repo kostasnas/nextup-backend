@@ -115,8 +115,20 @@ async function requireAuth(req, res, next) {
   next();
 }
 
-app.get("/", (req, res) => {
-  res.json({ status: "ok", service: "nextup-backend" });
+app.get("/", async (req, res) => {
+  // Touches the database on every health check — this is also what
+  // keeps the free-tier Supabase project from auto-pausing after 7
+  // days with no activity (the old static "ok" response never
+  // touched it at all). A DB hiccup here doesn't fail the health
+  // check itself — the server process is still genuinely up — but
+  // it's logged so it's visible if it keeps happening.
+  try {
+    await supabase.from("shows").select("id").limit(1);
+    res.json({ status: "ok", service: "nextup-backend" });
+  } catch (e) {
+    console.error("Health check DB ping failed:", e.message);
+    res.json({ status: "ok", service: "nextup-backend", db: "unreachable" });
+  }
 });
 
 const { getWatchProviders, getTopShows, getTrending, getGenres } = require("./discover");
