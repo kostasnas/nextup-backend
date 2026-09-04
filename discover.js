@@ -54,6 +54,35 @@ async function getWatchProviders(region = "US") {
 }
 
 /**
+ * Where a SPECIFIC show can be watched (via subscription) in a given
+ * region — for the "Where to watch" section on Show Detail. Purely
+ * informational, no affiliate links. Different from getWatchProviders
+ * above, which lists ALL providers available in a region for
+ * Explore's filter chips — this asks about one particular show.
+ */
+async function getShowWatchProviders(showId, region = "US") {
+  const cacheKey = `showproviders:${showId}:${region}`;
+  const cached = getCached(cacheKey);
+  if (cached) return cached;
+
+  const data = await tmdbGet(`/tv/${showId}/watch/providers`);
+  const regionData = data.results?.[region];
+
+  // flatrate = subscription streaming, which is what "where can I
+  // watch this" usually means. Deliberately excludes rent/buy-only
+  // listings, so this never implies something is on a subscription
+  // when it's actually pay-per-view.
+  const providers = (regionData?.flatrate || []).map((p) => ({
+    id: p.provider_id,
+    name: p.provider_name,
+    logoPath: p.logo_path,
+  }));
+
+  setCached(cacheKey, providers);
+  return providers;
+}
+
+/**
  * "Top shows" for a region, optionally filtered to a specific
  * streaming provider. watch_monetization_type=flatrate excludes
  * rent/buy-only titles — otherwise a "Netflix" filter could surface
@@ -107,4 +136,4 @@ async function getGenres() {
   return genres;
 }
 
-module.exports = { getWatchProviders, getTopShows, getTrending, getGenres };
+module.exports = { getWatchProviders, getShowWatchProviders, getTopShows, getTrending, getGenres };
