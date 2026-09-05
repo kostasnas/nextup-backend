@@ -290,7 +290,7 @@ async function sendDailyEngagementNudge(supabase) {
  * users at once. Used for one-to-one events like "someone sent you a
  * friend request," where only one specific person needs to know.
  */
-async function sendPushToUser(supabase, userId, { title, body }) {
+async function sendPushToUser(supabase, userId, { title, body, imageUrl }) {
   ensureInitialized();
 
   const { data: tokenRows } = await supabase.from("push_tokens").select("token").eq("user_id", userId);
@@ -300,7 +300,7 @@ async function sendPushToUser(supabase, userId, { title, body }) {
   try {
     const result = await admin.messaging().sendEachForMulticast({
       tokens,
-      notification: { title, body },
+      notification: { title, body, imageUrl },
       android: ANDROID_NOTIFICATION_STYLE,
     });
     return { devicesTargeted: tokens.length, successCount: result.successCount, failureCount: result.failureCount };
