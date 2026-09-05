@@ -785,7 +785,7 @@ app.post("/ai/bonus", requireAuth, asyncHandler(async (req, res) => {
   res.json({ ok: true, bonusMessages: AI_BONUS_MESSAGES });
 }));
 
-const { sendDailyUpcomingNotifications, checkUpcomingPremieres, sendDailyEngagementNudge } = require("./pushNotifications");
+const { sendDailyUpcomingNotifications, checkUpcomingPremieres, sendDailyEngagementNudge, sendPushToUser } = require("./pushNotifications");
 const { reconcileWatchingStatuses } = require("./statusReconciliation");
 
 // Triggers the full daily maintenance sweep:
@@ -856,6 +856,23 @@ app.post("/admin/broadcast", asyncHandler(async (req, res) => {
     return res.status(401).json({ error: "Unauthorized" });
   }
   const result = await sendBroadcastNotification(supabase, req.body);
+  res.json(result);
+}));
+
+// Sends a custom, one-off push notification to ONE specific user —
+// useful for manual/demo purposes (e.g. testing what a notification
+// looks like) without waiting for the automatic daily jobs above.
+// Body: { "userId": "...", "title": "...", "body": "...", "imageUrl": "..." (optional) }
+app.post("/admin/send-to-user", asyncHandler(async (req, res) => {
+  const providedSecret = req.headers["x-cron-secret"];
+  if (!process.env.CRON_SECRET || providedSecret !== process.env.CRON_SECRET) {
+    return res.status(401).json({ error: "Unauthorized" });
+  }
+  const { userId, title, body, imageUrl } = req.body;
+  if (!userId || !title || !body) {
+    return res.status(400).json({ error: "userId, title, and body are required" });
+  }
+  const result = await sendPushToUser(supabase, userId, { title, body, imageUrl });
   res.json(result);
 }));
 
