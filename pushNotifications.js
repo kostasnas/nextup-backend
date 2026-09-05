@@ -51,7 +51,7 @@ async function sendDailyUpcomingNotifications(supabase) {
     .from("episodes")
     .select(`
       id, season_number, episode_number, air_date,
-      shows!inner(id, title,
+      shows!inner(id, title, poster_path,
         user_watchlist!inner(user_id, status)
       )
     `)
@@ -70,12 +70,12 @@ async function sendDailyUpcomingNotifications(supabase) {
     .in("episode_id", episodeIds);
   const watchedSet = new Set((alreadyWatched || []).map((w) => `${w.user_id}:${w.episode_id}`));
 
-  const byUser = new Map(); // user_id -> [show titles]
+  const byUser = new Map(); // user_id -> Map(title -> poster_path)
   for (const row of rows) {
     for (const wl of row.shows.user_watchlist) {
       if (watchedSet.has(`${wl.user_id}:${row.id}`)) continue;
-      if (!byUser.has(wl.user_id)) byUser.set(wl.user_id, new Set());
-      byUser.get(wl.user_id).add(row.shows.title);
+      if (!byUser.has(wl.user_id)) byUser.set(wl.user_id, new Map());
+      byUser.get(wl.user_id).set(row.shows.title, row.shows.poster_path);
     }
   }
 
@@ -91,19 +91,23 @@ async function sendDailyUpcomingNotifications(supabase) {
   }
 
   let notifiedUsers = 0;
-  for (const [userId, titlesSet] of byUser.entries()) {
+  for (const [userId, titleMap] of byUser.entries()) {
     const tokens = tokensByUser.get(userId);
     if (!tokens || tokens.length === 0) continue; // no device registered — nothing to send to
 
-    const titles = Array.from(titlesSet);
+    const titles = Array.from(titleMap.keys());
     const body = titles.length === 1
       ? `A new episode of ${titles[0]} is out.`
       : `New episodes are out for ${titles.length} of your shows.`;
+    // Only a single-show notification has one unambiguous poster to
+    // show — with several shows there's no single sensible image.
+    const posterPath = titles.length === 1 ? titleMap.get(titles[0]) : null;
+    const image = posterPath ? `https://image.tmdb.org/t/p/w500${posterPath}` : undefined;
 
     try {
       await admin.messaging().sendEachForMulticast({
         tokens,
-        notification: { title: "New episode ready to watch", body },
+        notification: { title: "New episode ready to watch", body, imageUrl: image },
         android: ANDROID_NOTIFICATION_STYLE,
       });
       notifiedUsers++;
@@ -210,6 +214,7 @@ async function checkUpcomingPremieres(supabase) {
     const body = daysUntil === 0
       ? `${show.title} premieres today!`
       : `${show.title} premieres in ${daysUntil} day${daysUntil === 1 ? "" : "s"}.`;
+    const image = show.poster_path ? `https://image.tmdb.org/t/p/w500${show.poster_path}` : undefined;
 
     for (const userId of userIds) {
       const tokens = tokensByUser.get(userId);
@@ -217,7 +222,7 @@ async function checkUpcomingPremieres(supabase) {
       try {
         await admin.messaging().sendEachForMulticast({
           tokens,
-          notification: { title: "New season coming up", body },
+          notification: { title: "New season coming up", body, imageUrl: image },
           android: ANDROID_NOTIFICATION_STYLE,
         });
         usersNotified++;
