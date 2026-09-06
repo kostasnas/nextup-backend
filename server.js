@@ -467,6 +467,44 @@ async function requireFriendsFeature(req, res, next) {
 // the person never opened this visit. Reuses the same
 // fetchAllEpisodes/cacheEpisodes pipeline the import already relies
 // on, rather than duplicating that TMDB-fetching logic here.
+// Powers the Android home-screen widget — the single soonest-upcoming
+// unwatched episode across everything the user is tracking. Kept to
+// exactly one item for a clean, simple V1 widget rather than a list.
+app.get("/widget/next-up", requireAuth, asyncHandler(async (req, res) => {
+  const today = new Date().toISOString().slice(0, 10);
+
+  const { data: watched } = await supabase
+    .from("watched_episodes")
+    .select("episode_id")
+    .eq("user_id", req.userId);
+  const watchedIds = new Set((watched || []).map((w) => w.episode_id));
+
+  const { data: rows, error } = await supabase
+    .from("episodes")
+    .select(`
+      id, air_date,
+      shows!inner(title, poster_path,
+        user_watchlist!inner(user_id, status)
+      )
+    `)
+    .gte("air_date", today)
+    .eq("shows.user_watchlist.user_id", req.userId)
+    .in("shows.user_watchlist.status", ["watching", "up_to_date"])
+    .order("air_date", { ascending: true })
+    .limit(20); // small buffer since we still filter already-watched ones below
+  if (error) throw error;
+
+  const next = (rows || []).find((r) => !watchedIds.has(r.id));
+  if (!next) return res.json({ hasNext: false });
+
+  res.json({
+    hasNext: true,
+    title: next.shows.title,
+    airDate: next.air_date,
+    posterPath: next.shows.poster_path,
+  });
+}));
+
 app.get("/shows/:tmdbId/full-progress", requireAuth, asyncHandler(async (req, res) => {
   const tmdbId = req.params.tmdbId;
 
