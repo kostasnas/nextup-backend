@@ -78,4 +78,32 @@ async function getMessages(supabase, connectionId, userId) {
   return messages || [];
 }
 
-module.exports = { sendMessage, getMessages };
+/**
+ * Deletes a message — only the person who sent it can delete it, and
+ * it's removed for both people in the conversation (no "delete for
+ * me only" in this first version).
+ */
+async function deleteMessage(supabase, messageId, userId) {
+  const { data: message, error } = await supabase
+    .from("messages")
+    .select("sender_id")
+    .eq("id", messageId)
+    .single();
+  if (error || !message) {
+    const e = new Error("Message not found");
+    e.status = 404;
+    throw e;
+  }
+  if (message.sender_id !== userId) {
+    const e = new Error("You can only delete your own messages");
+    e.status = 403;
+    throw e;
+  }
+
+  const { error: deleteError } = await supabase.from("messages").delete().eq("id", messageId);
+  if (deleteError) throw deleteError;
+
+  return { ok: true };
+}
+
+module.exports = { sendMessage, getMessages, deleteMessage };
