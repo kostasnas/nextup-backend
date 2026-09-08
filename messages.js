@@ -36,12 +36,13 @@ async function sendMessage(supabase, connectionId, senderId, content) {
   const recipientId = connection.requester_id === senderId ? connection.recipient_id : connection.requester_id;
   const sender = await getUserDisplayInfo(senderId);
   const senderName = sender?.display_name || sender?.email || "Someone";
-  await sendPushToUser(supabase, recipientId, {
+  const pushResult = await sendPushToUser(supabase, recipientId, {
     title: senderName,
     body: content.length > 100 ? content.slice(0, 100) + "…" : content,
   });
 
-  return message;
+  // TEMPORARY DEBUG — surface what actually happened, remove once diagnosed
+  return { ...message, _debugPushResult: pushResult, _debugRecipientId: recipientId };
 }
 
 /**
