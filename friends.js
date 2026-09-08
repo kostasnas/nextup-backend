@@ -6,19 +6,19 @@
 // easier to get right — and to audit later — as a small set of
 // explicit endpoints than as RLS policies trying to encode "only if
 // accepted, only their favorites, never anyone else's."
-const { findUserByEmail, getUserDisplayInfo } = require("./db");
+const { getUserDisplayInfo } = require("./db");
 const { sendPushToUser } = require("./pushNotifications");
 
 /**
- * Sends a friend request by email. Deliberately returns the exact
- * same { ok: true } response whether or not an account with that
- * email exists, whether it's the person's own email, or whether a
- * connection already exists between the two — never revealing which
- * emails have accounts is more important here than telling the
- * sender exactly what happened.
+ * Sends a friend request to an already-resolved target user (looked
+ * up by the caller, via either email or username). Deliberately
+ * returns the exact same { ok: true } response whether or not a
+ * matching account exists, whether it's the person's own account, or
+ * whether a connection already exists between the two — never
+ * revealing which emails/usernames have accounts is more important
+ * here than telling the sender exactly what happened.
  */
-async function sendFriendRequest(supabase, requesterId, email) {
-  const target = await findUserByEmail(email);
+async function sendFriendRequest(supabase, requesterId, target) {
   if (!target || target.id === requesterId) {
     return { ok: true };
   }
