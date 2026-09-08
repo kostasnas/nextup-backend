@@ -28,6 +28,18 @@ async function findUserByEmail(email) {
   return rows[0] || null;
 }
 
+async function findUserByUsername(username) {
+  const { rows } = await getPool().query(
+    `select au.id, au.email
+     from user_profiles up
+     join auth.users au on au.id = up.user_id
+     where lower(up.username) = lower($1)
+     limit 1`,
+    [username]
+  );
+  return rows[0] || null;
+}
+
 async function getUserDisplayInfo(userId) {
   const { rows } = await getPool().query(
     `select id, email,
@@ -39,4 +51,4 @@ async function getUserDisplayInfo(userId) {
   return rows[0] || null;
 }
 
-module.exports = { getPool, findUserByEmail, getUserDisplayInfo };
+module.exports = { getPool, findUserByEmail, findUserByUsername, getUserDisplayInfo };
