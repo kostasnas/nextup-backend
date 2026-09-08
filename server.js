@@ -12,6 +12,7 @@ const { parseGdprExport } = require("./importParser");
 const { matchShows, searchShow } = require("./tmdbMatcher");
 const { syncShowProgress, fetchAllEpisodes, cacheEpisodes } = require("./episodeSync");
 const { sendFriendRequest, listFriends, acceptFriendRequest, declineFriendRequest, removeFriend, getFriendFavorites } = require("./friends");
+const { findUserByEmail, findUserByUsername } = require("./db");
 
 const app = express();
 
@@ -534,10 +535,38 @@ app.get("/shows/:tmdbId/full-progress", requireAuth, asyncHandler(async (req, re
 }));
 
 app.post("/friends/request", requireAuth, requireFriendsFeature, asyncHandler(async (req, res) => {
-  const { email } = req.body;
-  if (!email) return res.status(400).json({ error: "email is required" });
-  const result = await sendFriendRequest(supabase, req.userId, email);
+  const { email, username } = req.body;
+  if (!email && !username) return res.status(400).json({ error: "email or username is required" });
+  const target = username ? await findUserByUsername(username) : await findUserByEmail(email);
+  const result = await sendFriendRequest(supabase, req.userId, target);
   res.json(result);
+}));
+
+// Lets a user pick their own username — used so people can be added
+// as a friend without ever sharing their email (e.g. inviting a
+// whole online community to "search my username and add me").
+// Case-insensitive uniqueness is enforced at the DB level; a 23505
+// (unique violation) here means it's already taken.
+app.post("/profile/username", requireAuth, asyncHandler(async (req, res) => {
+  const { username } = req.body;
+  if (!username || !/^[a-zA-Z0-9_]{3,20}$/.test(username)) {
+    return res.status(400).json({ error: "Username must be 3-20 characters — letters, numbers, and underscores only." });
+  }
+  const { error } = await supabase
+    .from("user_profiles")
+    .upsert({ user_id: req.userId, username }, { onConflict: "user_id" });
+  if (error) {
+    if (error.code === "23505") {
+      return res.status(409).json({ error: "That username is already taken." });
+    }
+    throw error;
+  }
+  res.json({ ok: true, username });
+}));
+
+app.get("/profile/username", requireAuth, asyncHandler(async (req, res) => {
+  const { data } = await supabase.from("user_profiles").select("username").eq("user_id", req.userId).maybeSingle();
+  res.json({ username: data?.username || null });
 }));
 
 // Real, in-app account deletion — required by Google Play policy
