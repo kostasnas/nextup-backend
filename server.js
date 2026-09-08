@@ -12,6 +12,7 @@ const { parseGdprExport } = require("./importParser");
 const { matchShows, searchShow } = require("./tmdbMatcher");
 const { syncShowProgress, fetchAllEpisodes, cacheEpisodes } = require("./episodeSync");
 const { sendFriendRequest, listFriends, acceptFriendRequest, declineFriendRequest, removeFriend, getFriendFavorites } = require("./friends");
+const { sendMessage, getMessages } = require("./messages");
 const { findUserByEmail, findUserByUsername } = require("./db");
 
 const app = express();
@@ -629,6 +630,21 @@ app.delete("/friends/:id", requireAuth, asyncHandler(async (req, res) => {
 
 app.get("/friends/:id/favorites", requireAuth, requireFriendsFeature, asyncHandler(async (req, res) => {
   const result = await getFriendFavorites(supabase, req.params.id, req.userId);
+  res.json(result);
+}));
+
+// Messaging between already-accepted friends is free, same tier as
+// viewing/managing the friends list — only sending NEW requests and
+// viewing favorites are the Pro-gated parts of this feature.
+app.get("/friends/:id/messages", requireAuth, asyncHandler(async (req, res) => {
+  const result = await getMessages(supabase, req.params.id, req.userId);
+  res.json(result);
+}));
+
+app.post("/friends/:id/messages", requireAuth, asyncHandler(async (req, res) => {
+  const { content } = req.body;
+  if (!content || !content.trim()) return res.status(400).json({ error: "content is required" });
+  const result = await sendMessage(supabase, req.params.id, req.userId, content.trim());
   res.json(result);
 }));
 
