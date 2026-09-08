@@ -12,7 +12,7 @@ const { parseGdprExport } = require("./importParser");
 const { matchShows, searchShow } = require("./tmdbMatcher");
 const { syncShowProgress, fetchAllEpisodes, cacheEpisodes } = require("./episodeSync");
 const { sendFriendRequest, listFriends, acceptFriendRequest, declineFriendRequest, removeFriend, getFriendFavorites } = require("./friends");
-const { sendMessage, getMessages } = require("./messages");
+const { sendMessage, getMessages, deleteMessage } = require("./messages");
 const { findUserByEmail, findUserByUsername } = require("./db");
 
 const app = express();
@@ -645,6 +645,11 @@ app.post("/friends/:id/messages", requireAuth, asyncHandler(async (req, res) => 
   const { content } = req.body;
   if (!content || !content.trim()) return res.status(400).json({ error: "content is required" });
   const result = await sendMessage(supabase, req.params.id, req.userId, content.trim());
+  res.json(result);
+}));
+
+app.delete("/messages/:id", requireAuth, asyncHandler(async (req, res) => {
+  const result = await deleteMessage(supabase, req.params.id, req.userId);
   res.json(result);
 }));
 
