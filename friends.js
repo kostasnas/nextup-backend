@@ -40,9 +40,11 @@ async function sendFriendRequest(supabase, requesterId, target) {
 
   const requester = await getUserDisplayInfo(requesterId);
   const requesterName = requester?.display_name || requester?.email || "Someone";
+  const { data: requesterProfile } = await supabase.from("user_profiles").select("username").eq("user_id", requesterId).maybeSingle();
+  const requesterLabel = requesterProfile?.username ? `${requesterName} (@${requesterProfile.username})` : requesterName;
   await sendPushToUser(supabase, target.id, {
     title: "New friend request",
-    body: `${requesterName} wants to connect on Scenera`,
+    body: `${requesterLabel} wants to connect on Scenera`,
   });
 
   return { ok: true };
