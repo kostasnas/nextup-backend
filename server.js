@@ -535,7 +535,7 @@ app.get("/shows/:tmdbId/full-progress", requireAuth, asyncHandler(async (req, re
   });
 }));
 
-app.post("/friends/request", requireAuth, requireFriendsFeature, asyncHandler(async (req, res) => {
+app.post("/friends/request", requireAuth, asyncHandler(async (req, res) => {
   const { email, username } = req.body;
   if (!email && !username) return res.status(400).json({ error: "email or username is required" });
   const target = username ? await findUserByUsername(username) : await findUserByEmail(email);
