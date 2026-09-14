@@ -13,6 +13,7 @@ const { matchShows, searchShow } = require("./tmdbMatcher");
 const { syncShowProgress, fetchAllEpisodes, cacheEpisodes } = require("./episodeSync");
 const { sendFriendRequest, listFriends, acceptFriendRequest, declineFriendRequest, removeFriend, getFriendFavorites } = require("./friends");
 const { sendMessage, getMessages, deleteMessage } = require("./messages");
+const { getComments, addComment, deleteComment } = require("./episodeComments");
 const { findUserByEmail, findUserByUsername } = require("./db");
 
 const app = express();
@@ -153,6 +154,26 @@ app.get("/shows/:id/watch-providers", asyncHandler(async (req, res) => {
   const region = (req.query.region || "US").toUpperCase();
   const providers = await getShowWatchProviders(req.params.id, region);
   res.json(providers);
+}));
+
+// Public per-episode comments — visible to every Scenera user, not
+// just friends. Free for everyone; this is the community/discussion
+// feature, not a Pro perk.
+app.get("/episodes/:id/comments", requireAuth, asyncHandler(async (req, res) => {
+  const comments = await getComments(req.params.id);
+  res.json(comments);
+}));
+
+app.post("/episodes/:id/comments", requireAuth, asyncHandler(async (req, res) => {
+  const { content } = req.body;
+  if (!content || !content.trim()) return res.status(400).json({ error: "content is required" });
+  const comment = await addComment(supabase, req.params.id, req.userId, content.trim());
+  res.json(comment);
+}));
+
+app.delete("/comments/:id", requireAuth, asyncHandler(async (req, res) => {
+  const result = await deleteComment(supabase, req.params.id, req.userId);
+  res.json(result);
 }));
 
 app.get("/discover/top-shows", asyncHandler(async (req, res) => {
