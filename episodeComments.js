@@ -59,4 +59,22 @@ async function deleteComment(supabase, commentId, userId) {
   return { ok: true };
 }
 
-module.exports = { getComments, addComment, deleteComment };
+/**
+ * Comment counts for every episode of a show, in one query — used to
+ * show a "12 comments" badge on each episode row without expanding
+ * it, rather than fetching counts one episode at a time.
+ */
+async function getCommentCountsForShow(tmdbShowId) {
+  const { rows } = await getPool().query(
+    `select e.season_number, e.episode_number, count(ec.id)::int as comment_count
+     from episodes e
+     join shows s on s.id = e.show_id
+     left join episode_comments ec on ec.episode_id = e.id
+     where s.tmdb_id = $1
+     group by e.season_number, e.episode_number`,
+    [tmdbShowId]
+  );
+  return rows;
+}
+
+module.exports = { getComments, getCommentCountsForShow, addComment, deleteComment };
