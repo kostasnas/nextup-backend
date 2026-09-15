@@ -13,7 +13,7 @@ const { matchShows, searchShow } = require("./tmdbMatcher");
 const { syncShowProgress, fetchAllEpisodes, cacheEpisodes } = require("./episodeSync");
 const { sendFriendRequest, listFriends, acceptFriendRequest, declineFriendRequest, removeFriend, getFriendFavorites } = require("./friends");
 const { sendMessage, getMessages, deleteMessage } = require("./messages");
-const { getComments, addComment, deleteComment } = require("./episodeComments");
+const { getComments, getCommentCountsForShow, addComment, deleteComment } = require("./episodeComments");
 const { findUserByEmail, findUserByUsername } = require("./db");
 
 const app = express();
@@ -159,6 +159,11 @@ app.get("/shows/:id/watch-providers", asyncHandler(async (req, res) => {
 // Public per-episode comments — visible to every Scenera user, not
 // just friends. Free for everyone; this is the community/discussion
 // feature, not a Pro perk.
+app.get("/shows/:id/comment-counts", requireAuth, asyncHandler(async (req, res) => {
+  const counts = await getCommentCountsForShow(req.params.id);
+  res.json(counts);
+}));
+
 app.get("/episodes/:id/comments", requireAuth, asyncHandler(async (req, res) => {
   const comments = await getComments(req.params.id);
   res.json(comments);
