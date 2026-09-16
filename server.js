@@ -9,7 +9,7 @@ const rateLimit = require("express-rate-limit");
 const helmet = require("helmet");
 const { createClient } = require("@supabase/supabase-js");
 const { parseGdprExport } = require("./importParser");
-const { matchShows, searchShow } = require("./tmdbMatcher");
+const { matchShows, searchShow, searchMovie } = require("./tmdbMatcher");
 const { syncShowProgress, fetchAllEpisodes, cacheEpisodes } = require("./episodeSync");
 const { sendFriendRequest, listFriends, acceptFriendRequest, declineFriendRequest, removeFriend, getFriendFavorites } = require("./friends");
 const { sendMessage, getMessages, deleteMessage } = require("./messages");
@@ -750,12 +750,24 @@ app.post("/ai/chat", requireAuth, aiChatRateLimiter, asyncHandler(async (req, re
     .map((w) => w.shows?.title)
     .filter(Boolean);
 
-  const systemPrompt = `You are Scenera's TV show recommendation assistant. Give concise, specific recommendations (2-4 shows max per answer), each with a one-sentence reason tied to the user's taste. Avoid generic disclaimers or long intros — get straight to the recommendations.
+  const { data: movieWatchlist } = await supabase
+    .from("user_movie_watchlist")
+    .select("status, movies(title)")
+    .eq("user_id", req.userId)
+    .limit(120);
 
-Do NOT recommend anything in the user's completed or currently-watching lists below — only suggest shows they haven't already tracked.
+  const watchedMovieTitles = (movieWatchlist || [])
+    .filter((m) => m.status === "watched")
+    .map((m) => m.movies?.title)
+    .filter(Boolean);
+
+  const systemPrompt = `You are Scenera's TV show and movie recommendation assistant. Give concise, specific recommendations (2-4 titles max per answer, shows and/or movies as fits the request), each with a one-sentence reason tied to the user's taste. Avoid generic disclaimers or long intros — get straight to the recommendations.
+
+Do NOT recommend anything in the user's lists below — only suggest titles they haven't already tracked.
 
 User's completed shows: ${completedTitles.slice(0, 80).join(", ") || "none yet"}
-User's currently watching: ${watchingTitles.slice(0, 40).join(", ") || "none yet"}`;
+User's currently watching shows: ${watchingTitles.slice(0, 40).join(", ") || "none yet"}
+User's watched movies: ${watchedMovieTitles.slice(0, 80).join(", ") || "none yet"}`;
 
   // Shared by both the plain-text path (everyone) and the structured
   // path's fallback (see catch block below) — one place that knows
@@ -811,15 +823,22 @@ User's currently watching: ${watchingTitles.slice(0, 40).join(", ") || "none yet
         .from("user_watchlist")
         .select("shows(tmdb_id)")
         .eq("user_id", req.userId);
-      const trackedTmdbIds = new Set((trackedRows || []).map((r) => r.shows?.tmdb_id).filter(Boolean));
+      const trackedTvTmdbIds = new Set((trackedRows || []).map((r) => r.shows?.tmdb_id).filter(Boolean));
 
-      const structuredSystemPrompt = `You are Scenera's TV show recommendation assistant. Based on the conversation and the user's watch history below, recommend 5-6 shows tied to their taste — more than you'd normally suggest, since some may turn out to already be on the user's list and get filtered out before they're shown.
-Respond ONLY with a JSON object in exactly this shape, no text outside the JSON: {"recommendations": [{"title": "Show Name", "reason": "one sentence tied to the user's taste"}]}
+      const { data: trackedMovieRows } = await supabase
+        .from("user_movie_watchlist")
+        .select("movies(tmdb_id)")
+        .eq("user_id", req.userId);
+      const trackedMovieTmdbIds = new Set((trackedMovieRows || []).map((r) => r.movies?.tmdb_id).filter(Boolean));
 
-Try to avoid the user's completed/watching lists below where it's obvious, but don't spend time meticulously cross-checking every title against them — a separate system already filters out anything already tracked before the person sees it, so a few overlaps here are fine and expected.
+      const structuredSystemPrompt = `You are Scenera's TV show and movie recommendation assistant. Based on the conversation and the user's watch history below, recommend 5-6 titles (shows and/or movies, as fits the request) tied to their taste — more than you'd normally suggest, since some may turn out to already be on the user's list and get filtered out before they're shown.
+Respond ONLY with a JSON object in exactly this shape, no text outside the JSON: {"recommendations": [{"title": "Name", "type": "tv" or "movie", "reason": "one sentence tied to the user's taste"}]}
+
+Try to avoid the user's lists below where it's obvious, but don't spend time meticulously cross-checking every title against them — a separate system already filters out anything already tracked before the person sees it, so a few overlaps here are fine and expected.
 
 User's completed shows: ${completedTitles.slice(0, 80).join(", ") || "none yet"}
-User's currently watching: ${watchingTitles.slice(0, 40).join(", ") || "none yet"}`;
+User's currently watching shows: ${watchingTitles.slice(0, 40).join(", ") || "none yet"}
+User's watched movies: ${watchedMovieTitles.slice(0, 80).join(", ") || "none yet"}`;
 
       const groqRes = await fetch("https://api.groq.com/openai/v1/chat/completions", {
         method: "POST",
@@ -854,15 +873,18 @@ User's currently watching: ${watchingTitles.slice(0, 40).join(", ") || "none yet
       const resolved = await Promise.all(
         recommendations.slice(0, 6).map(async (rec) => {
           try {
-            const results = await searchShow(rec.title);
+            const isMovie = rec.type === "movie";
+            const results = isMovie ? await searchMovie(rec.title) : await searchShow(rec.title);
             if (!results || results.length === 0) return null;
             const best = results[0];
-            if (trackedTmdbIds.has(best.id)) return null;
+            const trackedSet = isMovie ? trackedMovieTmdbIds : trackedTvTmdbIds;
+            if (trackedSet.has(best.id)) return null;
             return {
               tmdbId: best.id,
-              title: best.name,
+              title: isMovie ? best.title : best.name,
               posterPath: best.poster_path || null,
               reason: rec.reason || "",
+              mediaType: isMovie ? "movie" : "tv",
             };
           } catch (e) {
             console.error(`TMDB lookup failed for AI recommendation "${rec.title}":`, e.message);
