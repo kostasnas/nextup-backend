@@ -14,6 +14,7 @@ const { syncShowProgress, fetchAllEpisodes, cacheEpisodes } = require("./episode
 const { sendFriendRequest, listFriends, acceptFriendRequest, declineFriendRequest, removeFriend, getFriendFavorites } = require("./friends");
 const { sendMessage, getMessages, deleteMessage } = require("./messages");
 const { getComments, getCommentCountsForShow, addComment, deleteComment } = require("./episodeComments");
+const { getMovieWatchlist, setMovieStatus, updateMovieEntry, removeMovie } = require("./movies");
 const { findUserByEmail, findUserByUsername } = require("./db");
 
 const app = express();
@@ -162,6 +163,36 @@ app.get("/shows/:id/watch-providers", asyncHandler(async (req, res) => {
 app.get("/shows/:id/comment-counts", requireAuth, asyncHandler(async (req, res) => {
   const counts = await getCommentCountsForShow(req.params.id);
   res.json(counts);
+}));
+
+// Movie watchlist — separate from the shows system entirely, since
+// movies have no episodes, just planned/watched.
+app.get("/movies", requireAuth, asyncHandler(async (req, res) => {
+  const list = await getMovieWatchlist(supabase, req.userId);
+  res.json(list);
+}));
+
+app.post("/movies/watchlist", requireAuth, asyncHandler(async (req, res) => {
+  const { tmdb_id, title, poster_path, release_date, runtime, overview, status } = req.body;
+  if (!tmdb_id || !title || !status) return res.status(400).json({ error: "tmdb_id, title, and status are required" });
+  const result = await setMovieStatus(supabase, req.userId, { tmdb_id, title, poster_path, release_date, runtime, overview }, status);
+  res.json(result);
+}));
+
+app.patch("/movies/watchlist/:movieId", requireAuth, asyncHandler(async (req, res) => {
+  const { status, rating, is_favorite, watched_at } = req.body;
+  const updates = {};
+  if (status !== undefined) updates.status = status;
+  if (rating !== undefined) updates.rating = rating;
+  if (is_favorite !== undefined) updates.is_favorite = is_favorite;
+  if (watched_at !== undefined) updates.watched_at = watched_at;
+  const result = await updateMovieEntry(supabase, req.userId, req.params.movieId, updates);
+  res.json(result);
+}));
+
+app.delete("/movies/watchlist/:movieId", requireAuth, asyncHandler(async (req, res) => {
+  const result = await removeMovie(supabase, req.userId, req.params.movieId);
+  res.json(result);
 }));
 
 app.get("/episodes/:id/comments", requireAuth, asyncHandler(async (req, res) => {
