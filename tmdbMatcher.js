@@ -84,6 +84,31 @@ async function searchShow(title) {
   return data.results || [];
 }
 
+async function searchMovie(title) {
+  const apiKey = process.env.TMDB_API_KEY;
+  if (!apiKey) throw new Error("TMDB_API_KEY is not set in environment");
+
+  const cleanedTitle = stripDisambiguator(title);
+  const url = `${TMDB_BASE}/search/movie?api_key=${apiKey}&query=${encodeURIComponent(cleanedTitle)}&include_adult=false`;
+  const data = await throttle(async () => {
+    const res = await fetch(url);
+    if (!res.ok) throw new Error(`TMDB search failed: ${res.status}`);
+    return res.json();
+  });
+
+  if ((data.results || []).length === 0 && cleanedTitle !== title) {
+    const fallbackUrl = `${TMDB_BASE}/search/movie?api_key=${apiKey}&query=${encodeURIComponent(title)}&include_adult=false`;
+    const fallbackData = await throttle(async () => {
+      const res = await fetch(fallbackUrl);
+      if (!res.ok) return { results: [] };
+      return res.json();
+    });
+    return fallbackData.results || [];
+  }
+
+  return data.results || [];
+}
+
 /**
  * Fetches full season/episode structure for a matched show, needed
  * to translate "episodesSeenCount" into a season/episode marker.
@@ -218,4 +243,4 @@ async function matchShows(tvTimeShows, { concurrency = 5 } = {}) {
   return results;
 }
 
-module.exports = { searchShow, getShowDetails, matchShow, matchShows, similarity, normalizeTitle, alternativeTitleVariants };
+module.exports = { searchShow, searchMovie, getShowDetails, matchShow, matchShows, similarity, normalizeTitle, alternativeTitleVariants };
