@@ -240,11 +240,12 @@ app.get("/health-full", asyncHandler(async (req, res) => {
 }));
 
 async function processImport(userId, files) {
-  const { shows, episodeLogByShow, emotionLogByShow, stats } = parseGdprExport(files);
+  const { shows, movies, episodeLogByShow, emotionLogByShow, stats } = parseGdprExport(files);
   const watchingCandidates = shows.filter((s) => s.episodesSeenCount > 0).length;
   console.log(
     `Parsed ${shows.length} shows, ${watchingCandidates} have episodesSeenCount > 0. ` +
-    `Episode log: ${stats.hasEpisodeLog ? "present" : "not present"}, Emotion log: ${stats.hasEmotionLog ? "present" : "not present"}.`
+    `Episode log: ${stats.hasEpisodeLog ? "present" : "not present"}, Emotion log: ${stats.hasEmotionLog ? "present" : "not present"}. ` +
+    `Movies: ${movies.length} found (best-effort — see importParser.js caveat).`
   );
 
   const { data: job, error: jobError } = await supabase
@@ -276,6 +277,28 @@ async function processImport(userId, files) {
     }
   }
 
+  let movieMatchedCount = 0;
+  let movieUnmatchedCount = 0;
+  for (const movie of movies) {
+    try {
+      const results = await searchMovie(movie.title);
+      if (!results || results.length === 0) { movieUnmatchedCount++; continue; }
+      const best = results[0];
+      await setMovieStatus(supabase, userId, {
+        tmdb_id: best.id,
+        title: best.title,
+        poster_path: best.poster_path,
+        release_date: best.release_date || null,
+        runtime: null,
+        overview: best.overview || null,
+      }, "watched");
+      movieMatchedCount++;
+    } catch (e) {
+      console.error(`Movie import: failed to match/insert "${movie.title}":`, e.message);
+      movieUnmatchedCount++;
+    }
+  }
+
   await supabase
     .from("import_jobs")
     .update({
@@ -286,7 +309,10 @@ async function processImport(userId, files) {
     })
     .eq("id", job.id);
 
-  return { jobId: job.id, matchedCount, unmatchedCount, totalShows: stats.totalShows, watchingCandidates, warning: stats.warning };
+  return {
+    jobId: job.id, matchedCount, unmatchedCount, totalShows: stats.totalShows, watchingCandidates, warning: stats.warning,
+    movieMatchedCount, movieUnmatchedCount, totalMovies: stats.totalMovies,
+  };
 }
 
 app.post(
@@ -312,7 +338,10 @@ app.post(
 );
 
 const REQUIRED_FILES = ["user_tv_show_data.csv", "show_seen_episode_latest.csv", "followed_tv_show.csv", "tv_show_rate.csv"];
-const OPTIONAL_FILES = ["seen_episode_source.csv", "episode_emotion.csv", "tracking-prod-records-v2.csv"];
+const OPTIONAL_FILES = [
+  "seen_episode_source.csv", "episode_emotion.csv", "tracking-prod-records-v2.csv",
+  "seen_movie.csv", "seen_movie_source.csv", "movie_seen.csv", "user_movie_data.csv",
+];
 
 app.post("/import/tvtime-zip", requireAuth, uploadZip.single("export_zip"), asyncHandler(async (req, res) => {
   if (!req.file) return res.status(400).json({ error: "export_zip file is required" });
