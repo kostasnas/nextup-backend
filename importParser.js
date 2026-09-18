@@ -1,4 +1,21 @@
-// importParser.js — v3
+// importParser.js — v4
+// Adds OPTIONAL movie support, alongside the existing show-progress
+// import. IMPORTANT CAVEAT: TV Time did support movie tracking
+// (confirmed via its own store listings — "TV Time: Track Shows &
+// Movies"), but we don't have a real sample export containing
+// movie data to verify the exact file name/column structure against
+// (Kostas's own account never tracked movies). This is a best-effort
+// guess, following the SAME naming conventions already confirmed in
+// TV Time's own show-related files (tv_show_name, created_at style —
+// not Bingers' different convention of title/tmdb_id, which is a
+// different app). Checks a few plausible file name variants
+// defensively, matching the pattern already used above for
+// tracking-prod-records-v2.csv vs seen_episode_source.csv. If this
+// doesn't match a real user's actual export, it fails harmlessly
+// (movies array stays empty) rather than throwing — safe to ship,
+// but worth revisiting once someone with real movie history reports
+// it not working.
+//
 // Extends the show-progress import (v2) with two OPTIONAL extra
 // files, present in the fuller "download all my data" GDPR export
 // but not in the minimal 4-file one:
@@ -71,8 +88,11 @@ function parseGdprExport(files) {
     ? parseEmotionLog(files["episode_emotion.csv"])
     : {};
 
+  const movies = parseMovieLog(files);
+
   return {
     shows: results,
+    movies,
     episodeLogByShow,
     emotionLogByShow,
     stats: {
@@ -82,6 +102,7 @@ function parseGdprExport(files) {
       withEpisodeData,
       hasEpisodeLog: Object.keys(episodeLogByShow).length > 0,
       hasEmotionLog: Object.keys(emotionLogByShow).length > 0,
+      totalMovies: movies.length,
       warning: suspiciouslyEmpty
         ? "Fewer than 10% of shows have episode counts — double-check that user_tv_show_data.csv was uploaded to the right field, it's the source of nb_episodes_seen."
         : null,
@@ -149,6 +170,36 @@ function parseEmotionLog(fileContent) {
     byShow[name].push({ season, episode, reaction: emotionId === 1 ? "up" : null });
   }
   return byShow;
+}
+
+/**
+ * Best-effort movie import — see the file-level caveat above. Checks
+ * a few plausible file names/column names (following TV Time's own
+ * show-file naming style), returns an empty array harmlessly if none
+ * match rather than throwing.
+ * @returns {Array<{title:string, watchedAt:string|null, isFavorited:boolean}>}
+ */
+function parseMovieLog(files) {
+  const candidateFileNames = ["seen_movie.csv", "seen_movie_source.csv", "movie_seen.csv", "user_movie_data.csv"];
+  const fileName = candidateFileNames.find((name) => files[name]);
+  if (!fileName) return [];
+
+  const rows = parseCsvFile(files[fileName]);
+  const results = [];
+  for (const row of rows) {
+    // Checking several plausible column names, since this is a best
+    // guess at TV Time's own naming for a file we haven't seen a
+    // real sample of — same defensive spirit as the file-name check
+    // above.
+    const title = (row.movie_name || row.title || row.name || "").trim();
+    if (!title) continue;
+    results.push({
+      title,
+      watchedAt: parseDateOrNull(row.created_at || row.watched_at),
+      isFavorited: row.is_favorited === "1",
+    });
+  }
+  return results;
 }
 
 function indexBy(rows, key) {
