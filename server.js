@@ -740,7 +740,7 @@ app.delete("/messages/:id", requireAuth, asyncHandler(async (req, res) => {
 }));
 
 app.post("/ai/chat", requireAuth, aiChatRateLimiter, asyncHandler(async (req, res) => {
-  const { message, history = [] } = req.body;
+  const { message, history = [], locale = "en" } = req.body;
   if (!message) return res.status(400).json({ error: "message is required" });
 
   const today = new Date().toISOString().slice(0, 10);
@@ -790,7 +790,17 @@ app.post("/ai/chat", requireAuth, aiChatRateLimiter, asyncHandler(async (req, re
     .map((m) => m.movies?.title)
     .filter(Boolean);
 
-  const systemPrompt = `You are Scenera's TV show and movie recommendation assistant. Give concise, specific recommendations (2-4 titles max per answer, shows and/or movies as fits the request), each with a one-sentence reason tied to the user's taste. Avoid generic disclaimers or long intros — get straight to the recommendations.
+  // Maps the frontend's locale codes to a plain language name the
+  // model can follow reliably — cheaper and more robust than asking
+  // it to interpret a raw locale code like "id" or "hi" itself.
+  const LOCALE_NAMES = {
+    en: "English", es: "Spanish", pt: "Portuguese", de: "German", fr: "French",
+    ar: "Arabic", tr: "Turkish", it: "Italian", id: "Indonesian", hi: "Hindi", ru: "Russian",
+  };
+  const languageName = LOCALE_NAMES[locale] || "English";
+  const languageInstruction = languageName === "English" ? "" : ` Respond in ${languageName} — the user's app language is set to ${languageName}, regardless of what language they write their message in.`;
+
+  const systemPrompt = `You are Scenera's TV show and movie recommendation assistant. Give concise, specific recommendations (2-4 titles max per answer, shows and/or movies as fits the request), each with a one-sentence reason tied to the user's taste. Avoid generic disclaimers or long intros — get straight to the recommendations.${languageInstruction}
 
 Do NOT recommend anything in the user's lists below — only suggest titles they haven't already tracked.
 
@@ -860,7 +870,7 @@ User's watched movies: ${watchedMovieTitles.slice(0, 80).join(", ") || "none yet
         .eq("user_id", req.userId);
       const trackedMovieTmdbIds = new Set((trackedMovieRows || []).map((r) => r.movies?.tmdb_id).filter(Boolean));
 
-      const structuredSystemPrompt = `You are Scenera's TV show and movie recommendation assistant. Based on the conversation and the user's watch history below, recommend 5-6 titles (shows and/or movies, as fits the request) tied to their taste — more than you'd normally suggest, since some may turn out to already be on the user's list and get filtered out before they're shown.
+      const structuredSystemPrompt = `You are Scenera's TV show and movie recommendation assistant. Based on the conversation and the user's watch history below, recommend 5-6 titles (shows and/or movies, as fits the request) tied to their taste — more than you'd normally suggest, since some may turn out to already be on the user's list and get filtered out before they're shown.${languageInstruction}${languageName !== "English" ? ` Write the "reason" field in ${languageName}; keep "title" and "type" as-is (an English title lookup key, not translated).` : ""}
 Respond ONLY with a JSON object in exactly this shape, no text outside the JSON: {"recommendations": [{"title": "Name", "type": "tv" or "movie", "reason": "one sentence tied to the user's taste"}]}
 
 Try to avoid the user's lists below where it's obvious, but don't spend time meticulously cross-checking every title against them — a separate system already filters out anything already tracked before the person sees it, so a few overlaps here are fine and expected.
