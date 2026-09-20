@@ -15,6 +15,7 @@ const { sendFriendRequest, listFriends, acceptFriendRequest, declineFriendReques
 const { sendMessage, getMessages, deleteMessage } = require("./messages");
 const { getComments, getCommentCountsForShow, addComment, deleteComment } = require("./episodeComments");
 const { getMovieWatchlist, setMovieStatus, updateMovieEntry, removeMovie } = require("./movies");
+const { getFavoriteCharacters, addFavoriteCharacter, removeFavoriteCharacter } = require("./favoriteCharacters");
 const { findUserByEmail, findUserByUsername } = require("./db");
 
 const app = express();
@@ -198,6 +199,25 @@ app.patch("/movies/watchlist/:movieId", requireAuth, asyncHandler(async (req, re
 
 app.delete("/movies/watchlist/:movieId", requireAuth, asyncHandler(async (req, res) => {
   const result = await removeMovie(supabase, req.userId, req.params.movieId);
+  res.json(result);
+}));
+
+app.get("/favorite-characters", requireAuth, asyncHandler(async (req, res) => {
+  const list = await getFavoriteCharacters(supabase, req.userId);
+  res.json(list);
+}));
+
+app.post("/favorite-characters", requireAuth, asyncHandler(async (req, res) => {
+  const { tmdbPersonId, personName, profilePath, sourceType, sourceTmdbId, sourceTitle, characterName } = req.body;
+  if (!tmdbPersonId || !personName || !sourceType || !sourceTmdbId || !sourceTitle) {
+    return res.status(400).json({ error: "tmdbPersonId, personName, sourceType, sourceTmdbId, and sourceTitle are required" });
+  }
+  const result = await addFavoriteCharacter(supabase, req.userId, { tmdbPersonId, personName, profilePath, sourceType, sourceTmdbId, sourceTitle, characterName });
+  res.json(result);
+}));
+
+app.delete("/favorite-characters/:sourceType/:sourceTmdbId/:tmdbPersonId", requireAuth, asyncHandler(async (req, res) => {
+  const result = await removeFavoriteCharacter(supabase, req.userId, req.params.tmdbPersonId, req.params.sourceType, req.params.sourceTmdbId);
   res.json(result);
 }));
 
