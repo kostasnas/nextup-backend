@@ -82,6 +82,24 @@ async function getShowWatchProviders(showId, region = "US") {
   return providers;
 }
 
+async function getMovieWatchProviders(movieId, region = "US") {
+  const cacheKey = `movieproviders:${movieId}:${region}`;
+  const cached = getCached(cacheKey);
+  if (cached) return cached;
+
+  const data = await tmdbGet(`/movie/${movieId}/watch/providers`);
+  const regionData = data.results?.[region];
+
+  const providers = (regionData?.flatrate || []).map((p) => ({
+    id: p.provider_id,
+    name: p.provider_name,
+    logoPath: p.logo_path,
+  }));
+
+  setCached(cacheKey, providers);
+  return providers;
+}
+
 /**
  * "Top shows" for a region, optionally filtered to a specific
  * streaming provider. watch_monetization_type=flatrate excludes
@@ -136,4 +154,4 @@ async function getGenres() {
   return genres;
 }
 
-module.exports = { getWatchProviders, getShowWatchProviders, getTopShows, getTrending, getGenres };
+module.exports = { getWatchProviders, getShowWatchProviders, getMovieWatchProviders, getTopShows, getTrending, getGenres };
