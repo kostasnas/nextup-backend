@@ -135,7 +135,7 @@ app.get("/", async (req, res) => {
   }
 });
 
-const { getWatchProviders, getShowWatchProviders, getTopShows, getTrending, getGenres } = require("./discover");
+const { getWatchProviders, getShowWatchProviders, getMovieWatchProviders, getTopShows, getTrending, getGenres } = require("./discover");
 
 // Streaming-provider-aware "Top Shows" — public, cached, no auth
 // needed since results are identical for everyone in the same
@@ -154,6 +154,12 @@ app.get("/discover/watch-providers", asyncHandler(async (req, res) => {
 app.get("/shows/:id/watch-providers", asyncHandler(async (req, res) => {
   const region = (req.query.region || "US").toUpperCase();
   const providers = await getShowWatchProviders(req.params.id, region);
+  res.json(providers);
+}));
+
+app.get("/movies/:id/watch-providers", asyncHandler(async (req, res) => {
+  const region = (req.query.region || "US").toUpperCase();
+  const providers = await getMovieWatchProviders(req.params.id, region);
   res.json(providers);
 }));
 
