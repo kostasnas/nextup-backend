@@ -18,7 +18,7 @@ function chunk(array, size) {
   return out;
 }
 
-async function sendBroadcastNotification(supabase, { title, body, test_user_id }) {
+async function sendBroadcastNotification(supabase, { title, body, test_user_id, data }) {
   ensureInitialized();
 
   if (!title || !body) {
@@ -46,6 +46,10 @@ async function sendBroadcastNotification(supabase, { title, body, test_user_id }
       const result = await admin.messaging().sendEachForMulticast({
         tokens: batch,
         notification: { title, body },
+        // FCM data payload values must all be strings — stringify
+        // anything that isn't already, so a caller can pass e.g.
+        // { type: "open_url", url: "market://..." } directly.
+        ...(data ? { data: Object.fromEntries(Object.entries(data).map(([k, v]) => [k, String(v)])) } : {}),
         android: { notification: { icon: "ic_stat_name", color: "#E8A33D" } },
       });
       successCount += result.successCount;
