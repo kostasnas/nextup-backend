@@ -227,9 +227,10 @@ app.get("/episodes/:id/comments", requireAuth, asyncHandler(async (req, res) => 
 }));
 
 app.post("/episodes/:id/comments", requireAuth, asyncHandler(async (req, res) => {
-  const { content } = req.body;
-  if (!content || !content.trim()) return res.status(400).json({ error: "content is required" });
-  const comment = await addComment(supabase, req.params.id, req.userId, content.trim());
+  const { content, imageUrl } = req.body;
+  const trimmed = (content || "").trim();
+  if (!trimmed && !imageUrl) return res.status(400).json({ error: "content or imageUrl is required" });
+  const comment = await addComment(supabase, req.params.id, req.userId, trimmed, imageUrl);
   res.json(comment);
 }));
 
