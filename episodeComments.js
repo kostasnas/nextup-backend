@@ -12,7 +12,7 @@ const { getPool } = require("./db");
  */
 async function getComments(episodeId) {
   const { rows } = await getPool().query(
-    `select ec.id, ec.content, ec.created_at, ec.user_id,
+    `select ec.id, ec.content, ec.created_at, ec.user_id, ec.image_url,
             au.raw_user_meta_data->>'display_name' as display_name
      from episode_comments ec
      join auth.users au on au.id = ec.user_id
@@ -23,10 +23,10 @@ async function getComments(episodeId) {
   return rows;
 }
 
-async function addComment(supabase, episodeId, userId, content) {
+async function addComment(supabase, episodeId, userId, content, imageUrl) {
   const { data: comment, error } = await supabase
     .from("episode_comments")
-    .insert({ episode_id: episodeId, user_id: userId, content })
+    .insert({ episode_id: episodeId, user_id: userId, content, image_url: imageUrl || null })
     .select()
     .single();
   if (error) throw error;
