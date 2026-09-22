@@ -70,7 +70,12 @@ app.use(rateLimit({
 // directly from disk (file://) rather than served over http(s). Only
 // relevant for that one local testing tool; every real request from
 // the Scenera app itself still comes from https://localhost.
-const ALLOWED_ORIGINS = ["https://localhost", "http://localhost:5173", "null"];
+//
+// https://scenera-web.vercel.app is the web/PWA build's real deployed
+// origin — added once that build started making real browser fetches
+// here, which (unlike the Android WebView) are actually subject to
+// CORS enforcement.
+const ALLOWED_ORIGINS = ["https://localhost", "http://localhost:5173", "null", "https://scenera-web.vercel.app"];
 app.use(cors({
   origin: (origin, callback) => {
     if (!origin || ALLOWED_ORIGINS.includes(origin)) return callback(null, true);
