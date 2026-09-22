@@ -55,7 +55,7 @@ async function setMovieStatus(supabase, userId, tmdbMovie, status) {
     .from("user_movie_watchlist")
     .upsert(payload, { onConflict: "user_id,movie_id" });
   if (error) throw error;
-  return { ok: true };
+  return { ok: true, movieId };
 }
 
 async function updateMovieEntry(supabase, userId, movieId, updates) {
