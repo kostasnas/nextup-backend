@@ -636,6 +636,60 @@ app.get("/widget/next-up", requireAuth, asyncHandler(async (req, res) => {
   });
 }));
 
+// Second widget — the opposite of "next premiere": episodes that
+// have ALREADY aired but aren't watched yet, i.e. what's sitting
+// ready right now. Deliberately NOT using the get_next_episodes()
+// RPC here — that function is designed to run under the calling
+// user's own session (relying on auth.uid() internally), which the
+// backend's own service connection doesn't carry per-request. Same
+// direct-query, explicit req.userId pattern as /widget/next-up
+// above, just with the date comparison inverted.
+app.get("/widget/ready-to-watch", requireAuth, asyncHandler(async (req, res) => {
+  const today = new Date().toISOString().slice(0, 10);
+
+  const { data: watched } = await supabase
+    .from("watched_episodes")
+    .select("episode_id")
+    .eq("user_id", req.userId);
+  const watchedIds = new Set((watched || []).map((w) => w.episode_id));
+
+  const { data: rows, error } = await supabase
+    .from("episodes")
+    .select(`
+      id, show_id, season_number, episode_number, air_date,
+      shows!inner(title, poster_path,
+        user_watchlist!inner(user_id, status)
+      )
+    `)
+    .lt("air_date", today)
+    .not("air_date", "is", null)
+    .eq("shows.user_watchlist.user_id", req.userId)
+    .in("shows.user_watchlist.status", ["watching", "up_to_date"])
+    .order("air_date", { ascending: false })
+    .limit(300); // generous buffer — filtered down to per-show "earliest gap" below
+  if (error) throw error;
+
+  // One entry per show: the EARLIEST unwatched aired episode (the
+  // actual next one to watch), not just any unwatched episode.
+  const earliestUnwatchedByShow = {};
+  for (const r of rows || []) {
+    if (watchedIds.has(r.id)) continue;
+    const existing = earliestUnwatchedByShow[r.show_id];
+    if (!existing || r.air_date < existing.air_date) earliestUnwatchedByShow[r.show_id] = r;
+  }
+  const readyShows = Object.values(earliestUnwatchedByShow).sort((a, b) => (a.air_date < b.air_date ? -1 : 1));
+
+  if (readyShows.length === 0) return res.json({ hasReady: false, count: 0 });
+
+  const top = readyShows[0];
+  res.json({
+    hasReady: true,
+    count: readyShows.length,
+    topTitle: top.shows.title,
+    topPosterPath: top.shows.poster_path,
+  });
+}));
+
 app.get("/shows/:tmdbId/full-progress", requireAuth, asyncHandler(async (req, res) => {
   const tmdbId = req.params.tmdbId;
 
