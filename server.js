@@ -76,7 +76,7 @@ app.use(rateLimit({
 // origin — added once that build started making real browser fetches
 // here, which (unlike the Android WebView) are actually subject to
 // CORS enforcement.
-const ALLOWED_ORIGINS = ["https://localhost", "http://localhost:5173", "null", "https://scenera-web.vercel.app"];
+const ALLOWED_ORIGINS = ["https://localhost", "http://localhost:5173", "null", "https://scenera-web.vercel.app", "https://scenera.online", "https://www.scenera.online"];
 app.use(cors({
   origin: (origin, callback) => {
     if (!origin || ALLOWED_ORIGINS.includes(origin)) return callback(null, true);
