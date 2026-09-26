@@ -142,7 +142,7 @@ app.get("/", async (req, res) => {
   }
 });
 
-const { getWatchProviders, getShowWatchProviders, getMovieWatchProviders, getTopShows, getTrending, getGenres } = require("./discover");
+const { getWatchProviders, getShowWatchProviders, getMovieWatchProviders, getShowBackdrop, getTopShows, getTrending, getGenres } = require("./discover");
 
 // Streaming-provider-aware "Top Shows" — public, cached, no auth
 // needed since results are identical for everyone in the same
@@ -613,8 +613,8 @@ app.get("/widget/next-up", requireAuth, asyncHandler(async (req, res) => {
   const { data: rows, error } = await supabase
     .from("episodes")
     .select(`
-      id, air_date,
-      shows!inner(title, poster_path,
+      id, air_date, show_id,
+      shows!inner(id, tmdb_id, title, poster_path,
         user_watchlist!inner(user_id, status)
       )
     `)
@@ -628,11 +628,31 @@ app.get("/widget/next-up", requireAuth, asyncHandler(async (req, res) => {
   const next = (rows || []).find((r) => !watchedIds.has(r.id));
   if (!next) return res.json({ hasNext: false });
 
+  // Progress-bar data for Widget 1: of this show's episodes that have
+  // already aired, how many has the user watched. "currentEpisode" is
+  // the next one up (watchedCount + 1), matching the "Ep X of Y"
+  // phrasing the widget shows rather than a raw watched count.
+  const { data: showEpisodes, error: epErr } = await supabase
+    .from("episodes")
+    .select("id")
+    .eq("show_id", next.show_id)
+    .not("air_date", "is", null)
+    .lte("air_date", today);
+  if (epErr) throw epErr;
+
+  const totalEpisodes = (showEpisodes || []).length;
+  const watchedCount = (showEpisodes || []).filter((e) => watchedIds.has(e.id)).length;
+  const currentEpisode = totalEpisodes > 0 ? Math.min(watchedCount + 1, totalEpisodes) : 0;
+  const progressPercentage = totalEpisodes > 0 ? Math.round((watchedCount / totalEpisodes) * 100) : 0;
+
   res.json({
     hasNext: true,
     title: next.shows.title,
     airDate: next.air_date,
     posterPath: next.shows.poster_path,
+    currentEpisode,
+    totalEpisodes,
+    progressPercentage,
   });
 }));
 
@@ -644,6 +664,12 @@ app.get("/widget/next-up", requireAuth, asyncHandler(async (req, res) => {
 // backend's own service connection doesn't carry per-request. Same
 // direct-query, explicit req.userId pattern as /widget/next-up
 // above, just with the date comparison inverted.
+//
+// Also returns topEpisodeId/topSeasonNumber/topEpisodeNumber now, so
+// the widget's "Check-in" button can launch the app with enough
+// context to mark that exact episode watched without another round
+// trip first (see POST /episodes/:id/rewatch's sibling below for the
+// mark-watched call the app makes once it opens).
 app.get("/widget/ready-to-watch", requireAuth, asyncHandler(async (req, res) => {
   const today = new Date().toISOString().slice(0, 10);
 
@@ -657,7 +683,7 @@ app.get("/widget/ready-to-watch", requireAuth, asyncHandler(async (req, res) => 
     .from("episodes")
     .select(`
       id, show_id, season_number, episode_number, air_date,
-      shows!inner(title, poster_path,
+      shows!inner(id, tmdb_id, title, poster_path,
         user_watchlist!inner(user_id, status)
       )
     `)
@@ -687,6 +713,85 @@ app.get("/widget/ready-to-watch", requireAuth, asyncHandler(async (req, res) => 
     count: readyShows.length,
     topTitle: top.shows.title,
     topPosterPath: top.shows.poster_path,
+    topEpisodeId: top.id,
+    topSeasonNumber: top.season_number,
+    topEpisodeNumber: top.episode_number,
+    statusText: readyShows.length > 1 ? `${readyShows.length} episodes ready` : "New episode available",
+  });
+}));
+
+// Third widget — a wide cinematic banner for whichever show is most
+// "front of mind" right now: reuses the same earliest-unwatched-aired
+// pick as /widget/ready-to-watch (falling back to the soonest-upcoming
+// premiere from /widget/next-up's pool if nothing is ready), but adds
+// a live TMDB backdrop fetch since `shows` has no backdrop_path column.
+app.get("/widget/continue-watching", requireAuth, asyncHandler(async (req, res) => {
+  const today = new Date().toISOString().slice(0, 10);
+
+  const { data: watched } = await supabase
+    .from("watched_episodes")
+    .select("episode_id")
+    .eq("user_id", req.userId);
+  const watchedIds = new Set((watched || []).map((w) => w.episode_id));
+
+  const { data: readyRows, error: readyErr } = await supabase
+    .from("episodes")
+    .select(`
+      id, show_id, season_number, episode_number, air_date,
+      shows!inner(id, tmdb_id, title,
+        user_watchlist!inner(user_id, status)
+      )
+    `)
+    .lt("air_date", today)
+    .not("air_date", "is", null)
+    .eq("shows.user_watchlist.user_id", req.userId)
+    .in("shows.user_watchlist.status", ["watching", "up_to_date"])
+    .order("air_date", { ascending: false })
+    .limit(300);
+  if (readyErr) throw readyErr;
+
+  const earliestUnwatchedByShow = {};
+  for (const r of readyRows || []) {
+    if (watchedIds.has(r.id)) continue;
+    const existing = earliestUnwatchedByShow[r.show_id];
+    if (!existing || r.air_date < existing.air_date) earliestUnwatchedByShow[r.show_id] = r;
+  }
+  let pick = Object.values(earliestUnwatchedByShow).sort((a, b) => (a.air_date < b.air_date ? -1 : 1))[0];
+
+  if (!pick) {
+    // Nothing ready to watch — fall back to the soonest upcoming
+    // premiere so the widget still has something cinematic to show.
+    const { data: upcomingRows } = await supabase
+      .from("episodes")
+      .select(`
+        id, show_id, season_number, episode_number, air_date,
+        shows!inner(id, tmdb_id, title,
+          user_watchlist!inner(user_id, status)
+        )
+      `)
+      .gte("air_date", today)
+      .eq("shows.user_watchlist.user_id", req.userId)
+      .in("shows.user_watchlist.status", ["watching", "up_to_date"])
+      .order("air_date", { ascending: true })
+      .limit(1);
+    pick = (upcomingRows || [])[0];
+  }
+
+  if (!pick) return res.json({ hasShow: false });
+
+  let backdropPath = null;
+  try {
+    backdropPath = await getShowBackdrop(pick.shows.tmdb_id);
+  } catch (err) {
+    console.error("widget/continue-watching: backdrop fetch failed:", err.message);
+  }
+
+  res.json({
+    hasShow: true,
+    title: pick.shows.title,
+    seasonNumber: pick.season_number,
+    episodeNumber: pick.episode_number,
+    backdropPath,
   });
 }));
 

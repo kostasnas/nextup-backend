@@ -101,6 +101,25 @@ async function getMovieWatchProviders(movieId, region = "US") {
 }
 
 /**
+ * The show's 16:9 backdrop image path — for the cinematic widget
+ * (Widget 3), which needs a landscape banner rather than the vertical
+ * poster. The `shows` table doesn't store backdrop_path today, so
+ * this is fetched live from TMDB and cached like everything else
+ * here (a show's backdrop essentially never changes).
+ */
+async function getShowBackdrop(showId) {
+  const cacheKey = `backdrop:${showId}`;
+  const cached = getCached(cacheKey);
+  if (cached !== null) return cached;
+
+  const data = await tmdbGet(`/tv/${showId}`);
+  const backdropPath = data.backdrop_path || null;
+
+  setCached(cacheKey, backdropPath);
+  return backdropPath;
+}
+
+/**
  * "Top shows" for a region, optionally filtered to a specific
  * streaming provider. watch_monetization_type=flatrate excludes
  * rent/buy-only titles — otherwise a "Netflix" filter could surface
@@ -154,4 +173,4 @@ async function getGenres() {
   return genres;
 }
 
-module.exports = { getWatchProviders, getShowWatchProviders, getMovieWatchProviders, getTopShows, getTrending, getGenres };
+module.exports = { getWatchProviders, getShowWatchProviders, getMovieWatchProviders, getShowBackdrop, getTopShows, getTrending, getGenres };
