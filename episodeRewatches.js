@@ -13,6 +13,28 @@ async function logRewatch(supabase, userId, episodeId) {
   return { ok: true };
 }
 
+// Undoes one accidental "log a rewatch" tap. Rows are interchangeable
+// (each one just means "a rewatch happened", with nothing else worth
+// distinguishing), so which specific row gets removed doesn't matter
+// — only that the count goes down by exactly one.
+async function removeRewatch(supabase, userId, episodeId) {
+  const { data, error } = await supabase
+    .from("episode_rewatches")
+    .select("id")
+    .eq("user_id", userId)
+    .eq("episode_id", episodeId)
+    .limit(1);
+  if (error) throw error;
+  if (!data || data.length === 0) return { ok: true, removed: false };
+
+  const { error: deleteError } = await supabase
+    .from("episode_rewatches")
+    .delete()
+    .eq("id", data[0].id);
+  if (deleteError) throw deleteError;
+  return { ok: true, removed: true };
+}
+
 /**
  * Rewatch counts for every episode of a show, in one query — same
  * "batch, not per-episode" pattern already used for comment counts,
@@ -31,4 +53,4 @@ async function getRewatchCountsForShow(userId, tmdbShowId) {
   return rows;
 }
 
-module.exports = { logRewatch, getRewatchCountsForShow };
+module.exports = { logRewatch, removeRewatch, getRewatchCountsForShow };

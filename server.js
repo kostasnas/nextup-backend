@@ -17,7 +17,7 @@ const { getComments, getCommentCountsForShow, addComment, deleteComment } = requ
 const { getMovieWatchlist, setMovieStatus, updateMovieEntry, removeMovie } = require("./movies");
 const { getFavoriteCharacters, addFavoriteCharacter, removeFavoriteCharacter } = require("./favoriteCharacters");
 const { listFeatureRequests, createFeatureRequest, toggleVote } = require("./featureRequests");
-const { logRewatch, getRewatchCountsForShow } = require("./episodeRewatches");
+const { logRewatch, removeRewatch, getRewatchCountsForShow } = require("./episodeRewatches");
 const { findUserByEmail, findUserByUsername } = require("./db");
 
 const app = express();
@@ -186,6 +186,11 @@ app.get("/shows/:id/rewatch-counts", requireAuth, asyncHandler(async (req, res) 
 
 app.post("/episodes/:id/rewatch", requireAuth, asyncHandler(async (req, res) => {
   const result = await logRewatch(supabase, req.userId, req.params.id);
+  res.json(result);
+}));
+
+app.delete("/episodes/:id/rewatch", requireAuth, asyncHandler(async (req, res) => {
+  const result = await removeRewatch(supabase, req.userId, req.params.id);
   res.json(result);
 }));
 
