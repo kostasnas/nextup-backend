@@ -143,7 +143,7 @@ app.get("/", async (req, res) => {
   }
 });
 
-const { getWatchProviders, getShowWatchProviders, getMovieWatchProviders, getShowBackdrop, getTopShows, getTrending, getGenres } = require("./discover");
+const { getWatchProviders, getShowWatchProviders, getMovieWatchProviders, getShowBackdrop, getTopShows, getTrending, getGenres, getPersonDetails } = require("./discover");
 
 // Streaming-provider-aware "Top Shows" — public, cached, no auth
 // needed since results are identical for everyone in the same
@@ -169,6 +169,13 @@ app.get("/movies/:id/watch-providers", asyncHandler(async (req, res) => {
   const region = (req.query.region || "US").toUpperCase();
   const providers = await getMovieWatchProviders(req.params.id, region);
   res.json(providers);
+}));
+
+// Actor/cast-member detail card — photo, bio, filmography. Public,
+// cached, no auth needed (same reasoning as the watch-providers routes).
+app.get("/people/:id", asyncHandler(async (req, res) => {
+  const person = await getPersonDetails(req.params.id);
+  res.json(person);
 }));
 
 // Public per-episode comments — visible to every Scenera user, not

@@ -173,4 +173,45 @@ async function getGenres() {
   return genres;
 }
 
-module.exports = { getWatchProviders, getShowWatchProviders, getMovieWatchProviders, getShowBackdrop, getTopShows, getTrending, getGenres };
+/**
+ * A cast/crew member's profile for the "tap an actor" card on Show
+ * Detail — photo, biography and their known-for filmography (movies
+ * and TV combined, sorted by popularity). A person's bio/filmography
+ * changes rarely, so this is cached like everything else here.
+ */
+async function getPersonDetails(personId) {
+  const cacheKey = `person:${personId}`;
+  const cached = getCached(cacheKey);
+  if (cached) return cached;
+
+  const data = await tmdbGet(`/person/${personId}?append_to_response=combined_credits`);
+
+  const credits = (data.combined_credits?.cast || [])
+    .filter((c) => c.poster_path) // drop credits with no artwork — nothing useful to show
+    .sort((a, b) => (b.popularity || 0) - (a.popularity || 0))
+    .slice(0, 20)
+    .map((c) => ({
+      id: c.id,
+      mediaType: c.media_type, // "movie" | "tv"
+      title: c.media_type === "movie" ? c.title : c.name,
+      posterPath: c.poster_path,
+      character: c.character || null,
+      year: (c.release_date || c.first_air_date || "").slice(0, 4) || null,
+    }));
+
+  const person = {
+    id: data.id,
+    name: data.name,
+    biography: data.biography || "",
+    profilePath: data.profile_path || null,
+    birthday: data.birthday || null,
+    placeOfBirth: data.place_of_birth || null,
+    knownForDepartment: data.known_for_department || null,
+    credits,
+  };
+
+  setCached(cacheKey, person);
+  return person;
+}
+
+module.exports = { getWatchProviders, getShowWatchProviders, getMovieWatchProviders, getShowBackdrop, getTopShows, getTrending, getGenres, getPersonDetails };
