@@ -19,6 +19,7 @@ const { getFavoriteCharacters, addFavoriteCharacter, removeFavoriteCharacter } =
 const { listFeatureRequests, createFeatureRequest, toggleVote } = require("./featureRequests");
 const { logRewatch, removeRewatch, getRewatchCountsForShow } = require("./episodeRewatches");
 const { findUserByEmail, findUserByUsername } = require("./db");
+const { getShowCommunityRating } = require("./showRatings");
 
 const app = express();
 
@@ -176,6 +177,14 @@ app.get("/movies/:id/watch-providers", asyncHandler(async (req, res) => {
 app.get("/people/:id", asyncHandler(async (req, res) => {
   const person = await getPersonDetails(req.params.id);
   res.json(person);
+}));
+
+// Scenera's own aggregate rating for a show — public, no auth needed,
+// not cached since it's a cheap aggregate query and changes as people
+// rate the show.
+app.get("/shows/:id/community-rating", asyncHandler(async (req, res) => {
+  const rating = await getShowCommunityRating(req.params.id);
+  res.json(rating);
 }));
 
 // Public per-episode comments — visible to every Scenera user, not
