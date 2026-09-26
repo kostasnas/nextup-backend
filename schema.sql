@@ -85,3 +85,33 @@ create policy "own import jobs" on import_jobs for all using (auth.uid() = user_
 create policy "own unmatched rows" on import_unmatched for all using (
   auth.uid() = (select user_id from import_jobs where import_jobs.id = import_job_id)
 );
+
+-- ============================================================
+-- In-app "suggest a feature" board (Settings > Feature Requests).
+-- Access is enforced in the Express layer (server.js uses the
+-- service-role key, which bypasses RLS) — these policies only matter
+-- if the tables are ever queried directly with a user-scoped key.
+-- ============================================================
+create table feature_requests (
+  id uuid primary key default gen_random_uuid(),
+  user_id uuid references auth.users(id) on delete cascade,
+  title text not null,
+  description text,
+  status text not null default 'open', -- 'open' | 'planned' | 'shipped' | 'declined'
+  created_at timestamptz not null default now()
+);
+
+create table feature_request_votes (
+  feature_request_id uuid references feature_requests(id) on delete cascade,
+  user_id uuid references auth.users(id) on delete cascade,
+  created_at timestamptz not null default now(),
+  primary key (feature_request_id, user_id)
+);
+
+alter table feature_requests enable row level security;
+alter table feature_request_votes enable row level security;
+
+create policy "read all feature requests" on feature_requests for select using (true);
+create policy "insert own feature requests" on feature_requests for insert with check (auth.uid() = user_id);
+create policy "read all feature request votes" on feature_request_votes for select using (true);
+create policy "manage own feature request votes" on feature_request_votes for all using (auth.uid() = user_id);

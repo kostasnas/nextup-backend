@@ -16,6 +16,7 @@ const { sendMessage, getMessages, deleteMessage } = require("./messages");
 const { getComments, getCommentCountsForShow, addComment, deleteComment } = require("./episodeComments");
 const { getMovieWatchlist, setMovieStatus, updateMovieEntry, removeMovie } = require("./movies");
 const { getFavoriteCharacters, addFavoriteCharacter, removeFavoriteCharacter } = require("./favoriteCharacters");
+const { listFeatureRequests, createFeatureRequest, toggleVote } = require("./featureRequests");
 const { logRewatch, getRewatchCountsForShow } = require("./episodeRewatches");
 const { findUserByEmail, findUserByUsername } = require("./db");
 
@@ -234,6 +235,26 @@ app.post("/favorite-characters", requireAuth, asyncHandler(async (req, res) => {
 
 app.delete("/favorite-characters/:sourceType/:sourceTmdbId/:tmdbPersonId", requireAuth, asyncHandler(async (req, res) => {
   const result = await removeFavoriteCharacter(supabase, req.userId, req.params.tmdbPersonId, req.params.sourceType, req.params.sourceTmdbId);
+  res.json(result);
+}));
+
+app.get("/feature-requests", requireAuth, asyncHandler(async (req, res) => {
+  const list = await listFeatureRequests(supabase, req.userId);
+  res.json(list);
+}));
+
+app.post("/feature-requests", requireAuth, asyncHandler(async (req, res) => {
+  const title = (req.body.title || "").trim();
+  const description = (req.body.description || "").trim();
+  if (!title) return res.status(400).json({ error: "title is required" });
+  if (title.length > 140) return res.status(400).json({ error: "title must be 140 characters or fewer" });
+  if (description.length > 1000) return res.status(400).json({ error: "description must be 1000 characters or fewer" });
+  const created = await createFeatureRequest(supabase, req.userId, title, description);
+  res.json(created);
+}));
+
+app.post("/feature-requests/:id/vote", requireAuth, asyncHandler(async (req, res) => {
+  const result = await toggleVote(supabase, req.userId, req.params.id);
   res.json(result);
 }));
 
