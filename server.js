@@ -248,6 +248,19 @@ app.get("/feature-requests", requireAuth, asyncHandler(async (req, res) => {
   res.json(list);
 }));
 
+// Public, read-only mirror of the feature-request board — shown on
+// the web landing page (before sign-in) so visitors and the TV Time
+// Refugees community can see what's planned/shipped without an
+// account. No vote counts hidden, but no per-user fields (isMine,
+// votedByMe) since there's no user here.
+app.get("/roadmap", asyncHandler(async (req, res) => {
+  const list = await listFeatureRequests(supabase, null);
+  const publicList = list.map(({ id, title, description, status, createdAt, voteCount }) => ({
+    id, title, description, status, createdAt, voteCount,
+  }));
+  res.json(publicList);
+}));
+
 app.post("/feature-requests", requireAuth, asyncHandler(async (req, res) => {
   const title = (req.body.title || "").trim();
   const description = (req.body.description || "").trim();
