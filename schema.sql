@@ -115,3 +115,18 @@ create policy "read all feature requests" on feature_requests for select using (
 create policy "insert own feature requests" on feature_requests for insert with check (auth.uid() = user_id);
 create policy "read all feature request votes" on feature_request_votes for select using (true);
 create policy "manage own feature request votes" on feature_request_votes for all using (auth.uid() = user_id);
+
+-- Likes on episode comments — one like per user per comment, same
+-- shape as feature_request_votes above.
+create table comment_likes (
+  id uuid primary key default gen_random_uuid(),
+  comment_id uuid references episode_comments(id) on delete cascade,
+  user_id uuid references auth.users(id) on delete cascade,
+  created_at timestamptz not null default now(),
+  unique (comment_id, user_id)
+);
+
+alter table comment_likes enable row level security;
+
+create policy "read all comment likes" on comment_likes for select using (true);
+create policy "manage own comment likes" on comment_likes for all using (auth.uid() = user_id);

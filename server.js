@@ -13,7 +13,7 @@ const { matchShows, searchShow, searchMovie } = require("./tmdbMatcher");
 const { syncShowProgress, fetchAllEpisodes, cacheEpisodes } = require("./episodeSync");
 const { sendFriendRequest, listFriends, acceptFriendRequest, declineFriendRequest, removeFriend, getFriendFavorites } = require("./friends");
 const { sendMessage, getMessages, deleteMessage } = require("./messages");
-const { getComments, getCommentCountsForShow, addComment, deleteComment } = require("./episodeComments");
+const { getComments, getCommentCountsForShow, addComment, deleteComment, toggleCommentLike, getEpisodeContext } = require("./episodeComments");
 const { getMovieWatchlist, setMovieStatus, updateMovieEntry, removeMovie } = require("./movies");
 const { getFavoriteCharacters, addFavoriteCharacter, removeFavoriteCharacter } = require("./favoriteCharacters");
 const { listFeatureRequests, createFeatureRequest, toggleVote } = require("./featureRequests");
@@ -284,7 +284,7 @@ app.post("/feature-requests/:id/vote", requireAuth, asyncHandler(async (req, res
 }));
 
 app.get("/episodes/:id/comments", requireAuth, asyncHandler(async (req, res) => {
-  const comments = await getComments(req.params.id);
+  const comments = await getComments(req.params.id, req.userId);
   res.json(comments);
 }));
 
@@ -299,6 +299,27 @@ app.post("/episodes/:id/comments", requireAuth, asyncHandler(async (req, res) =>
 app.delete("/comments/:id", requireAuth, asyncHandler(async (req, res) => {
   const result = await deleteComment(supabase, req.params.id, req.userId);
   res.json(result);
+}));
+
+app.post("/comments/:id/like", requireAuth, asyncHandler(async (req, res) => {
+  const result = await toggleCommentLike(supabase, req.userId, req.params.id);
+
+  // Notify the comment's author, but never for liking your own
+  // comment, and never let a notification failure fail the like
+  // itself — fire-and-forget with its own catch.
+  if (result.liked && result.commentAuthorId !== req.userId) {
+    getEpisodeContext(result.episodeId)
+      .then((ctx) => {
+        const where = ctx ? `${ctx.show_title} S${ctx.season_number}E${ctx.episode_number}` : "an episode";
+        return sendPushToUser(supabase, result.commentAuthorId, {
+          title: "Someone liked your comment",
+          body: `Your comment on ${where} got a like.`,
+        });
+      })
+      .catch((e) => console.error("Failed to send comment-like notification:", e.message));
+  }
+
+  res.json({ liked: result.liked, likeCount: result.likeCount });
 }));
 
 app.get("/discover/top-shows", asyncHandler(async (req, res) => {
