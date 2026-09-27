@@ -740,14 +740,58 @@ app.get("/widget/next-up", requireAuth, asyncHandler(async (req, res) => {
   });
 }));
 
+// Shared by /widget/ready-to-watch and /widget/continue-watching:
+// the earliest already-aired, unwatched episode for EACH show the
+// user is actively tracking. Queried one show at a time (the tracked
+// shows list itself is small — dozens at most) rather than one
+// global "most recently aired 300 episodes across the whole account"
+// query: that global-and-capped shape was itself a second, subtler
+// version of the truncation bug fixed above. If a user tracks enough
+// shows, the true gap in one show (e.g. "still on S2E2") can be
+// older than 300 OTHER episodes that aired more recently across
+// every other tracked show, so it would fall outside the global
+// window and silently never be considered — the widget would then
+// jump straight to a later, in-window episode (e.g. S3E1) as if it
+// were the earliest gap. Scoping the query per show sidesteps that
+// entirely: each show's own episode count is small, so no arbitrary
+// cross-account limit is ever in play.
+async function getReadyToWatchByShow(userId, today) {
+  const { data: trackedRows, error: trackedErr } = await supabase
+    .from("user_watchlist")
+    .select("show_id, shows(id, tmdb_id, title, poster_path)")
+    .eq("user_id", userId)
+    .in("status", ["watching", "up_to_date"]);
+  if (trackedErr) throw trackedErr;
+
+  const perShow = await Promise.all(
+    (trackedRows || [])
+      .filter((tw) => tw.shows)
+      .map(async (tw) => {
+        const { data: eps, error: epErr } = await supabase
+          .from("episodes")
+          .select("id, show_id, season_number, episode_number, air_date, watched_episodes(user_id)")
+          .eq("show_id", tw.show_id)
+          .not("air_date", "is", null)
+          .lt("air_date", today)
+          .eq("watched_episodes.user_id", userId)
+          .order("air_date", { ascending: true })
+          .limit(500); // generous per-show cap — a single show/season combo is never anywhere near this
+        if (epErr) throw epErr;
+
+        const firstGap = (eps || []).find((e) => !(Array.isArray(e.watched_episodes) && e.watched_episodes.length > 0));
+        return firstGap ? { ...firstGap, shows: tw.shows } : null;
+      })
+  );
+
+  return perShow.filter(Boolean).sort((a, b) => (a.air_date < b.air_date ? -1 : 1));
+}
+
 // Second widget — the opposite of "next premiere": episodes that
 // have ALREADY aired but aren't watched yet, i.e. what's sitting
 // ready right now. Deliberately NOT using the get_next_episodes()
 // RPC here — that function is designed to run under the calling
 // user's own session (relying on auth.uid() internally), which the
-// backend's own service connection doesn't carry per-request. Same
-// direct-query, explicit req.userId pattern as /widget/next-up
-// above, just with the date comparison inverted.
+// backend's own service connection doesn't carry per-request.
 //
 // Also returns topEpisodeId/topSeasonNumber/topEpisodeNumber now, so
 // the widget's "Check-in" button can launch the app with enough
@@ -757,39 +801,7 @@ app.get("/widget/next-up", requireAuth, asyncHandler(async (req, res) => {
 app.get("/widget/ready-to-watch", requireAuth, asyncHandler(async (req, res) => {
   const today = new Date().toISOString().slice(0, 10);
 
-  // Watched status is embedded per-candidate-episode (scoped to this
-  // user) instead of fetched as one big watched_episodes list for the
-  // whole account — see the matching comment on /widget/next-up for
-  // why: Supabase's default 1000-row API cap silently truncated that
-  // list for long-time users, making already-watched episodes (e.g.
-  // deep into a long-running show like Bleach) look unwatched again.
-  const { data: rows, error } = await supabase
-    .from("episodes")
-    .select(`
-      id, show_id, season_number, episode_number, air_date,
-      shows!inner(id, tmdb_id, title, poster_path,
-        user_watchlist!inner(user_id, status)
-      ),
-      watched_episodes(user_id)
-    `)
-    .lt("air_date", today)
-    .not("air_date", "is", null)
-    .eq("shows.user_watchlist.user_id", req.userId)
-    .in("shows.user_watchlist.status", ["watching", "up_to_date"])
-    .eq("watched_episodes.user_id", req.userId)
-    .order("air_date", { ascending: false })
-    .limit(300); // generous buffer — filtered down to per-show "earliest gap" below
-  if (error) throw error;
-
-  // One entry per show: the EARLIEST unwatched aired episode (the
-  // actual next one to watch), not just any unwatched episode.
-  const earliestUnwatchedByShow = {};
-  for (const r of rows || []) {
-    if (Array.isArray(r.watched_episodes) && r.watched_episodes.length > 0) continue;
-    const existing = earliestUnwatchedByShow[r.show_id];
-    if (!existing || r.air_date < existing.air_date) earliestUnwatchedByShow[r.show_id] = r;
-  }
-  const readyShows = Object.values(earliestUnwatchedByShow).sort((a, b) => (a.air_date < b.air_date ? -1 : 1));
+  const readyShows = await getReadyToWatchByShow(req.userId, today);
 
   if (readyShows.length === 0) return res.json({ hasReady: false, count: 0 });
 
@@ -814,35 +826,8 @@ app.get("/widget/ready-to-watch", requireAuth, asyncHandler(async (req, res) => 
 app.get("/widget/continue-watching", requireAuth, asyncHandler(async (req, res) => {
   const today = new Date().toISOString().slice(0, 10);
 
-  // Same embedded-per-candidate watched-status approach as the other
-  // two widget routes — never fetches the user's whole watched_episodes
-  // history, so it can't be truncated by Supabase's default 1000-row
-  // API cap (see the comment on /widget/next-up for the full story).
-  const { data: readyRows, error: readyErr } = await supabase
-    .from("episodes")
-    .select(`
-      id, show_id, season_number, episode_number, air_date,
-      shows!inner(id, tmdb_id, title,
-        user_watchlist!inner(user_id, status)
-      ),
-      watched_episodes(user_id)
-    `)
-    .lt("air_date", today)
-    .not("air_date", "is", null)
-    .eq("shows.user_watchlist.user_id", req.userId)
-    .in("shows.user_watchlist.status", ["watching", "up_to_date"])
-    .eq("watched_episodes.user_id", req.userId)
-    .order("air_date", { ascending: false })
-    .limit(300);
-  if (readyErr) throw readyErr;
-
-  const earliestUnwatchedByShow = {};
-  for (const r of readyRows || []) {
-    if (Array.isArray(r.watched_episodes) && r.watched_episodes.length > 0) continue;
-    const existing = earliestUnwatchedByShow[r.show_id];
-    if (!existing || r.air_date < existing.air_date) earliestUnwatchedByShow[r.show_id] = r;
-  }
-  let pick = Object.values(earliestUnwatchedByShow).sort((a, b) => (a.air_date < b.air_date ? -1 : 1))[0];
+  const readyShows = await getReadyToWatchByShow(req.userId, today);
+  let pick = readyShows[0];
 
   if (!pick) {
     // Nothing ready to watch — fall back to the soonest upcoming
