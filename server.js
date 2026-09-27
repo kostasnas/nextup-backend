@@ -731,6 +731,7 @@ app.get("/widget/next-up", requireAuth, asyncHandler(async (req, res) => {
 
   res.json({
     hasNext: true,
+    tmdbId: next.shows.tmdb_id,
     title: next.shows.title,
     airDate: next.air_date,
     posterPath: next.shows.poster_path,
@@ -842,6 +843,7 @@ app.get("/widget/ready-to-watch", requireAuth, asyncHandler(async (req, res) => 
   res.json({
     hasReady: true,
     count: readyShows.length,
+    topTmdbId: top.shows.tmdb_id,
     topTitle: top.shows.title,
     topPosterPath: top.shows.poster_path,
     topEpisodeId: top.id,
@@ -892,6 +894,7 @@ app.get("/widget/continue-watching", requireAuth, asyncHandler(async (req, res) 
 
   res.json({
     hasShow: true,
+    tmdbId: pick.shows.tmdb_id,
     title: pick.shows.title,
     seasonNumber: pick.season_number,
     episodeNumber: pick.episode_number,
@@ -912,6 +915,7 @@ app.get("/widget/watch-next-list", requireAuth, asyncHandler(async (req, res) =>
   res.json({
     items: readyShows.slice(0, 15).map((r) => ({
       episodeId: r.id,
+      tmdbId: r.shows.tmdb_id,
       title: r.shows.title,
       posterPath: r.shows.poster_path,
       seasonNumber: r.season_number,
@@ -963,6 +967,7 @@ app.get("/widget/upcoming-list", requireAuth, asyncHandler(async (req, res) => {
   res.json({
     items: upcoming.slice(0, 15).map((r) => ({
       episodeId: r.id,
+      tmdbId: r.shows.tmdb_id,
       title: r.shows.title,
       posterPath: r.shows.poster_path,
       seasonNumber: r.season_number,
