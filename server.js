@@ -15,7 +15,7 @@ const { sendFriendRequest, listFriends, acceptFriendRequest, declineFriendReques
 const { sendMessage, getMessages, deleteMessage } = require("./messages");
 const { getComments, getCommentCountsForShow, addComment, deleteComment, toggleCommentLike, getEpisodeContext } = require("./episodeComments");
 const { getMovieWatchlist, setMovieStatus, updateMovieEntry, removeMovie } = require("./movies");
-const { getFavoriteCharacters, addFavoriteCharacter, removeFavoriteCharacter } = require("./favoriteCharacters");
+const { getFavoriteCharacters, addFavoriteCharacter, removeFavoriteCharacter, getCharacterVoteCounts } = require("./favoriteCharacters");
 const { listFeatureRequests, createFeatureRequest, toggleVote } = require("./featureRequests");
 const { logRewatch, removeRewatch, getRewatchCountsForShow } = require("./episodeRewatches");
 const { findUserByEmail, findUserByUsername } = require("./db");
@@ -257,6 +257,14 @@ app.post("/favorite-characters", requireAuth, asyncHandler(async (req, res) => {
 app.delete("/favorite-characters/:sourceType/:sourceTmdbId/:tmdbPersonId", requireAuth, asyncHandler(async (req, res) => {
   const result = await removeFavoriteCharacter(supabase, req.userId, req.params.tmdbPersonId, req.params.sourceType, req.params.sourceTmdbId);
   res.json(result);
+}));
+
+// Public "Fictional Character Vote" tally — no auth required, same
+// as /roadmap: this is a per-show/movie leaderboard everyone sees,
+// not personal data. { [tmdbPersonId]: voteCount }.
+app.get("/character-votes/:sourceType/:sourceTmdbId", asyncHandler(async (req, res) => {
+  const counts = await getCharacterVoteCounts(supabase, req.params.sourceType, req.params.sourceTmdbId);
+  res.json(counts);
 }));
 
 app.get("/feature-requests", requireAuth, asyncHandler(async (req, res) => {

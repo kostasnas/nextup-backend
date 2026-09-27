@@ -41,4 +41,26 @@ async function removeFavoriteCharacter(supabase, userId, tmdbPersonId, sourceTyp
   return { ok: true };
 }
 
-module.exports = { getFavoriteCharacters, addFavoriteCharacter, removeFavoriteCharacter };
+// Public tally for the "Fictional Character Vote" feature — every
+// "favorite this actor" heart tap on a cast member (see
+// addFavoriteCharacter above) already IS a vote; this just counts
+// them per character for one show/movie. No separate votes table:
+// the existing favorite_characters rows are the votes. Aggregated in
+// JS rather than a Postgres GROUP BY since a single show's cast is
+// at most a few hundred rows — cheap either way, and this avoids a
+// bespoke RPC function just for a count.
+async function getCharacterVoteCounts(supabase, sourceType, sourceTmdbId) {
+  const { data, error } = await supabase
+    .from("favorite_characters")
+    .select("tmdb_person_id")
+    .eq("source_type", sourceType)
+    .eq("source_tmdb_id", sourceTmdbId);
+  if (error) throw error;
+  const counts = {};
+  for (const row of data || []) {
+    counts[row.tmdb_person_id] = (counts[row.tmdb_person_id] || 0) + 1;
+  }
+  return counts;
+}
+
+module.exports = { getFavoriteCharacters, addFavoriteCharacter, removeFavoriteCharacter, getCharacterVoteCounts };
