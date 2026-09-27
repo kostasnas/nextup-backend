@@ -899,6 +899,101 @@ app.get("/widget/continue-watching", requireAuth, asyncHandler(async (req, res) 
   });
 }));
 
+// Powers the "Watch Next" home-screen LIST widget (multiple shows at
+// once, each with a background-markable checkbox) — same underlying
+// pick-and-order logic as /widget/ready-to-watch (recency of actual
+// viewing first, oldest gap as tiebreaker), just returning the whole
+// list instead of only the top one. Capped at 15 rows — plenty for a
+// scrollable widget list without ever needing pagination there.
+app.get("/widget/watch-next-list", requireAuth, asyncHandler(async (req, res) => {
+  const today = new Date().toISOString().slice(0, 10);
+  const readyShows = await getReadyToWatchByShow(req.userId, today);
+
+  res.json({
+    items: readyShows.slice(0, 15).map((r) => ({
+      episodeId: r.id,
+      title: r.shows.title,
+      posterPath: r.shows.poster_path,
+      seasonNumber: r.season_number,
+      episodeNumber: r.episode_number,
+    })),
+  });
+}));
+
+// Powers the "Upcoming Episodes" home-screen LIST widget — the
+// soonest still-unaired episode for EACH tracked show, sorted
+// chronologically (soonest first). Read-only (no checkbox), so unlike
+// getReadyToWatchByShow this doesn't need any watched-status check at
+// all — a not-yet-aired episode is never "watched". Queried per show
+// for the same reason as getReadyToWatchByShow: a global
+// most-recent-N-rows query can silently drop a show whose next
+// episode is further out than 15 other shows' nearer ones.
+async function getUpcomingByShow(userId, today) {
+  const { data: trackedRows, error: trackedErr } = await supabase
+    .from("user_watchlist")
+    .select("show_id, shows(id, tmdb_id, title, poster_path)")
+    .eq("user_id", userId)
+    .in("status", ["watching", "up_to_date"]);
+  if (trackedErr) throw trackedErr;
+
+  const perShow = await Promise.all(
+    (trackedRows || [])
+      .filter((tw) => tw.shows)
+      .map(async (tw) => {
+        const { data: eps, error: epErr } = await supabase
+          .from("episodes")
+          .select("id, season_number, episode_number, air_date")
+          .eq("show_id", tw.show_id)
+          .gte("air_date", today)
+          .order("air_date", { ascending: true })
+          .limit(1);
+        if (epErr) throw epErr;
+        const next = (eps || [])[0];
+        return next ? { ...next, shows: tw.shows } : null;
+      })
+  );
+
+  return perShow.filter(Boolean).sort((a, b) => (a.air_date < b.air_date ? -1 : 1));
+}
+
+app.get("/widget/upcoming-list", requireAuth, asyncHandler(async (req, res) => {
+  const today = new Date().toISOString().slice(0, 10);
+  const upcoming = await getUpcomingByShow(req.userId, today);
+
+  res.json({
+    items: upcoming.slice(0, 15).map((r) => ({
+      episodeId: r.id,
+      title: r.shows.title,
+      posterPath: r.shows.poster_path,
+      seasonNumber: r.season_number,
+      episodeNumber: r.episode_number,
+      airDate: r.air_date,
+    })),
+  });
+}));
+
+// Called directly by the native side (a background BroadcastReceiver,
+// not the app UI) when the person taps the checkbox on a "Watch Next"
+// widget row — marks that one episode watched without ever opening
+// the app. Deliberately its own tiny endpoint rather than routing
+// through the app's own Supabase-direct write path: the widget only
+// carries a bearer access token (via requireAuth, same as every other
+// /widget/* route), no live Supabase client/session.
+app.post("/widget/mark-watched", requireAuth, asyncHandler(async (req, res) => {
+  const { episodeId } = req.body || {};
+  if (!episodeId) return res.status(400).json({ error: "episodeId is required" });
+
+  const { error } = await supabase
+    .from("watched_episodes")
+    .upsert(
+      { user_id: req.userId, episode_id: episodeId, source: "manual" },
+      { onConflict: "user_id,episode_id" }
+    );
+  if (error) throw error;
+
+  res.json({ ok: true });
+}));
+
 app.get("/shows/:tmdbId/full-progress", requireAuth, asyncHandler(async (req, res) => {
   const tmdbId = req.params.tmdbId;
 
