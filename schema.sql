@@ -130,3 +130,9 @@ alter table comment_likes enable row level security;
 
 create policy "read all comment likes" on comment_likes for select using (true);
 create policy "manage own comment likes" on comment_likes for all using (auth.uid() = user_id);
+
+-- Reply threading on episode comments — one level deep (a reply to a
+-- reply attaches to that reply's own top-level parent; see the
+-- addComment comment in episodeComments.js). episode_comments itself
+-- predates this file, so run this against the existing table:
+alter table episode_comments add column parent_id uuid references episode_comments(id) on delete cascade;

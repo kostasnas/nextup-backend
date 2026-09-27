@@ -306,10 +306,26 @@ app.get("/episodes/:id/comments", requireAuth, asyncHandler(async (req, res) => 
 }));
 
 app.post("/episodes/:id/comments", requireAuth, asyncHandler(async (req, res) => {
-  const { content, imageUrl } = req.body;
+  const { content, imageUrl, parentId } = req.body;
   const trimmed = (content || "").trim();
   if (!trimmed && !imageUrl) return res.status(400).json({ error: "content or imageUrl is required" });
-  const comment = await addComment(supabase, req.params.id, req.userId, trimmed, imageUrl);
+  const comment = await addComment(supabase, req.params.id, req.userId, trimmed, imageUrl, parentId || null);
+
+  // Same fire-and-forget pattern as the like notification below —
+  // notify the comment being replied to's author, never for replying
+  // to your own comment.
+  if (comment.parentAuthorId && comment.parentAuthorId !== req.userId) {
+    getEpisodeContext(req.params.id)
+      .then((ctx) => {
+        const where = ctx ? `${ctx.show_title} S${ctx.season_number}E${ctx.episode_number}` : "an episode";
+        return sendPushToUser(supabase, comment.parentAuthorId, {
+          title: "Someone replied to your comment",
+          body: `New reply on ${where}: "${trimmed.slice(0, 80)}"`,
+        });
+      })
+      .catch((e) => console.error("Failed to send comment-reply notification:", e.message));
+  }
+
   res.json(comment);
 }));
 

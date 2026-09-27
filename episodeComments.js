@@ -12,7 +12,7 @@ const { getPool } = require("./db");
  */
 async function getComments(episodeId, userId) {
   const { rows } = await getPool().query(
-    `select ec.id, ec.content, ec.created_at, ec.user_id, ec.image_url,
+    `select ec.id, ec.content, ec.created_at, ec.user_id, ec.image_url, ec.parent_id,
             au.raw_user_meta_data->>'display_name' as display_name,
             count(cl.id)::int as like_count,
             bool_or(cl.user_id = $2) as liked_by_me
@@ -89,14 +89,42 @@ async function getEpisodeContext(episodeId) {
   return rows[0] || null;
 }
 
-async function addComment(supabase, episodeId, userId, content, imageUrl) {
+/**
+ * `parentId`, when given, makes this a reply — nested one level under
+ * an existing comment on the SAME episode (verified below, since a
+ * stray/forged parentId from another episode would otherwise render
+ * as a reply that silently belongs to the wrong thread). Threads are
+ * flat (a reply to a reply still points at the ORIGINAL top-level
+ * comment) — kept intentionally simple, matching what the comparison
+ * table actually asks for ("replies"), not full nested sub-threads.
+ */
+async function addComment(supabase, episodeId, userId, content, imageUrl, parentId) {
+  let resolvedParentId = null;
+  let parentAuthorId = null;
+  if (parentId) {
+    const { data: parent, error: parentError } = await supabase
+      .from("episode_comments")
+      .select("id, user_id, episode_id, parent_id")
+      .eq("id", parentId)
+      .single();
+    if (parentError || !parent || parent.episode_id !== episodeId) {
+      const e = new Error("Comment being replied to was not found on this episode");
+      e.status = 404;
+      throw e;
+    }
+    // Flatten: replying to a reply attaches to that reply's own
+    // top-level parent, so threads never nest more than one level.
+    resolvedParentId = parent.parent_id || parent.id;
+    parentAuthorId = parent.user_id;
+  }
+
   const { data: comment, error } = await supabase
     .from("episode_comments")
-    .insert({ episode_id: episodeId, user_id: userId, content, image_url: imageUrl || null })
+    .insert({ episode_id: episodeId, user_id: userId, content, image_url: imageUrl || null, parent_id: resolvedParentId })
     .select()
     .single();
   if (error) throw error;
-  return comment;
+  return { ...comment, parentAuthorId };
 }
 
 /**
