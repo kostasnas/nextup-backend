@@ -755,6 +755,16 @@ app.get("/widget/next-up", requireAuth, asyncHandler(async (req, res) => {
 // were the earliest gap. Scoping the query per show sidesteps that
 // entirely: each show's own episode count is small, so no arbitrary
 // cross-account limit is ever in play.
+//
+// Which show to lead with, among several with a gap, is picked by
+// RECENCY OF ACTUAL VIEWING (each show's most recent watched_at) —
+// not by whose gap is chronologically oldest. Someone can leave one
+// show mid-way and be actively bingeing a different one; the show
+// they last actually marked an episode watched on is the one they're
+// "continuing", regardless of which show's unwatched episode aired
+// longest ago. A show with no viewing history at all yet (e.g. just
+// added, nothing marked watched) sorts after every show with any
+// history, ordered among themselves by gap air date as before.
 async function getReadyToWatchByShow(userId, today) {
   const { data: trackedRows, error: trackedErr } = await supabase
     .from("user_watchlist")
@@ -767,23 +777,46 @@ async function getReadyToWatchByShow(userId, today) {
     (trackedRows || [])
       .filter((tw) => tw.shows)
       .map(async (tw) => {
-        const { data: eps, error: epErr } = await supabase
-          .from("episodes")
-          .select("id, show_id, season_number, episode_number, air_date, watched_episodes(user_id)")
-          .eq("show_id", tw.show_id)
-          .not("air_date", "is", null)
-          .lt("air_date", today)
-          .eq("watched_episodes.user_id", userId)
-          .order("air_date", { ascending: true })
-          .limit(500); // generous per-show cap — a single show/season combo is never anywhere near this
+        const [{ data: eps, error: epErr }, { data: lastWatchedRows, error: lastErr }] = await Promise.all([
+          supabase
+            .from("episodes")
+            .select("id, show_id, season_number, episode_number, air_date, watched_episodes(user_id)")
+            .eq("show_id", tw.show_id)
+            .not("air_date", "is", null)
+            .lt("air_date", today)
+            .eq("watched_episodes.user_id", userId)
+            .order("air_date", { ascending: true })
+            .limit(500), // generous per-show cap — a single show/season combo is never anywhere near this
+          supabase
+            .from("watched_episodes")
+            .select("watched_at, episodes!inner(show_id)")
+            .eq("user_id", userId)
+            .eq("episodes.show_id", tw.show_id)
+            .order("watched_at", { ascending: false })
+            .limit(1),
+        ]);
         if (epErr) throw epErr;
+        if (lastErr) throw lastErr;
 
         const firstGap = (eps || []).find((e) => !(Array.isArray(e.watched_episodes) && e.watched_episodes.length > 0));
-        return firstGap ? { ...firstGap, shows: tw.shows } : null;
+        if (!firstGap) return null;
+        const lastWatchedAt = (lastWatchedRows || [])[0]?.watched_at || null;
+        return { ...firstGap, shows: tw.shows, lastWatchedAt };
       })
   );
 
-  return perShow.filter(Boolean).sort((a, b) => (a.air_date < b.air_date ? -1 : 1));
+  return perShow.filter(Boolean).sort((a, b) => {
+    // Both have viewing history — most recently watched show first.
+    if (a.lastWatchedAt && b.lastWatchedAt) {
+      if (a.lastWatchedAt !== b.lastWatchedAt) return a.lastWatchedAt > b.lastWatchedAt ? -1 : 1;
+    } else if (a.lastWatchedAt || b.lastWatchedAt) {
+      // Only one has any viewing history — that one leads.
+      return a.lastWatchedAt ? -1 : 1;
+    }
+    // Neither has viewing history (or tied) — fall back to whichever
+    // gap aired first.
+    return a.air_date < b.air_date ? -1 : 1;
+  });
 }
 
 // Second widget — the opposite of "next premiere": episodes that
