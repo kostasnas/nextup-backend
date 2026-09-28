@@ -931,22 +931,32 @@ app.get("/widget/ready-to-watch", requireAuth, asyncHandler(async (req, res) => 
   if (readyShows.length === 0) return res.json({ hasReady: false, count: 0 });
 
   const top = readyShows[0];
-  // Total READY EPISODES across every tracked show, not the number of
-  // shows that happen to have a gap — a show can have several unwatched
-  // aired episodes at once (e.g. a whole unwatched season), and the
-  // widget's "N episodes ready" text needs to reflect that real total,
-  // not be silently capped at 1-per-show.
-  const totalReadyEpisodes = readyShows.reduce((sum, s) => sum + s.gapCount, 0);
+  // Count of SHOWS with a gap, not total ready episodes summed across
+  // the account — the widget only ever names ONE show (topTitle, the
+  // most recently watched), so pairing that single name with a total
+  // episode count borrowed from every OTHER tracked show too reads as
+  // if all those episodes belonged to the named show (confusing, and
+  // makes an already-large per-show gap look astronomically bigger).
+  // Naming how many shows have something new avoids that mismatch.
+  const showsWithGaps = readyShows.length;
+  // When more than one show has something new, don't put a SPECIFIC
+  // show's poster/name next to a statusText that talks about several
+  // OTHER shows too — that pairing reads as if the pictured show is
+  // the one with N gaps. Fall back to a generic title and no poster
+  // (the widget already renders a plain placeholder box when no
+  // poster is sent) in that case; the Check-in button still marks
+  // the top (most-recently-watched) show's episode either way.
+  const isMultiShow = showsWithGaps > 1;
   res.json({
     hasReady: true,
-    count: totalReadyEpisodes,
+    count: showsWithGaps,
     topTmdbId: top.shows.tmdb_id,
-    topTitle: top.shows.title,
-    topPosterPath: top.shows.poster_path,
+    topTitle: isMultiShow ? "Ready to Watch" : top.shows.title,
+    topPosterPath: isMultiShow ? null : top.shows.poster_path,
     topEpisodeId: top.id,
     topSeasonNumber: top.season_number,
     topEpisodeNumber: top.episode_number,
-    statusText: totalReadyEpisodes > 1 ? `${totalReadyEpisodes} episodes ready` : "New episode available",
+    statusText: isMultiShow ? `${showsWithGaps} shows with new episodes` : "New episode available",
   });
 }));
 
