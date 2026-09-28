@@ -136,3 +136,25 @@ create policy "manage own comment likes" on comment_likes for all using (auth.ui
 -- addComment comment in episodeComments.js). episode_comments itself
 -- predates this file, so run this against the existing table:
 alter table episode_comments add column parent_id uuid references episode_comments(id) on delete cascade;
+
+-- In-app notification inbox — currently used for comment likes and
+-- replies only (see notifications.js / server.js). Deliberately kept
+-- separate from push (push_tokens / pushNotifications.js): a like or
+-- reply on a busy comment thread firing an immediate phone push per
+-- event read as spammy, so those two event types are in-app-only —
+-- this table is what backs that inbox, checked when the person opens
+-- it in the app rather than pushed to the device in real time.
+create table notifications (
+  id uuid primary key default gen_random_uuid(),
+  user_id uuid references auth.users(id) on delete cascade,
+  type text not null, -- 'comment_like' | 'comment_reply'
+  title text not null,
+  body text not null,
+  data jsonb, -- e.g. { episodeId, label } for opening the right episode comments thread
+  read boolean not null default false,
+  created_at timestamptz not null default now()
+);
+
+alter table notifications enable row level security;
+
+create policy "own notifications" on notifications for all using (auth.uid() = user_id);

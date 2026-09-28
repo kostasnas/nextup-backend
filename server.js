@@ -20,6 +20,7 @@ const { listFeatureRequests, createFeatureRequest, toggleVote } = require("./fea
 const { logRewatch, removeRewatch, getRewatchCountsForShow } = require("./episodeRewatches");
 const { findUserByEmail, findUserByUsername } = require("./db");
 const { getShowCommunityRating } = require("./showRatings");
+const { createNotification, listNotifications, getUnreadCount, markAllRead } = require("./notifications");
 
 const app = express();
 
@@ -311,19 +312,21 @@ app.post("/episodes/:id/comments", requireAuth, asyncHandler(async (req, res) =>
   if (!trimmed && !imageUrl) return res.status(400).json({ error: "content or imageUrl is required" });
   const comment = await addComment(supabase, req.params.id, req.userId, trimmed, imageUrl, parentId || null);
 
-  // Same fire-and-forget pattern as the like notification below —
-  // notify the comment being replied to's author, never for replying
-  // to your own comment.
+  // In-app only, not a push — see notifications.js. Same fire-and-forget
+  // pattern as the like notification below — notify the comment being
+  // replied to's author, never for replying to your own comment.
   if (comment.parentAuthorId && comment.parentAuthorId !== req.userId) {
     getEpisodeContext(req.params.id)
       .then((ctx) => {
         const where = ctx ? `${ctx.show_title} S${ctx.season_number}E${ctx.episode_number}` : "an episode";
-        return sendPushToUser(supabase, comment.parentAuthorId, {
+        return createNotification(supabase, comment.parentAuthorId, {
+          type: "comment_reply",
           title: "Someone replied to your comment",
           body: `New reply on ${where}: "${trimmed.slice(0, 80)}"`,
+          data: { episodeId: req.params.id, label: where },
         });
       })
-      .catch((e) => console.error("Failed to send comment-reply notification:", e.message));
+      .catch((e) => console.error("Failed to create comment-reply notification:", e.message));
   }
 
   res.json(comment);
@@ -337,22 +340,38 @@ app.delete("/comments/:id", requireAuth, asyncHandler(async (req, res) => {
 app.post("/comments/:id/like", requireAuth, asyncHandler(async (req, res) => {
   const result = await toggleCommentLike(supabase, req.userId, req.params.id);
 
-  // Notify the comment's author, but never for liking your own
-  // comment, and never let a notification failure fail the like
-  // itself — fire-and-forget with its own catch.
+  // In-app only, not a push — see notifications.js. Notify the
+  // comment's author, but never for liking your own comment, and
+  // never let a notification failure fail the like itself —
+  // fire-and-forget with its own catch.
   if (result.liked && result.commentAuthorId !== req.userId) {
     getEpisodeContext(result.episodeId)
       .then((ctx) => {
         const where = ctx ? `${ctx.show_title} S${ctx.season_number}E${ctx.episode_number}` : "an episode";
-        return sendPushToUser(supabase, result.commentAuthorId, {
+        return createNotification(supabase, result.commentAuthorId, {
+          type: "comment_like",
           title: "Someone liked your comment",
           body: `Your comment on ${where} got a like.`,
+          data: { episodeId: result.episodeId, label: where },
         });
       })
-      .catch((e) => console.error("Failed to send comment-like notification:", e.message));
+      .catch((e) => console.error("Failed to create comment-like notification:", e.message));
   }
 
   res.json({ liked: result.liked, likeCount: result.likeCount });
+}));
+
+app.get("/notifications", requireAuth, asyncHandler(async (req, res) => {
+  const [items, unreadCount] = await Promise.all([
+    listNotifications(req.userId),
+    getUnreadCount(req.userId),
+  ]);
+  res.json({ items, unreadCount });
+}));
+
+app.post("/notifications/mark-all-read", requireAuth, asyncHandler(async (req, res) => {
+  const result = await markAllRead(supabase, req.userId);
+  res.json(result);
 }));
 
 app.get("/discover/top-shows", asyncHandler(async (req, res) => {
