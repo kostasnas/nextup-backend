@@ -20,7 +20,7 @@ const { listFeatureRequests, createFeatureRequest, toggleVote } = require("./fea
 const { logRewatch, removeRewatch, getRewatchCountsForShow } = require("./episodeRewatches");
 const { findUserByEmail, findUserByUsername } = require("./db");
 const { getShowCommunityRating } = require("./showRatings");
-const { createNotification, listNotifications, getUnreadCount, markAllRead } = require("./notifications");
+const { createNotification, listNotifications, getUnreadCount, markAllRead, markRead } = require("./notifications");
 
 const app = express();
 
@@ -371,6 +371,11 @@ app.get("/notifications", requireAuth, asyncHandler(async (req, res) => {
 
 app.post("/notifications/mark-all-read", requireAuth, asyncHandler(async (req, res) => {
   const result = await markAllRead(supabase, req.userId);
+  res.json(result);
+}));
+
+app.post("/notifications/:id/read", requireAuth, asyncHandler(async (req, res) => {
+  const result = await markRead(supabase, req.userId, req.params.id);
   res.json(result);
 }));
 

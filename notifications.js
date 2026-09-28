@@ -44,9 +44,12 @@ async function getUnreadCount(userId) {
 }
 
 /**
- * Marks every one of this user's notifications read — called when
- * they open the notifications list, not per-item, since the point is
- * "you've now seen your activity", matching how the badge count works.
+ * Marks every one of this user's notifications read. Kept for
+ * completeness, but the primary flow (Kostas' call) is per-item now —
+ * see markRead below: opening the notifications LIST doesn't clear the
+ * badge anymore, only actually tapping/viewing a specific notification
+ * does, so someone can see there's activity without it silently
+ * vanishing before they've dealt with each one.
  */
 async function markAllRead(supabase, userId) {
   const { error } = await supabase.from("notifications").update({ read: true }).eq("user_id", userId).eq("read", false);
@@ -54,4 +57,17 @@ async function markAllRead(supabase, userId) {
   return { ok: true };
 }
 
-module.exports = { createNotification, listNotifications, getUnreadCount, markAllRead };
+/**
+ * Marks ONE notification read — called when the person taps it (see
+ * NotificationsScreen), which both opens whatever it points to
+ * (an episode's comments, for a like/reply) and removes it from their
+ * unread count. Scoped to userId too, not just the id, so one user
+ * can't mark another's notification read via a guessed id.
+ */
+async function markRead(supabase, userId, notificationId) {
+  const { error } = await supabase.from("notifications").update({ read: true }).eq("id", notificationId).eq("user_id", userId);
+  if (error) throw error;
+  return { ok: true };
+}
+
+module.exports = { createNotification, listNotifications, getUnreadCount, markAllRead, markRead };
