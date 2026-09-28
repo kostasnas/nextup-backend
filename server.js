@@ -1096,10 +1096,19 @@ app.post("/widget/mark-watched", requireAuth, asyncHandler(async (req, res) => {
   res.json({ ok: true });
 }));
 
+// How long a cached episode list is trusted before we go back to TMDB
+// for a still-airing show. Ended/canceled shows never go stale (their
+// episode list can't change), so they skip this entirely once synced.
+const EPISODE_SYNC_TTL_MS = 6 * 60 * 60 * 1000; // 6 hours
+
 app.get("/shows/:tmdbId/full-progress", requireAuth, asyncHandler(async (req, res) => {
   const tmdbId = req.params.tmdbId;
 
-  const { data: showRow } = await supabase.from("shows").select("id").eq("tmdb_id", tmdbId).single();
+  const { data: showRow } = await supabase
+    .from("shows")
+    .select("id, status, episodes_synced_at")
+    .eq("tmdb_id", tmdbId)
+    .single();
   if (!showRow) {
     // Not tracked at all yet — nothing could possibly be marked
     // watched, so there's no gap to detect. (In practice the frontend
@@ -1108,8 +1117,38 @@ app.get("/shows/:tmdbId/full-progress", requireAuth, asyncHandler(async (req, re
     return res.json({ episodes: [], watchedEpisodeIds: [], showStatus: null });
   }
 
-  const { episodes, showStatus } = await fetchAllEpisodes(tmdbId);
-  const cached = await cacheEpisodes(supabase, showRow.id, episodes);
+  // Was this show's episode list already synced recently enough to
+  // trust as-is? An ended/canceled show's episode list can never
+  // change again, so any past sync is good forever. A still-airing
+  // show can get new episodes at any time, so we only trust a sync
+  // from within the last few hours — this is what turns "every show
+  // page open" into 4+ sequential TMDB calls, so skipping it whenever
+  // safe is the actual fix for that slowness, not just a workaround.
+  const isFinished = showRow.status === "Ended" || showRow.status === "Canceled";
+  const syncedRecently = showRow.episodes_synced_at &&
+    Date.now() - new Date(showRow.episodes_synced_at).getTime() < EPISODE_SYNC_TTL_MS;
+  const canUseCache = showRow.episodes_synced_at && (isFinished || syncedRecently);
+
+  let cached, showStatus;
+  if (canUseCache) {
+    const { data: existingEpisodes, error: epErr } = await supabase
+      .from("episodes")
+      .select("id, season_number, episode_number")
+      .eq("show_id", showRow.id)
+      .order("season_number", { ascending: true })
+      .order("episode_number", { ascending: true });
+    if (epErr) throw epErr;
+    cached = existingEpisodes || [];
+    showStatus = showRow.status;
+  } else {
+    const fetched = await fetchAllEpisodes(tmdbId);
+    cached = await cacheEpisodes(supabase, showRow.id, fetched.episodes);
+    showStatus = fetched.showStatus;
+    await supabase
+      .from("shows")
+      .update({ status: showStatus, episodes_synced_at: new Date().toISOString() })
+      .eq("id", showRow.id);
+  }
 
   const { data: watchedRows } = await supabase
     .from("watched_episodes")

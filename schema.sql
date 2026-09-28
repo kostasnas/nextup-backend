@@ -11,7 +11,8 @@ create table shows (
   poster_path text,
   network text,
   status text, -- 'returning', 'ended', 'canceled'
-  created_at timestamptz default now()
+  created_at timestamptz default now(),
+  episodes_synced_at timestamptz -- last time this show's full episode list was refreshed from TMDB (see /shows/:tmdbId/full-progress)
 );
 
 create table episodes (
