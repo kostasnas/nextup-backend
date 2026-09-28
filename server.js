@@ -884,10 +884,16 @@ async function getReadyToWatchByShow(userId, today) {
         if (epErr) throw epErr;
         if (lastErr) throw lastErr;
 
-        const firstGap = (eps || []).find((e) => !(Array.isArray(e.watched_episodes) && e.watched_episodes.length > 0));
-        if (!firstGap) return null;
+        const gaps = (eps || []).filter((e) => !(Array.isArray(e.watched_episodes) && e.watched_episodes.length > 0));
+        if (gaps.length === 0) return null;
         const lastWatchedAt = (lastWatchedRows || [])[0]?.watched_at || null;
-        return { ...firstGap, shows: tw.shows, lastWatchedAt };
+        // gaps[0] is the earliest unwatched-aired episode (eps was
+        // fetched air_date-ascending) — kept as the "lead" episode for
+        // this show, same as before. gapCount is ALL of this show's
+        // unwatched-aired episodes, not just the one we lead with —
+        // needed so the widget's total below reflects real episode
+        // counts instead of one-per-show.
+        return { ...gaps[0], shows: tw.shows, lastWatchedAt, gapCount: gaps.length };
       })
   );
 
@@ -925,16 +931,22 @@ app.get("/widget/ready-to-watch", requireAuth, asyncHandler(async (req, res) => 
   if (readyShows.length === 0) return res.json({ hasReady: false, count: 0 });
 
   const top = readyShows[0];
+  // Total READY EPISODES across every tracked show, not the number of
+  // shows that happen to have a gap — a show can have several unwatched
+  // aired episodes at once (e.g. a whole unwatched season), and the
+  // widget's "N episodes ready" text needs to reflect that real total,
+  // not be silently capped at 1-per-show.
+  const totalReadyEpisodes = readyShows.reduce((sum, s) => sum + s.gapCount, 0);
   res.json({
     hasReady: true,
-    count: readyShows.length,
+    count: totalReadyEpisodes,
     topTmdbId: top.shows.tmdb_id,
     topTitle: top.shows.title,
     topPosterPath: top.shows.poster_path,
     topEpisodeId: top.id,
     topSeasonNumber: top.season_number,
     topEpisodeNumber: top.episode_number,
-    statusText: readyShows.length > 1 ? `${readyShows.length} episodes ready` : "New episode available",
+    statusText: totalReadyEpisodes > 1 ? `${totalReadyEpisodes} episodes ready` : "New episode available",
   });
 }));
 
