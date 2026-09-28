@@ -1121,16 +1121,31 @@ app.get("/shows/:tmdbId/full-progress", requireAuth, asyncHandler(async (req, re
   // trust as-is? An ended/canceled show's episode list can never
   // change again, so any past sync is good forever. A still-airing
   // show can get new episodes at any time, so we only trust a sync
-  // from within the last few hours — this is what turns "every show
-  // page open" into 4+ sequential TMDB calls, so skipping it whenever
-  // safe is the actual fix for that slowness, not just a workaround.
+  // from within the last few hours.
   const isFinished = showRow.status === "Ended" || showRow.status === "Canceled";
   const syncedRecently = showRow.episodes_synced_at &&
     Date.now() - new Date(showRow.episodes_synced_at).getTime() < EPISODE_SYNC_TTL_MS;
-  const canUseCache = showRow.episodes_synced_at && (isFinished || syncedRecently);
+  const neverSynced = !showRow.episodes_synced_at;
 
   let cached, showStatus;
-  if (canUseCache) {
+  if (neverSynced) {
+    // Nothing cached at all yet for this show, for ANY user — there's
+    // no stale-but-usable data to fall back on, so this one request
+    // has to actually wait on TMDB. Every other view of this same show,
+    // by this user or anyone else, benefits from the cache this writes.
+    const fetched = await fetchAllEpisodes(tmdbId);
+    cached = await cacheEpisodes(supabase, showRow.id, fetched.episodes);
+    showStatus = fetched.showStatus;
+    await supabase
+      .from("shows")
+      .update({ status: showStatus, episodes_synced_at: new Date().toISOString() })
+      .eq("id", showRow.id);
+  } else {
+    // We have SOMETHING cached — serve it immediately even if stale,
+    // so the person never waits on TMDB for a show that's already
+    // been synced once. If it's due for a refresh (still-airing show
+    // past the TTL), kick that off in the background: it updates the
+    // cache for next time but never blocks this response.
     const { data: existingEpisodes, error: epErr } = await supabase
       .from("episodes")
       .select("id, season_number, episode_number")
@@ -1140,14 +1155,18 @@ app.get("/shows/:tmdbId/full-progress", requireAuth, asyncHandler(async (req, re
     if (epErr) throw epErr;
     cached = existingEpisodes || [];
     showStatus = showRow.status;
-  } else {
-    const fetched = await fetchAllEpisodes(tmdbId);
-    cached = await cacheEpisodes(supabase, showRow.id, fetched.episodes);
-    showStatus = fetched.showStatus;
-    await supabase
-      .from("shows")
-      .update({ status: showStatus, episodes_synced_at: new Date().toISOString() })
-      .eq("id", showRow.id);
+
+    if (!isFinished && !syncedRecently) {
+      fetchAllEpisodes(tmdbId)
+        .then(async (fetched) => {
+          await cacheEpisodes(supabase, showRow.id, fetched.episodes);
+          await supabase
+            .from("shows")
+            .update({ status: fetched.showStatus, episodes_synced_at: new Date().toISOString() })
+            .eq("id", showRow.id);
+        })
+        .catch((err) => console.error(`Background episode sync failed for tmdbId=${tmdbId}:`, err.message));
+    }
   }
 
   const { data: watchedRows } = await supabase
