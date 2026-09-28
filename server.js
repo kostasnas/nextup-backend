@@ -374,6 +374,43 @@ app.post("/notifications/mark-all-read", requireAuth, asyncHandler(async (req, r
   res.json(result);
 }));
 
+// GIF picker for episode comments (EpisodeCommentsScreen) — proxied
+// through the backend, unlike TMDB's key, so GIPHY_API_KEY stays a
+// server-side secret rather than shipping inside the Android bundle.
+// requireAuth just to keep our (rate-limited, 100/hr on the beta key)
+// Giphy quota from being spent by anyone outside the app. Returns the
+// same shape either way: { gifs: [{ id, url, previewUrl }] } — url is
+// what gets stored as the comment's image_url (same column real photo
+// uploads already use, see addComment/episodeComments.js), previewUrl
+// is a smaller version for the picker grid.
+function mapGiphyResults(data) {
+  return (data.data || []).map((g) => ({
+    id: g.id,
+    url: g.images?.fixed_height?.url || g.images?.original?.url,
+    previewUrl: g.images?.fixed_width_small?.url || g.images?.fixed_height_small?.url,
+  })).filter((g) => g.url);
+}
+
+app.get("/gifs/search", requireAuth, asyncHandler(async (req, res) => {
+  const q = (req.query.q || "").trim();
+  if (!q) return res.json({ gifs: [] });
+  const giphyRes = await fetch(
+    `https://api.giphy.com/v1/gifs/search?api_key=${process.env.GIPHY_API_KEY}&q=${encodeURIComponent(q)}&limit=24&rating=pg-13`
+  );
+  if (!giphyRes.ok) return res.status(502).json({ error: "GIF search failed" });
+  const data = await giphyRes.json();
+  res.json({ gifs: mapGiphyResults(data) });
+}));
+
+app.get("/gifs/trending", requireAuth, asyncHandler(async (req, res) => {
+  const giphyRes = await fetch(
+    `https://api.giphy.com/v1/gifs/trending?api_key=${process.env.GIPHY_API_KEY}&limit=24&rating=pg-13`
+  );
+  if (!giphyRes.ok) return res.status(502).json({ error: "GIF trending fetch failed" });
+  const data = await giphyRes.json();
+  res.json({ gifs: mapGiphyResults(data) });
+}));
+
 app.get("/discover/top-shows", asyncHandler(async (req, res) => {
   const region = (req.query.region || "US").toUpperCase();
   const providerId = req.query.provider_id || null;
