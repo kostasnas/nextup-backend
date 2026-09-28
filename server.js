@@ -911,52 +911,51 @@ async function getReadyToWatchByShow(userId, today) {
   });
 }
 
-// Second widget — the opposite of "next premiere": episodes that
-// have ALREADY aired but aren't watched yet, i.e. what's sitting
-// ready right now. Deliberately NOT using the get_next_episodes()
-// RPC here — that function is designed to run under the calling
-// user's own session (relying on auth.uid() internally), which the
-// backend's own service connection doesn't carry per-request.
-//
-// Also returns topEpisodeId/topSeasonNumber/topEpisodeNumber now, so
-// the widget's "Check-in" button can launch the app with enough
-// context to mark that exact episode watched without another round
-// trip first (see POST /episodes/:id/rewatch's sibling below for the
-// mark-watched call the app makes once it opens).
-app.get("/widget/ready-to-watch", requireAuth, asyncHandler(async (req, res) => {
+// Second widget — "Poster Clock": a decorative live clock overlaid on
+// a full-bleed backdrop from one of the user's tracked shows, picked
+// once per calendar day (stable all day, changes tomorrow) from
+// everything in "watching"/"up_to_date" status. This replaces the old
+// "Ready to Watch" widget (episodes ready to check in) — that concept
+// kept surfacing confusing numbers (backlog shows with huge unwatched
+// counts mixed in with genuinely new episodes) and was dropped
+// entirely rather than patched again; this widget carries no
+// episode-readiness logic at all, it's purely "your shows, on your
+// home screen". getReadyToWatchByShow() below is still used by the
+// Continue Watching and Watch Next widgets — only this endpoint changed.
+app.get("/widget/poster-clock", requireAuth, asyncHandler(async (req, res) => {
+  const { data: trackedRows, error: trackedErr } = await supabase
+    .from("user_watchlist")
+    .select("shows(id, tmdb_id, title)")
+    .eq("user_id", req.userId)
+    .in("status", ["watching", "up_to_date"]);
+  if (trackedErr) throw trackedErr;
+
+  const shows = (trackedRows || []).map((r) => r.shows).filter(Boolean);
+  if (shows.length === 0) return res.json({ hasShow: false });
+
+  // Deterministic pick that's stable for the whole day (so the widget
+  // doesn't change show on every periodic refresh) but rotates daily —
+  // a simple string hash of today's date + user id, modulo the
+  // tracked-shows count. Doesn't need to be cryptographically random,
+  // just evenly spread and reproducible within the same day.
   const today = new Date().toISOString().slice(0, 10);
+  const seed = `${req.userId}-${today}`;
+  let hash = 0;
+  for (let i = 0; i < seed.length; i++) hash = (hash * 31 + seed.charCodeAt(i)) >>> 0;
+  const pick = shows[hash % shows.length];
 
-  const readyShows = await getReadyToWatchByShow(req.userId, today);
+  let backdropPath = null;
+  try {
+    backdropPath = await getShowBackdrop(pick.tmdb_id);
+  } catch (err) {
+    console.error("widget/poster-clock: backdrop fetch failed:", err.message);
+  }
 
-  if (readyShows.length === 0) return res.json({ hasReady: false, count: 0 });
-
-  const top = readyShows[0];
-  // Count of SHOWS with a gap, not total ready episodes summed across
-  // the account — the widget only ever names ONE show (topTitle, the
-  // most recently watched), so pairing that single name with a total
-  // episode count borrowed from every OTHER tracked show too reads as
-  // if all those episodes belonged to the named show (confusing, and
-  // makes an already-large per-show gap look astronomically bigger).
-  // Naming how many shows have something new avoids that mismatch.
-  const showsWithGaps = readyShows.length;
-  // When more than one show has something new, don't put a SPECIFIC
-  // show's poster/name next to a statusText that talks about several
-  // OTHER shows too — that pairing reads as if the pictured show is
-  // the one with N gaps. Fall back to a generic title and no poster
-  // (the widget already renders a plain placeholder box when no
-  // poster is sent) in that case; the Check-in button still marks
-  // the top (most-recently-watched) show's episode either way.
-  const isMultiShow = showsWithGaps > 1;
   res.json({
-    hasReady: true,
-    count: showsWithGaps,
-    topTmdbId: top.shows.tmdb_id,
-    topTitle: isMultiShow ? "Ready to Watch" : top.shows.title,
-    topPosterPath: isMultiShow ? null : top.shows.poster_path,
-    topEpisodeId: top.id,
-    topSeasonNumber: top.season_number,
-    topEpisodeNumber: top.episode_number,
-    statusText: isMultiShow ? `${showsWithGaps} shows with new episodes` : "New episode available",
+    hasShow: true,
+    tmdbId: pick.tmdb_id,
+    title: pick.title,
+    backdropPath,
   });
 }));
 
