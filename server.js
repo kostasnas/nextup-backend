@@ -826,89 +826,45 @@ app.get("/widget/next-up", requireAuth, asyncHandler(async (req, res) => {
   });
 }));
 
-// Shared by /widget/ready-to-watch and /widget/continue-watching:
-// the earliest already-aired, unwatched episode for EACH show the
-// user is actively tracking. Queried one show at a time (the tracked
-// shows list itself is small — dozens at most) rather than one
-// global "most recently aired 300 episodes across the whole account"
-// query: that global-and-capped shape was itself a second, subtler
-// version of the truncation bug fixed above. If a user tracks enough
-// shows, the true gap in one show (e.g. "still on S2E2") can be
-// older than 300 OTHER episodes that aired more recently across
-// every other tracked show, so it would fall outside the global
-// window and silently never be considered — the widget would then
-// jump straight to a later, in-window episode (e.g. S3E1) as if it
-// were the earliest gap. Scoping the query per show sidesteps that
-// entirely: each show's own episode count is small, so no arbitrary
-// cross-account limit is ever in play.
+// Shared by /widget/continue-watching and /widget/watch-next-list: the
+// earliest already-aired, unwatched episode for EACH show the user is
+// actively tracking, one row per show, already sorted (recency of
+// actual viewing first, then earliest gap air date as tiebreak — see
+// the SQL function's ORDER BY for the exact rule).
 //
-// Which show to lead with, among several with a gap, is picked by
-// RECENCY OF ACTUAL VIEWING (each show's most recent watched_at) —
-// not by whose gap is chronologically oldest. Someone can leave one
-// show mid-way and be actively bingeing a different one; the show
-// they last actually marked an episode watched on is the one they're
-// "continuing", regardless of which show's unwatched episode aired
-// longest ago. A show with no viewing history at all yet (e.g. just
-// added, nothing marked watched) sorts after every show with any
-// history, ordered among themselves by gap air date as before.
+// This used to be N+1 JS-side queries (2 round trips PER tracked
+// show, all fired in parallel via Promise.all) — for someone tracking
+// dozens of shows, that's 100+ simultaneous requests to Supabase on
+// every single widget refresh, across 2-3 widgets calling this
+// independently near-simultaneously on every app open. That pattern
+// amplified a routine Supabase slowdown into an outage-feeling one for
+// the user (see the Sept 28 incident) and would only get worse as the
+// user base grows, so it's now a single call to a Postgres function
+// (get_ready_to_watch_by_show, defined directly in Supabase) that does
+// the same work — matching gap-selection and sort logic — in one
+// round trip no matter how many shows are tracked.
 async function getReadyToWatchByShow(userId, today) {
-  const { data: trackedRows, error: trackedErr } = await supabase
-    .from("user_watchlist")
-    .select("show_id, shows(id, tmdb_id, title, poster_path)")
-    .eq("user_id", userId)
-    .in("status", ["watching", "up_to_date"]);
-  if (trackedErr) throw trackedErr;
-
-  const perShow = await Promise.all(
-    (trackedRows || [])
-      .filter((tw) => tw.shows)
-      .map(async (tw) => {
-        const [{ data: eps, error: epErr }, { data: lastWatchedRows, error: lastErr }] = await Promise.all([
-          supabase
-            .from("episodes")
-            .select("id, show_id, season_number, episode_number, air_date, watched_episodes(user_id)")
-            .eq("show_id", tw.show_id)
-            .not("air_date", "is", null)
-            .lt("air_date", today)
-            .eq("watched_episodes.user_id", userId)
-            .order("air_date", { ascending: true })
-            .limit(500), // generous per-show cap — a single show/season combo is never anywhere near this
-          supabase
-            .from("watched_episodes")
-            .select("watched_at, episodes!inner(show_id)")
-            .eq("user_id", userId)
-            .eq("episodes.show_id", tw.show_id)
-            .order("watched_at", { ascending: false })
-            .limit(1),
-        ]);
-        if (epErr) throw epErr;
-        if (lastErr) throw lastErr;
-
-        const gaps = (eps || []).filter((e) => !(Array.isArray(e.watched_episodes) && e.watched_episodes.length > 0));
-        if (gaps.length === 0) return null;
-        const lastWatchedAt = (lastWatchedRows || [])[0]?.watched_at || null;
-        // gaps[0] is the earliest unwatched-aired episode (eps was
-        // fetched air_date-ascending) — kept as the "lead" episode for
-        // this show, same as before. gapCount is ALL of this show's
-        // unwatched-aired episodes, not just the one we lead with —
-        // needed so the widget's total below reflects real episode
-        // counts instead of one-per-show.
-        return { ...gaps[0], shows: tw.shows, lastWatchedAt, gapCount: gaps.length };
-      })
-  );
-
-  return perShow.filter(Boolean).sort((a, b) => {
-    // Both have viewing history — most recently watched show first.
-    if (a.lastWatchedAt && b.lastWatchedAt) {
-      if (a.lastWatchedAt !== b.lastWatchedAt) return a.lastWatchedAt > b.lastWatchedAt ? -1 : 1;
-    } else if (a.lastWatchedAt || b.lastWatchedAt) {
-      // Only one has any viewing history — that one leads.
-      return a.lastWatchedAt ? -1 : 1;
-    }
-    // Neither has viewing history (or tied) — fall back to whichever
-    // gap aired first.
-    return a.air_date < b.air_date ? -1 : 1;
+  const { data, error } = await supabase.rpc("get_ready_to_watch_by_show", {
+    p_user_id: userId,
+    p_today: today,
   });
+  if (error) throw error;
+
+  return (data || []).map((row) => ({
+    id: row.episode_id,
+    show_id: row.show_id,
+    season_number: row.season_number,
+    episode_number: row.episode_number,
+    air_date: row.air_date,
+    shows: {
+      id: row.show_id,
+      tmdb_id: row.tmdb_id,
+      title: row.title,
+      poster_path: row.poster_path,
+    },
+    lastWatchedAt: row.last_watched_at,
+    gapCount: row.gap_count,
+  }));
 }
 
 // Second widget — "Poster Clock": a decorative live clock overlaid on
