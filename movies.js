@@ -41,7 +41,7 @@ async function upsertMovie(supabase, tmdbMovie) {
   return inserted.id;
 }
 
-async function setMovieStatus(supabase, userId, tmdbMovie, status) {
+async function setMovieStatus(supabase, userId, tmdbMovie, status, watchedAt = null) {
   const movieId = await upsertMovie(supabase, tmdbMovie);
   const payload = {
     user_id: userId,
@@ -49,7 +49,11 @@ async function setMovieStatus(supabase, userId, tmdbMovie, status) {
     status,
     updated_at: new Date().toISOString(),
   };
-  if (status === "watched") payload.watched_at = new Date().toISOString();
+  // watchedAt lets an importer with a real historical date (e.g.
+  // Bingers' export) record when the movie was actually watched,
+  // instead of every import landing on "today". Existing callers
+  // that don't pass one keep the old behavior exactly.
+  if (status === "watched") payload.watched_at = watchedAt || new Date().toISOString();
 
   const { error } = await supabase
     .from("user_movie_watchlist")

@@ -120,6 +120,31 @@ async function getShowBackdrop(showId) {
 }
 
 /**
+ * Direct movie lookup by TMDB id — no search/matching involved, so
+ * unlike searchMovie() in tmdbMatcher.js there's no ambiguity to
+ * resolve. Used by the Bingers importer, which already has a
+ * confident tmdb_id per movie from the export itself and just needs
+ * the poster/overview/release date to store alongside it.
+ */
+async function getMovieDetails(movieId) {
+  const cacheKey = `movie:${movieId}`;
+  const cached = getCached(cacheKey);
+  if (cached !== null) return cached;
+
+  const data = await tmdbGet(`/movie/${movieId}`);
+  const details = {
+    title: data.title,
+    posterPath: data.poster_path || null,
+    releaseDate: data.release_date || null,
+    runtime: data.runtime || null,
+    overview: data.overview || null,
+  };
+
+  setCached(cacheKey, details);
+  return details;
+}
+
+/**
  * "Top shows" for a region, optionally filtered to a specific
  * streaming provider. watch_monetization_type=flatrate excludes
  * rent/buy-only titles — otherwise a "Netflix" filter could surface
@@ -214,4 +239,4 @@ async function getPersonDetails(personId) {
   return person;
 }
 
-module.exports = { getWatchProviders, getShowWatchProviders, getMovieWatchProviders, getShowBackdrop, getTopShows, getTrending, getGenres, getPersonDetails };
+module.exports = { getWatchProviders, getShowWatchProviders, getMovieWatchProviders, getShowBackdrop, getMovieDetails, getTopShows, getTrending, getGenres, getPersonDetails };

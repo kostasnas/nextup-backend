@@ -9,6 +9,11 @@ const rateLimit = require("express-rate-limit");
 const helmet = require("helmet");
 const { createClient } = require("@supabase/supabase-js");
 const { parseGdprExport } = require("./importParser");
+const { parseBingersExport } = require("./bingersParser");
+const { parseMovieParadiseExport } = require("./movieParadiseParser");
+const { parseSimklExport } = require("./simklParser");
+const { parseSofaTimeExport } = require("./sofaTimeParser");
+const { parseTraktExport } = require("./traktParser");
 const { matchShows, searchShow, searchMovie } = require("./tmdbMatcher");
 const { syncShowProgress, fetchAllEpisodes, cacheEpisodes } = require("./episodeSync");
 const { sendFriendRequest, listFriends, acceptFriendRequest, declineFriendRequest, removeFriend, getFriendFavorites } = require("./friends");
@@ -145,7 +150,7 @@ app.get("/", async (req, res) => {
   }
 });
 
-const { getWatchProviders, getShowWatchProviders, getMovieWatchProviders, getShowBackdrop, getTopShows, getTrending, getGenres, getPersonDetails } = require("./discover");
+const { getWatchProviders, getShowWatchProviders, getMovieWatchProviders, getShowBackdrop, getMovieDetails, getTopShows, getTrending, getGenres, getPersonDetails } = require("./discover");
 
 // Streaming-provider-aware "Top Shows" — public, cached, no auth
 // needed since results are identical for everyone in the same
@@ -569,6 +574,540 @@ app.post("/import/tvtime-zip", requireAuth, uploadZip.single("export_zip"), asyn
   }
 
   const result = await processImport(req.userId, files);
+  res.json(result);
+}));
+
+// Bingers import — unlike TV Time, every row in a Bingers export
+// already carries a real tmdb_id, so bingersParser.js hands us shows
+// that are pre-matched (show.match.status === "matched" for every
+// one of them). That means this skips the whole matchShows() fuzzy
+// title-search step entirely: no TMDB search calls, no confidence
+// threshold, no import_unmatched review queue for shows. Movies are
+// looked up individually by id (getMovieDetails) purely to fill in
+// poster/overview — the id itself is already trusted.
+async function processBingersImport(userId, files) {
+  const { shows, movies, stats } = parseBingersExport(files);
+  console.log(
+    `Bingers import: ${shows.length} shows (${stats.showsWithEpisodeData} with episode data), ` +
+    `${movies.length} movies (${stats.watchedMovies} watched).`
+  );
+
+  const { data: job, error: jobError } = await supabase
+    .from("import_jobs")
+    .insert({ user_id: userId, source: "bingers", status: "matching", total_records: stats.totalShows })
+    .select()
+    .single();
+  if (jobError) throw jobError;
+
+  let matchedCount = 0;
+  for (const show of shows) {
+    matchedCount++;
+    await upsertShowProgress(userId, show, job.id, {
+      // Bingers gives real per-episode dates directly (watches.csv),
+      // not just a count — so every show goes through the same exact
+      // "episode log" path TV Time only gets for the minority of
+      // users whose export happened to include tracking-prod-records-v2.csv.
+      episodeLog: show.episodeLog && show.episodeLog.length > 0 ? show.episodeLog : null,
+      emotionLog: null,
+    });
+  }
+
+  let movieMatchedCount = 0;
+  let movieUnmatchedCount = 0;
+  for (const movie of movies) {
+    try {
+      const details = await getMovieDetails(movie.tmdbId);
+      await setMovieStatus(
+        supabase,
+        userId,
+        {
+          tmdb_id: movie.tmdbId,
+          title: details.title || movie.title,
+          poster_path: details.posterPath,
+          release_date: details.releaseDate,
+          runtime: details.runtime,
+          overview: details.overview,
+        },
+        movie.isWatched ? "watched" : "planned",
+        movie.watchedAt
+      );
+      movieMatchedCount++;
+    } catch (e) {
+      console.error(`Bingers import: failed to import movie "${movie.title}" (tmdb_id ${movie.tmdbId}):`, e.message);
+      movieUnmatchedCount++;
+    }
+  }
+
+  await supabase
+    .from("import_jobs")
+    .update({
+      status: "completed", // no unmatched shows possible — every row already had a tmdb_id
+      matched_records: matchedCount,
+      unmatched_records: 0,
+      completed_at: new Date().toISOString(),
+    })
+    .eq("id", job.id);
+
+  return {
+    jobId: job.id,
+    matchedCount,
+    unmatchedCount: 0,
+    totalShows: stats.totalShows,
+    watchingCandidates: stats.showsWithEpisodeData,
+    warning: null,
+    movieMatchedCount,
+    movieUnmatchedCount,
+    totalMovies: stats.totalMovies,
+  };
+}
+
+app.post(
+  "/import/bingers",
+  requireAuth,
+  uploadCsv.fields([
+    { name: "library", maxCount: 1 },
+    { name: "watches", maxCount: 1 },
+    { name: "ratings", maxCount: 1 },
+    { name: "lists", maxCount: 1 },
+  ]),
+  asyncHandler(async (req, res) => {
+    if (!req.files?.library) {
+      return res.status(400).json({ error: "library.csv is required (the file listing your shows and movies)." });
+    }
+    const files = {};
+    for (const [field, arr] of Object.entries(req.files)) {
+      files[`${field}.csv`] = arr[0].buffer.toString("utf8");
+    }
+    const result = await processBingersImport(req.userId, files);
+    res.json(result);
+  })
+);
+
+// Movie Paradise import — reads data.json out of the uploaded zip
+// (movieParadiseParser.js ignores the individual CSVs, which just
+// restate the same data less conveniently). Same pre-matched-tmdb_id
+// shortcut as Bingers. v1 scope only — see movieParadiseParser.js's
+// file header for what's NOT imported yet (comments/GIFs, character
+// favorites) and why; commentsSkipped/reactionsSkipped are returned
+// here so the frontend can show an honest count rather than silently
+// dropping them.
+async function processMovieParadiseImport(userId, files) {
+  const { shows, movies, stats } = parseMovieParadiseExport(files);
+  if (stats.error) {
+    const e = new Error(stats.error);
+    e.status = 400;
+    throw e;
+  }
+  console.log(
+    `Movie Paradise import: ${shows.length} shows (${stats.showsWithEpisodeData} with episode data), ` +
+    `${movies.length} movies (${stats.watchedMovies} watched). ` +
+    `Comments: ${stats.importableComments}/${stats.totalComments} importable (not yet wired up — v1 scope).`
+  );
+
+  const { data: job, error: jobError } = await supabase
+    .from("import_jobs")
+    .insert({ user_id: userId, source: "movie_paradise", status: "matching", total_records: stats.totalShows })
+    .select()
+    .single();
+  if (jobError) throw jobError;
+
+  let matchedCount = 0;
+  for (const show of shows) {
+    matchedCount++;
+    await upsertShowProgress(userId, show, job.id, {
+      episodeLog: show.episodeLog && show.episodeLog.length > 0 ? show.episodeLog : null,
+      emotionLog: null,
+    });
+  }
+
+  let movieMatchedCount = 0;
+  let movieUnmatchedCount = 0;
+  for (const movie of movies) {
+    try {
+      const details = await getMovieDetails(movie.tmdbId);
+      await setMovieStatus(
+        supabase,
+        userId,
+        {
+          tmdb_id: movie.tmdbId,
+          title: details.title || movie.title,
+          poster_path: details.posterPath,
+          release_date: details.releaseDate,
+          runtime: details.runtime,
+          overview: details.overview,
+        },
+        movie.isWatched ? "watched" : "planned",
+        movie.watchedAt
+      );
+      movieMatchedCount++;
+    } catch (e) {
+      console.error(`Movie Paradise import: failed to import movie "${movie.title}" (tmdb_id ${movie.tmdbId}):`, e.message);
+      movieUnmatchedCount++;
+    }
+  }
+
+  await supabase
+    .from("import_jobs")
+    .update({
+      status: "completed",
+      matched_records: matchedCount,
+      unmatched_records: 0,
+      completed_at: new Date().toISOString(),
+    })
+    .eq("id", job.id);
+
+  return {
+    jobId: job.id,
+    matchedCount,
+    unmatchedCount: 0,
+    totalShows: stats.totalShows,
+    watchingCandidates: stats.showsWithEpisodeData,
+    warning: null,
+    movieMatchedCount,
+    movieUnmatchedCount,
+    totalMovies: stats.totalMovies,
+    commentsNote: stats.totalComments > 0
+      ? `${stats.totalComments} comment(s) found in your export but not imported yet — comment/GIF import is still being built.`
+      : null,
+  };
+}
+
+app.post("/import/movie-paradise-zip", requireAuth, uploadZip.single("export_zip"), asyncHandler(async (req, res) => {
+  if (!req.file) return res.status(400).json({ error: "export_zip file is required" });
+
+  const zip = new AdmZip(req.file.buffer);
+  const entries = zip.getEntries();
+  const dataEntry = entries.find((e) => e.entryName.toLowerCase().endsWith("data.json"));
+  if (!dataEntry) {
+    return res.status(400).json({ error: "Could not find data.json inside the uploaded zip. Make sure you uploaded the full Movie Paradise export." });
+  }
+
+  const files = { "data.json": dataEntry.getData().toString("utf8") };
+  const result = await processMovieParadiseImport(req.userId, files);
+  res.json(result);
+}));
+
+// Simkl import — same pre-matched-tmdb_id shortcut as Bingers/Movie
+// Paradise. Genuine wrinkle handled by simklParser.js, not here: a
+// fully "completed" show has no per-episode dates in the export, just
+// an aggregate count — episodeLog comes through null for those, and
+// upsertShowProgress/syncShowProgress already know to fall back to
+// the count-based fill-in in that case (same as every other source).
+async function processSimklImport(userId, files) {
+  const { shows, movies, stats } = parseSimklExport(files);
+  if (stats.error) {
+    const e = new Error(stats.error);
+    e.status = 400;
+    throw e;
+  }
+  console.log(
+    `Simkl import: ${shows.length} shows (${stats.showsWithEpisodeData} with exact episode dates), ` +
+    `${movies.length} movies (${stats.watchedMovies} watched).`
+  );
+
+  const { data: job, error: jobError } = await supabase
+    .from("import_jobs")
+    .insert({ user_id: userId, source: "simkl", status: "matching", total_records: stats.totalShows })
+    .select()
+    .single();
+  if (jobError) throw jobError;
+
+  let matchedCount = 0;
+  for (const show of shows) {
+    matchedCount++;
+    await upsertShowProgress(userId, show, job.id, {
+      episodeLog: show.episodeLog,
+      emotionLog: null,
+    });
+  }
+
+  let movieMatchedCount = 0;
+  let movieUnmatchedCount = 0;
+  for (const movie of movies) {
+    try {
+      const details = await getMovieDetails(movie.tmdbId);
+      await setMovieStatus(
+        supabase,
+        userId,
+        {
+          tmdb_id: movie.tmdbId,
+          title: details.title || movie.title,
+          poster_path: details.posterPath,
+          release_date: details.releaseDate,
+          runtime: details.runtime,
+          overview: details.overview,
+        },
+        movie.isWatched ? "watched" : "planned",
+        movie.watchedAt
+      );
+      movieMatchedCount++;
+    } catch (e) {
+      console.error(`Simkl import: failed to import movie "${movie.title}" (tmdb_id ${movie.tmdbId}):`, e.message);
+      movieUnmatchedCount++;
+    }
+  }
+
+  await supabase
+    .from("import_jobs")
+    .update({
+      status: "completed",
+      matched_records: matchedCount,
+      unmatched_records: 0,
+      completed_at: new Date().toISOString(),
+    })
+    .eq("id", job.id);
+
+  return {
+    jobId: job.id,
+    matchedCount,
+    unmatchedCount: 0,
+    totalShows: stats.totalShows,
+    watchingCandidates: stats.showsWithEpisodeData,
+    warning: null,
+    movieMatchedCount,
+    movieUnmatchedCount,
+    totalMovies: stats.totalMovies,
+  };
+}
+
+app.post("/import/simkl-zip", requireAuth, uploadZip.single("export_zip"), asyncHandler(async (req, res) => {
+  if (!req.file) return res.status(400).json({ error: "export_zip file is required" });
+
+  const zip = new AdmZip(req.file.buffer);
+  const entries = zip.getEntries();
+  const dataEntry = entries.find((e) => e.entryName.toLowerCase().endsWith("simklbackup.json"));
+  if (!dataEntry) {
+    return res.status(400).json({ error: "Could not find SimklBackup.json inside the uploaded zip. Make sure you uploaded the file from simkl.com/apps/backup's \"DOWNLOAD BACKUP\" button (not the CSV option)." });
+  }
+
+  const files = { "SimklBackup.json": dataEntry.getData().toString("utf8") };
+  const result = await processSimklImport(req.userId, files);
+  res.json(result);
+}));
+
+// Sofa Time's export is 6 JSON files inside a zip, each named with a
+// timestamp suffix that varies per export (e.g.
+// "watchlistShow_(2026_09_29_14_08_28).json") — matched here by prefix
+// rather than exact name, then remapped to the canonical keys
+// sofaTimeParser.js expects.
+const SOFA_TIME_FILE_PREFIXES = {
+  "watchlistShow.json": "watchlistshow",
+  "watchedShow.json": "watchedshow",
+  "stopWatchingShow.json": "stopwatchingshow",
+  "watchlistMovie.json": "watchlistmovie",
+  "watchedMovie.json": "watchedmovie",
+  "stopWatchingMovie.json": "stopwatchingmovie",
+};
+
+async function processSofaTimeImport(userId, files) {
+  const { shows, movies, stats } = parseSofaTimeExport(files);
+  if (stats.error) {
+    const e = new Error(stats.error);
+    e.status = 400;
+    throw e;
+  }
+  console.log(
+    `Sofa Time import: ${shows.length} shows (${stats.showsWithEpisodeData} with exact episode dates), ` +
+    `${movies.length} movies (${stats.watchedMovies} watched).`
+  );
+
+  const { data: job, error: jobError } = await supabase
+    .from("import_jobs")
+    .insert({ user_id: userId, source: "sofa_time", status: "matching", total_records: stats.totalShows })
+    .select()
+    .single();
+  if (jobError) throw jobError;
+
+  let matchedCount = 0;
+  for (const show of shows) {
+    matchedCount++;
+    await upsertShowProgress(userId, show, job.id, {
+      episodeLog: show.episodeLog,
+      emotionLog: null,
+    });
+  }
+
+  let movieMatchedCount = 0;
+  let movieUnmatchedCount = 0;
+  for (const movie of movies) {
+    try {
+      const details = await getMovieDetails(movie.tmdbId);
+      await setMovieStatus(
+        supabase,
+        userId,
+        {
+          tmdb_id: movie.tmdbId,
+          title: details.title || movie.title,
+          poster_path: details.posterPath,
+          release_date: details.releaseDate,
+          runtime: details.runtime,
+          overview: details.overview,
+        },
+        movie.isWatched ? "watched" : "planned",
+        movie.watchedAt
+      );
+      movieMatchedCount++;
+    } catch (e) {
+      console.error(`Sofa Time import: failed to import movie "${movie.title}" (tmdb_id ${movie.tmdbId}):`, e.message);
+      movieUnmatchedCount++;
+    }
+  }
+
+  await supabase
+    .from("import_jobs")
+    .update({
+      status: "completed",
+      matched_records: matchedCount,
+      unmatched_records: 0,
+      completed_at: new Date().toISOString(),
+    })
+    .eq("id", job.id);
+
+  return {
+    jobId: job.id,
+    matchedCount,
+    unmatchedCount: 0,
+    totalShows: stats.totalShows,
+    watchingCandidates: stats.showsWithEpisodeData,
+    warning: null,
+    movieMatchedCount,
+    movieUnmatchedCount,
+    totalMovies: stats.totalMovies,
+  };
+}
+
+app.post("/import/sofatime-zip", requireAuth, uploadZip.single("export_zip"), asyncHandler(async (req, res) => {
+  if (!req.file) return res.status(400).json({ error: "export_zip file is required" });
+
+  const zip = new AdmZip(req.file.buffer);
+  const entries = zip.getEntries();
+
+  const files = {};
+  const missing = [];
+  for (const [canonicalName, prefix] of Object.entries(SOFA_TIME_FILE_PREFIXES)) {
+    const entry = entries.find((e) => {
+      const base = e.entryName.split("/").pop().toLowerCase();
+      return base.startsWith(prefix);
+    });
+    if (entry) {
+      files[canonicalName] = entry.getData().toString("utf8");
+    } else {
+      missing.push(canonicalName);
+    }
+  }
+  if (missing.length > 0) {
+    return res.status(400).json({ error: `Could not find ${missing.join(", ")} inside the uploaded zip. Make sure you uploaded the full Sofa Time export (all 6 files).` });
+  }
+
+  const result = await processSofaTimeImport(req.userId, files);
+  res.json(result);
+}));
+
+// Trakt's export is a big zip of ~40 JSON files with fixed names (no
+// timestamp suffix, unlike Sofa Time) — only a handful are used, matched
+// by exact name.
+const TRAKT_REQUIRED_FILES = ["watched-shows.json", "watched-history.json"];
+const TRAKT_OPTIONAL_FILES = ["watched-movies.json", "ratings-shows.json", "ratings-movies.json", "lists-favorites.json", "lists-watchlist.json"];
+
+async function processTraktImport(userId, files) {
+  const { shows, movies, stats } = parseTraktExport(files);
+  if (stats.error) {
+    const e = new Error(stats.error);
+    e.status = 400;
+    throw e;
+  }
+  console.log(
+    `Trakt import: ${shows.length} shows (${stats.showsWithEpisodeData} with exact episode dates), ` +
+    `${movies.length} movies (${stats.watchedMovies} watched).`
+  );
+
+  const { data: job, error: jobError } = await supabase
+    .from("import_jobs")
+    .insert({ user_id: userId, source: "trakt", status: "matching", total_records: stats.totalShows })
+    .select()
+    .single();
+  if (jobError) throw jobError;
+
+  let matchedCount = 0;
+  for (const show of shows) {
+    matchedCount++;
+    await upsertShowProgress(userId, show, job.id, {
+      episodeLog: show.episodeLog,
+      emotionLog: null,
+    });
+  }
+
+  let movieMatchedCount = 0;
+  let movieUnmatchedCount = 0;
+  for (const movie of movies) {
+    try {
+      const details = await getMovieDetails(movie.tmdbId);
+      await setMovieStatus(
+        supabase,
+        userId,
+        {
+          tmdb_id: movie.tmdbId,
+          title: details.title || movie.title,
+          poster_path: details.posterPath,
+          release_date: details.releaseDate,
+          runtime: details.runtime,
+          overview: details.overview,
+        },
+        movie.isWatched ? "watched" : "planned",
+        movie.watchedAt
+      );
+      movieMatchedCount++;
+    } catch (e) {
+      console.error(`Trakt import: failed to import movie "${movie.title}" (tmdb_id ${movie.tmdbId}):`, e.message);
+      movieUnmatchedCount++;
+    }
+  }
+
+  await supabase
+    .from("import_jobs")
+    .update({
+      status: "completed",
+      matched_records: matchedCount,
+      unmatched_records: 0,
+      completed_at: new Date().toISOString(),
+    })
+    .eq("id", job.id);
+
+  return {
+    jobId: job.id,
+    matchedCount,
+    unmatchedCount: 0,
+    totalShows: stats.totalShows,
+    watchingCandidates: stats.showsWithEpisodeData,
+    warning: null,
+    movieMatchedCount,
+    movieUnmatchedCount,
+    totalMovies: stats.totalMovies,
+  };
+}
+
+app.post("/import/trakt-zip", requireAuth, uploadZip.single("export_zip"), asyncHandler(async (req, res) => {
+  if (!req.file) return res.status(400).json({ error: "export_zip file is required" });
+
+  const zip = new AdmZip(req.file.buffer);
+  const entries = zip.getEntries();
+
+  const files = {};
+  const missing = [];
+  for (const name of TRAKT_REQUIRED_FILES) {
+    const entry = entries.find((e) => e.entryName.split("/").pop().toLowerCase() === name);
+    if (entry) files[name] = entry.getData().toString("utf8");
+    else missing.push(name);
+  }
+  if (missing.length > 0) {
+    return res.status(400).json({ error: `Could not find ${missing.join(", ")} inside the uploaded zip. Make sure you uploaded the full Trakt data export.` });
+  }
+  for (const name of TRAKT_OPTIONAL_FILES) {
+    const entry = entries.find((e) => e.entryName.split("/").pop().toLowerCase() === name);
+    if (entry) files[name] = entry.getData().toString("utf8");
+  }
+
+  const result = await processTraktImport(req.userId, files);
   res.json(result);
 }));
 
