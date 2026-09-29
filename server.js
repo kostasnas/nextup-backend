@@ -881,7 +881,7 @@ async function getReadyToWatchByShow(userId, today) {
 app.get("/widget/poster-clock", requireAuth, asyncHandler(async (req, res) => {
   const { data: trackedRows, error: trackedErr } = await supabase
     .from("user_watchlist")
-    .select("shows(id, tmdb_id, title)")
+    .select("shows(id, tmdb_id, title, poster_path)")
     .eq("user_id", req.userId)
     .in("status", ["watching", "up_to_date"]);
   if (trackedErr) throw trackedErr;
@@ -900,11 +900,17 @@ app.get("/widget/poster-clock", requireAuth, asyncHandler(async (req, res) => {
   for (let i = 0; i < seed.length; i++) hash = (hash * 31 + seed.charCodeAt(i)) >>> 0;
   const pick = shows[hash % shows.length];
 
+  // Not every TMDB show has a backdrop_path (some have none at all),
+  // and the fetch itself can fail transiently. Either way the widget
+  // shouldn't render as a bare black box — fall back to the show's
+  // poster (already stored locally, no extra TMDB call) so there's
+  // always something behind the clock.
   let backdropPath = null;
   try {
     backdropPath = await getShowBackdrop(pick.tmdb_id);
   } catch (err) {
     console.error("widget/poster-clock: backdrop fetch failed:", err.message);
+    Sentry.captureException(err, { tags: { widget: "poster-clock" } });
   }
 
   res.json({
@@ -912,6 +918,7 @@ app.get("/widget/poster-clock", requireAuth, asyncHandler(async (req, res) => {
     tmdbId: pick.tmdb_id,
     title: pick.title,
     backdropPath,
+    posterPath: pick.poster_path || null,
   });
 }));
 
