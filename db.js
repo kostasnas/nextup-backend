@@ -51,4 +51,19 @@ async function getUserDisplayInfo(userId) {
   return rows[0] || null;
 }
 
-module.exports = { getPool, findUserByEmail, findUserByUsername, getUserDisplayInfo };
+// Used for one-off "welcome" push sends (see welcomeMessages.js) —
+// everyone who signed up in the last N days. email_confirmed_at is
+// checked so we don't message someone who abandoned signup before
+// confirming their account.
+async function getUsersCreatedSince(days) {
+  const { rows } = await getPool().query(
+    `select id, email, raw_user_meta_data->>'display_name' as display_name
+     from auth.users
+     where created_at >= now() - ($1 || ' days')::interval
+       and email_confirmed_at is not null`,
+    [days]
+  );
+  return rows;
+}
+
+module.exports = { getPool, findUserByEmail, findUserByUsername, getUserDisplayInfo, getUsersCreatedSince };

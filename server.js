@@ -2154,6 +2154,21 @@ app.post("/admin/send-to-user", asyncHandler(async (req, res) => {
   res.json(result);
 }));
 
+// One-off "welcome to Scenera" push notification (device push only)
+// to everyone who signed up in the last N days (default 3). Manual
+// trigger, not on a schedule — see welcomeMessages.js.
+// Body: { "days": 3 } (optional)
+const { sendWelcomeMessages } = require("./welcomeMessages");
+app.post("/admin/send-welcome", asyncHandler(async (req, res) => {
+  const providedSecret = req.headers["x-cron-secret"];
+  if (!process.env.CRON_SECRET || providedSecret !== process.env.CRON_SECRET) {
+    return res.status(401).json({ error: "Unauthorized" });
+  }
+  const days = req.body?.days || 3;
+  const result = await sendWelcomeMessages(supabase, { days });
+  res.json(result);
+}));
+
 Sentry.setupExpressErrorHandler(app);
 
 app.use((err, req, res, next) => {
