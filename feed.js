@@ -13,6 +13,7 @@
 // "recent watches," but that's premature for a first version.
 
 const { getPool, getUserDisplayInfo } = require("./db");
+const { listFriends } = require("./friends");
 
 async function getFriendIds(supabase, userId) {
   const { data, error } = await supabase
@@ -93,4 +94,50 @@ async function getFriendsActivityFeed(supabase, userId, limit = 30) {
   }));
 }
 
-module.exports = { getFriendsActivityFeed };
+// v2: grouped by friend instead of one flat chronological list — a
+// flat feed doesn't scale past a handful of friends (Kostas flagged
+// this with 100 friends in mind), so this returns one row per friend
+// instead, sorted by their most recent watch, and the client drills
+// into a friend's own shows (getFriendWatching, in friends.js) rather
+// than every friend's episodes being interleaved together.
+async function getFriendsSummary(supabase, userId) {
+  const { friends } = await listFriends(supabase, userId);
+  if (friends.length === 0) return [];
+
+  const friendIds = friends.map((f) => f.userId);
+  const pool = getPool();
+
+  const [episodeRows, movieRows] = await Promise.all([
+    pool.query(
+      `select user_id, max(watched_at) as last_at
+       from watched_episodes
+       where user_id = any($1::uuid[])
+       group by user_id`,
+      [friendIds]
+    ),
+    pool.query(
+      `select user_id, max(watched_at) as last_at
+       from user_movie_watchlist
+       where user_id = any($1::uuid[]) and status = 'watched' and watched_at is not null
+       group by user_id`,
+      [friendIds]
+    ),
+  ]);
+
+  const lastActivityByUser = {};
+  for (const r of [...episodeRows.rows, ...movieRows.rows]) {
+    const prev = lastActivityByUser[r.user_id];
+    if (!prev || new Date(r.last_at) > new Date(prev)) lastActivityByUser[r.user_id] = r.last_at;
+  }
+
+  return friends
+    .map((f) => ({ ...f, lastActivityAt: lastActivityByUser[f.userId] || null }))
+    .sort((a, b) => {
+      if (!a.lastActivityAt && !b.lastActivityAt) return 0;
+      if (!a.lastActivityAt) return 1;
+      if (!b.lastActivityAt) return -1;
+      return new Date(b.lastActivityAt) - new Date(a.lastActivityAt);
+    });
+}
+
+module.exports = { getFriendsActivityFeed, getFriendsSummary };

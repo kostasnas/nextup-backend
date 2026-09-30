@@ -17,7 +17,7 @@ const { parseTraktExport } = require("./traktParser");
 const { parseLetterboxdExport } = require("./letterboxdParser");
 const { matchShows, searchShow, searchMovie, matchMovie } = require("./tmdbMatcher");
 const { syncShowProgress, fetchAllEpisodes, cacheEpisodes } = require("./episodeSync");
-const { sendFriendRequest, listFriends, acceptFriendRequest, declineFriendRequest, removeFriend, getFriendFavorites } = require("./friends");
+const { sendFriendRequest, listFriends, acceptFriendRequest, declineFriendRequest, removeFriend, getFriendFavorites, getFriendWatching } = require("./friends");
 const { sendMessage, getMessages, deleteMessage } = require("./messages");
 const { getComments, getCommentCountsForShow, addComment, deleteComment, toggleCommentLike, getEpisodeContext } = require("./episodeComments");
 const { getMovieWatchlist, setMovieStatus, updateMovieEntry, removeMovie } = require("./movies");
@@ -154,7 +154,7 @@ app.get("/", async (req, res) => {
 const { getWatchProviders, getShowWatchProviders, getMovieWatchProviders, getShowBackdrop, getMovieDetails, getTopShows, getTrending, getGenres, getPersonDetails } = require("./discover");
 const { getRottenTomatoesRating } = require("./rottenTomatoes");
 const { getMovieCommunityRating } = require("./movieRatings");
-const { getFriendsActivityFeed } = require("./feed");
+const { getFriendsActivityFeed, getFriendsSummary } = require("./feed");
 
 // Streaming-provider-aware "Top Shows" — public, cached, no auth
 // needed since results are identical for everyone in the same
@@ -1886,11 +1886,22 @@ app.get("/friends", requireAuth, asyncHandler(async (req, res) => {
 }));
 
 // Friends Activity Feed v1 (see feed.js) — recent episode/movie
-// watches from this user's accepted friends, newest first.
+// watches from this user's accepted friends, newest first. Kept for
+// now but no longer used by the client, which moved to the grouped
+// /feed/friends view below (a flat feed doesn't scale past a
+// handful of friends).
 app.get("/feed", requireAuth, asyncHandler(async (req, res) => {
   const limit = Math.min(parseInt(req.query.limit, 10) || 30, 100);
   const events = await getFriendsActivityFeed(supabase, req.userId, limit);
   res.json(events);
+}));
+
+// Activity Feed v2 — one row per friend (name, avatar, most recent
+// watch time), sorted by recency. The client drills into a friend's
+// own shows via /friends/:id/watching below.
+app.get("/feed/friends", requireAuth, asyncHandler(async (req, res) => {
+  const summary = await getFriendsSummary(supabase, req.userId);
+  res.json(summary);
 }));
 
 app.post("/friends/:id/accept", requireAuth, asyncHandler(async (req, res) => {
@@ -1910,6 +1921,14 @@ app.delete("/friends/:id", requireAuth, asyncHandler(async (req, res) => {
 
 app.get("/friends/:id/favorites", requireAuth, requireFriendsFeature, asyncHandler(async (req, res) => {
   const result = await getFriendFavorites(supabase, req.params.id, req.userId);
+  res.json(result);
+}));
+
+// Shows a friend has watched, with episode-watched count and their
+// most recent episode per show — backs the Activity Feed's per-friend
+// drill-down (see getFriendWatching in friends.js).
+app.get("/friends/:id/watching", requireAuth, requireFriendsFeature, asyncHandler(async (req, res) => {
+  const result = await getFriendWatching(supabase, req.params.id, req.userId);
   res.json(result);
 }));
 

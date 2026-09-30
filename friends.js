@@ -6,7 +6,7 @@
 // easier to get right — and to audit later — as a small set of
 // explicit endpoints than as RLS policies trying to encode "only if
 // accepted, only their favorites, never anyone else's."
-const { getUserDisplayInfo } = require("./db");
+const { getUserDisplayInfo, getPool } = require("./db");
 const { sendPushToUser } = require("./pushNotifications");
 
 /**
@@ -157,4 +157,64 @@ async function getFriendFavorites(supabase, connectionId, userId) {
   return favorites || [];
 }
 
-module.exports = { sendFriendRequest, listFriends, acceptFriendRequest, declineFriendRequest, removeFriend, getFriendFavorites };
+/**
+ * A friend's watch progress, one row per show they've watched at
+ * least one episode of: how many episodes, and the most recent one —
+ * this is what backs tapping a friend in the Activity Feed (Kostas
+ * wants names first, not a firehose of every episode from every
+ * friend, then drill into one friend's shows). Same accepted-
+ * connection check as getFriendFavorites above.
+ */
+async function getFriendWatching(supabase, connectionId, userId) {
+  const { data: row, error } = await supabase.from("friend_connections").select("*").eq("id", connectionId).single();
+  if (error || !row || row.status !== "accepted") {
+    const e = new Error("Not an accepted friend connection"); e.status = 404; throw e;
+  }
+  if (row.requester_id !== userId && row.recipient_id !== userId) {
+    const e = new Error("Not your connection"); e.status = 403; throw e;
+  }
+
+  const friendId = row.requester_id === userId ? row.recipient_id : row.requester_id;
+  const pool = getPool();
+
+  const [countRows, latestRows] = await Promise.all([
+    pool.query(
+      `select s.id as show_id, s.tmdb_id, s.title, s.poster_path, count(*)::int as episodes_watched
+       from watched_episodes we
+       join episodes e on e.id = we.episode_id
+       join shows s on s.id = e.show_id
+       where we.user_id = $1
+       group by s.id, s.tmdb_id, s.title, s.poster_path`,
+      [friendId]
+    ),
+    pool.query(
+      `select distinct on (s.id) s.id as show_id, e.season_number, e.episode_number, we.watched_at
+       from watched_episodes we
+       join episodes e on e.id = we.episode_id
+       join shows s on s.id = e.show_id
+       where we.user_id = $1
+       order by s.id, we.watched_at desc`,
+      [friendId]
+    ),
+  ]);
+
+  const latestByShow = {};
+  for (const r of latestRows.rows) latestByShow[r.show_id] = r;
+
+  return countRows.rows
+    .map((r) => {
+      const latest = latestByShow[r.show_id];
+      return {
+        tmdbId: r.tmdb_id,
+        title: r.title,
+        posterPath: r.poster_path,
+        episodesWatched: r.episodes_watched,
+        lastSeason: latest?.season_number ?? null,
+        lastEpisode: latest?.episode_number ?? null,
+        lastWatchedAt: latest?.watched_at ?? null,
+      };
+    })
+    .sort((a, b) => new Date(b.lastWatchedAt || 0) - new Date(a.lastWatchedAt || 0));
+}
+
+module.exports = { sendFriendRequest, listFriends, acceptFriendRequest, declineFriendRequest, removeFriend, getFriendFavorites, getFriendWatching };
