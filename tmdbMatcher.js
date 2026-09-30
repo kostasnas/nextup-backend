@@ -231,6 +231,37 @@ async function matchShow(tvTimeTitle) {
  * importing at the same time queue safely instead of each running
  * their own independent, uncoordinated delay loop.
  */
+/**
+ * Matches a movie title+year (e.g. from Letterboxd, which has no
+ * TMDB ID at all) against TMDB search results. Year matters a lot
+ * more here than for matchShow: movie titles collide constantly
+ * across remakes/reboots/unrelated films sharing a name ("Spider-Man"
+ * alone returns the 2002 Raimi film, 2017's Homecoming, and others),
+ * where TV show titles rarely do. A year match is treated as a
+ * strong signal and added on top of the title-similarity score,
+ * rather than used as a hard filter — a slightly-off or missing year
+ * shouldn't throw out an otherwise-obvious title match.
+ */
+async function matchMovie(title, year) {
+  const candidates = await searchMovie(title);
+  if (!candidates.length) return { status: "no_match", candidates: [] };
+
+  const scored = candidates
+    .map((c) => {
+      const releaseYear = c.release_date ? parseInt(c.release_date.slice(0, 4), 10) : null;
+      const titleScore = similarity(title, c.title);
+      const score = year && releaseYear === year ? Math.min(titleScore + 0.3, 1) : titleScore;
+      return { ...c, score };
+    })
+    .sort((a, b) => b.score - a.score);
+
+  const best = scored[0];
+  if (best.score >= CONFIDENCE_THRESHOLD) {
+    return { status: "matched", tmdbId: best.id, posterPath: best.poster_path || null, confidence: best.score, candidates: scored.slice(0, 5) };
+  }
+  return { status: "needs_review", candidates: scored.slice(0, 5) };
+}
+
 async function matchShows(tvTimeShows, { concurrency = 5 } = {}) {
   const results = [];
   for (let i = 0; i < tvTimeShows.length; i += concurrency) {
@@ -243,4 +274,4 @@ async function matchShows(tvTimeShows, { concurrency = 5 } = {}) {
   return results;
 }
 
-module.exports = { searchShow, searchMovie, getShowDetails, matchShow, matchShows, similarity, normalizeTitle, alternativeTitleVariants };
+module.exports = { searchShow, searchMovie, getShowDetails, matchShow, matchShows, matchMovie, similarity, normalizeTitle, alternativeTitleVariants };

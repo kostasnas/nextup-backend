@@ -14,7 +14,8 @@ const { parseMovieParadiseExport } = require("./movieParadiseParser");
 const { parseSimklExport } = require("./simklParser");
 const { parseSofaTimeExport } = require("./sofaTimeParser");
 const { parseTraktExport } = require("./traktParser");
-const { matchShows, searchShow, searchMovie } = require("./tmdbMatcher");
+const { parseLetterboxdExport } = require("./letterboxdParser");
+const { matchShows, searchShow, searchMovie, matchMovie } = require("./tmdbMatcher");
 const { syncShowProgress, fetchAllEpisodes, cacheEpisodes } = require("./episodeSync");
 const { sendFriendRequest, listFriends, acceptFriendRequest, declineFriendRequest, removeFriend, getFriendFavorites } = require("./friends");
 const { sendMessage, getMessages, deleteMessage } = require("./messages");
@@ -1108,6 +1109,94 @@ app.post("/import/trakt-zip", requireAuth, uploadZip.single("export_zip"), async
   }
 
   const result = await processTraktImport(req.userId, files);
+  res.json(result);
+}));
+
+// Letterboxd's export is a fixed folder layout (no timestamp suffixes
+// like Sofa Time, no risk of the wrong file if matched by exact
+// relative path rather than basename alone — deleted/diary.csv and
+// orphaned/diary.csv share a basename with the real diary.csv this
+// needs). diary.csv/watched.csv/ratings.csv are all optional
+// individually (parser falls back gracefully — see letterboxdParser.js),
+// but at least one of diary.csv/watched.csv is required or there's
+// nothing to import.
+const LETTERBOXD_FILES = ["diary.csv", "watched.csv", "watchlist.csv", "ratings.csv", "likes/films.csv"];
+
+async function processLetterboxdImport(userId, files) {
+  const { movies, stats } = parseLetterboxdExport(files);
+
+  const { data: job, error: jobError } = await supabase
+    .from("import_jobs")
+    .insert({ user_id: userId, source: "letterboxd", status: "matching", total_records: stats.totalMovies })
+    .select()
+    .single();
+  if (jobError) throw jobError;
+
+  let movieMatchedCount = 0;
+  let movieUnmatchedCount = 0;
+  for (const movie of movies) {
+    try {
+      const match = await matchMovie(movie.title, movie.year);
+      if (match.status !== "matched") { movieUnmatchedCount++; continue; }
+      const details = await getMovieDetails(match.tmdbId);
+      await setMovieStatus(
+        supabase,
+        userId,
+        { tmdb_id: details.id, title: details.title, poster_path: details.poster_path, release_date: details.release_date, runtime: details.runtime, overview: details.overview },
+        movie.isWatched ? "watched" : "planned",
+        movie.watchedAt
+      );
+      movieMatchedCount++;
+    } catch (e) {
+      console.error(`Letterboxd import: failed to match/import "${movie.title}" (${movie.year}):`, e.message);
+      movieUnmatchedCount++;
+    }
+  }
+
+  await supabase
+    .from("import_jobs")
+    .update({
+      status: "completed",
+      matched_records: movieMatchedCount,
+      unmatched_records: movieUnmatchedCount,
+      completed_at: new Date().toISOString(),
+    })
+    .eq("id", job.id);
+
+  return {
+    jobId: job.id,
+    matchedCount: 0,
+    unmatchedCount: 0,
+    totalShows: 0,
+    watchingCandidates: 0,
+    // Letterboxd is films-only — nothing to say about shows, but the
+    // ratings/likes caveat (see letterboxdParser.js header) is worth
+    // surfacing to the person rather than silently dropping their data.
+    warning: (stats.ratingsSkipped > 0 || stats.likesSkipped > 0)
+      ? `Star ratings and likes aren't imported yet (${stats.ratingsSkipped} rating(s), ${stats.likesSkipped} like(s) found in your export) — your watched films and watchlist were imported normally.`
+      : null,
+    movieMatchedCount,
+    movieUnmatchedCount,
+    totalMovies: stats.totalMovies,
+  };
+}
+
+app.post("/import/letterboxd-zip", requireAuth, uploadZip.single("export_zip"), asyncHandler(async (req, res) => {
+  if (!req.file) return res.status(400).json({ error: "export_zip file is required" });
+
+  const zip = new AdmZip(req.file.buffer);
+  const entries = zip.getEntries();
+
+  const files = {};
+  for (const name of LETTERBOXD_FILES) {
+    const entry = entries.find((e) => e.entryName.toLowerCase().replace(/\\/g, "/") === name);
+    if (entry) files[name] = entry.getData().toString("utf8");
+  }
+  if (!files["diary.csv"] && !files["watched.csv"]) {
+    return res.status(400).json({ error: "Could not find diary.csv or watched.csv inside the uploaded zip. Make sure you uploaded the full Letterboxd data export (Settings → Data → Export Your Data)." });
+  }
+
+  const result = await processLetterboxdImport(req.userId, files);
   res.json(result);
 }));
 
