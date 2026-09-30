@@ -152,6 +152,9 @@ app.get("/", async (req, res) => {
 });
 
 const { getWatchProviders, getShowWatchProviders, getMovieWatchProviders, getShowBackdrop, getMovieDetails, getTopShows, getTrending, getGenres, getPersonDetails } = require("./discover");
+const { getRottenTomatoesRating } = require("./rottenTomatoes");
+const { getMovieCommunityRating } = require("./movieRatings");
+const { getFriendsActivityFeed } = require("./feed");
 
 // Streaming-provider-aware "Top Shows" — public, cached, no auth
 // needed since results are identical for everyone in the same
@@ -191,6 +194,28 @@ app.get("/people/:id", asyncHandler(async (req, res) => {
 // rate the show.
 app.get("/shows/:id/community-rating", asyncHandler(async (req, res) => {
   const rating = await getShowCommunityRating(req.params.id);
+  res.json(rating);
+}));
+
+// Rotten Tomatoes score (via OMDb, see rottenTomatoes.js) — public,
+// cached, no auth needed. Always returns 200 with null fields instead
+// of erroring when OMDB_API_KEY isn't set or a title has no RT score,
+// since this is a nice-to-have badge the rest of Show/Movie Detail
+// should never depend on.
+app.get("/shows/:id/rotten-tomatoes", asyncHandler(async (req, res) => {
+  const result = await getRottenTomatoesRating(req.params.id, "tv");
+  res.json(result || { score: null, imdbRating: null, imdbId: null });
+}));
+
+app.get("/movies/:id/rotten-tomatoes", asyncHandler(async (req, res) => {
+  const result = await getRottenTomatoesRating(req.params.id, "movie");
+  res.json(result || { score: null, imdbRating: null, imdbId: null });
+}));
+
+// Scenera's own aggregate rating for a movie — public, no auth
+// needed, movie-side equivalent of /shows/:id/community-rating above.
+app.get("/movies/:id/community-rating", asyncHandler(async (req, res) => {
+  const rating = await getMovieCommunityRating(req.params.id);
   res.json(rating);
 }));
 
@@ -1858,6 +1883,14 @@ app.delete("/account", requireAuth, asyncHandler(async (req, res) => {
 app.get("/friends", requireAuth, asyncHandler(async (req, res) => {
   const result = await listFriends(supabase, req.userId);
   res.json(result);
+}));
+
+// Friends Activity Feed v1 (see feed.js) — recent episode/movie
+// watches from this user's accepted friends, newest first.
+app.get("/feed", requireAuth, asyncHandler(async (req, res) => {
+  const limit = Math.min(parseInt(req.query.limit, 10) || 30, 100);
+  const events = await getFriendsActivityFeed(supabase, req.userId, limit);
+  res.json(events);
 }));
 
 app.post("/friends/:id/accept", requireAuth, asyncHandler(async (req, res) => {
