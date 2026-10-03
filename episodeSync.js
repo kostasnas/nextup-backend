@@ -28,6 +28,7 @@ async function fetchAllEpisodes(tmdbId) {
     .sort((a, b) => a - b);
 
   const episodes = [];
+  const episodeRuntimes = []; // per-episode runtime, when TMDB has it — see episodeRunTime fallback below
   for (const seasonNumber of seasonNumbers) {
     const season = await tmdbFetch(`/tv/${tmdbId}/season/${seasonNumber}`);
     for (const ep of season.episodes || []) {
@@ -38,6 +39,7 @@ async function fetchAllEpisodes(tmdbId) {
         air_date: ep.air_date || null,
         title: ep.name || null,
       });
+      if (typeof ep.runtime === "number" && ep.runtime > 0) episodeRuntimes.push(ep.runtime);
     }
   }
 
@@ -47,16 +49,23 @@ async function fetchAllEpisodes(tmdbId) {
     return a.episode_number - b.episode_number;
   });
 
-  // TMDB's episode_run_time is an array (sometimes a few values if the
-  // runtime changed over the show's life, occasionally empty) — the
+  // TMDB's episode_run_time is an array on the SHOW object (sometimes
+  // a few values if the runtime changed over the show's life) — the
   // first entry is the best single "typical episode length" we can
-  // offer without averaging across seasons we don't track per-episode
-  // runtime for. Used to estimate total hours watched (see
-  // /stats/summary in server.js); null when TMDB has nothing, which
-  // callers treat as "unknown" rather than guessing a number.
-  const episodeRunTime = Array.isArray(show.episode_run_time) && show.episode_run_time.length > 0
+  // offer without averaging across seasons. A real-world gap found
+  // while backfilling (3 Oct 2026): a large share of shows have this
+  // come back empty even though TMDB does have a `runtime` on most of
+  // their individual episodes (fetched above into episodeRuntimes) —
+  // so that's the fallback, averaged and rounded. Only when BOTH are
+  // empty do we give up and return null, which callers (/stats/summary
+  // in server.js) treat as "unknown" and estimate instead of guessing
+  // a number here.
+  let episodeRunTime = Array.isArray(show.episode_run_time) && show.episode_run_time.length > 0
     ? show.episode_run_time[0]
     : null;
+  if (episodeRunTime == null && episodeRuntimes.length > 0) {
+    episodeRunTime = Math.round(episodeRuntimes.reduce((sum, r) => sum + r, 0) / episodeRuntimes.length);
+  }
 
   return { episodes, showStatus: show.status, episodeRunTime };
 }
