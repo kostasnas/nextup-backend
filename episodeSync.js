@@ -47,7 +47,18 @@ async function fetchAllEpisodes(tmdbId) {
     return a.episode_number - b.episode_number;
   });
 
-  return { episodes, showStatus: show.status };
+  // TMDB's episode_run_time is an array (sometimes a few values if the
+  // runtime changed over the show's life, occasionally empty) — the
+  // first entry is the best single "typical episode length" we can
+  // offer without averaging across seasons we don't track per-episode
+  // runtime for. Used to estimate total hours watched (see
+  // /stats/summary in server.js); null when TMDB has nothing, which
+  // callers treat as "unknown" rather than guessing a number.
+  const episodeRunTime = Array.isArray(show.episode_run_time) && show.episode_run_time.length > 0
+    ? show.episode_run_time[0]
+    : null;
+
+  return { episodes, showStatus: show.status, episodeRunTime };
 }
 
 async function cacheEpisodes(supabase, showRowId, episodes) {

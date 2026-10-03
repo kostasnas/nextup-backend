@@ -299,6 +299,47 @@ app.get("/character-votes/:sourceType/:sourceTmdbId", asyncHandler(async (req, r
   res.json(counts);
 }));
 
+// Headline totals for the "Shows · Movies · Hours" stats share card
+// (StatsScreen) — "shows" counts distinct shows with at least one
+// watched episode (not just added to a list), matching what "hours"
+// is actually built from. Aggregated in JS rather than a Postgres
+// function, same reasoning as getCharacterVoteCounts above: one
+// person's watched_episodes is never large enough for a bespoke RPC
+// to be worth it.
+app.get("/stats/summary", requireAuth, asyncHandler(async (req, res) => {
+  // Used only for the (rare) show where TMDB has never given us an
+  // episode_run_time — better to estimate with a typical episode
+  // length than to silently under-count that show's hours as zero.
+  const DEFAULT_EPISODE_MINUTES = 42;
+
+  const { data: watchedRows, error: watchedErr } = await supabase
+    .from("watched_episodes")
+    .select("episodes(show_id, shows(avg_episode_runtime))")
+    .eq("user_id", req.userId);
+  if (watchedErr) throw watchedErr;
+
+  const showIds = new Set();
+  let episodeMinutes = 0;
+  for (const row of watchedRows || []) {
+    const ep = row.episodes;
+    if (!ep) continue; // orphaned row (episode/show deleted) — ignore rather than crash
+    if (ep.show_id) showIds.add(ep.show_id);
+    episodeMinutes += ep.shows?.avg_episode_runtime || DEFAULT_EPISODE_MINUTES;
+  }
+
+  const { data: movieRows, error: movieErr } = await supabase
+    .from("user_movie_watchlist")
+    .select("runtime")
+    .eq("user_id", req.userId)
+    .eq("status", "watched");
+  if (movieErr) throw movieErr;
+
+  const movieMinutes = (movieRows || []).reduce((sum, m) => sum + (m.runtime || 0), 0);
+  const totalHours = Math.round((episodeMinutes + movieMinutes) / 60);
+
+  res.json({ showsCount: showIds.size, moviesCount: (movieRows || []).length, totalHours });
+}));
+
 app.get("/feature-requests", requireAuth, asyncHandler(async (req, res) => {
   const list = await listFeatureRequests(supabase, req.userId);
   res.json(list);
@@ -1763,7 +1804,7 @@ app.get("/shows/:tmdbId/full-progress", requireAuth, asyncHandler(async (req, re
     showStatus = fetched.showStatus;
     await supabase
       .from("shows")
-      .update({ status: showStatus, episodes_synced_at: new Date().toISOString() })
+      .update({ status: showStatus, episodes_synced_at: new Date().toISOString(), avg_episode_runtime: fetched.episodeRunTime })
       .eq("id", showRow.id);
   } else {
     // We have SOMETHING cached — serve it immediately even if stale,
@@ -1787,7 +1828,7 @@ app.get("/shows/:tmdbId/full-progress", requireAuth, asyncHandler(async (req, re
           await cacheEpisodes(supabase, showRow.id, fetched.episodes);
           await supabase
             .from("shows")
-            .update({ status: fetched.showStatus, episodes_synced_at: new Date().toISOString() })
+            .update({ status: fetched.showStatus, episodes_synced_at: new Date().toISOString(), avg_episode_runtime: fetched.episodeRunTime })
             .eq("id", showRow.id);
         })
         .catch((err) => console.error(`Background episode sync failed for tmdbId=${tmdbId}:`, err.message));
@@ -2263,6 +2304,45 @@ const reconcileOnlyHandler = asyncHandler(async (req, res) => {
 });
 app.get("/admin/reconcile-statuses", reconcileOnlyHandler);
 app.post("/admin/reconcile-statuses", reconcileOnlyHandler);
+
+// One-time catch-up for shows tracked before avg_episode_runtime
+// existed (see the "Hours watched" stats work) — new shows and any
+// show whose episodes get re-synced pick this up automatically (see
+// fetchAllEpisodes call sites above), but an already-synced, finished
+// show never gets re-synced on its own, so it would otherwise be
+// stuck with avg_episode_runtime = null forever. Safe to call more
+// than once: it only ever targets rows that are still null, and does
+// nothing once every show has a value (or TMDB genuinely has none for
+// it, in which case it's silently skipped and stays null).
+const backfillRuntimesHandler = asyncHandler(async (req, res) => {
+  const providedSecret = req.headers["x-cron-secret"];
+  if (!process.env.CRON_SECRET || providedSecret !== process.env.CRON_SECRET) {
+    return res.status(401).json({ error: "Unauthorized" });
+  }
+  const { data: showsMissingRuntime, error } = await supabase
+    .from("shows")
+    .select("id, tmdb_id")
+    .is("avg_episode_runtime", null);
+  if (error) throw error;
+
+  let updated = 0;
+  let failed = 0;
+  for (const show of showsMissingRuntime || []) {
+    try {
+      const fetched = await fetchAllEpisodes(show.tmdb_id);
+      if (fetched.episodeRunTime != null) {
+        await supabase.from("shows").update({ avg_episode_runtime: fetched.episodeRunTime }).eq("id", show.id);
+        updated++;
+      }
+    } catch (err) {
+      failed++;
+      console.error(`Runtime backfill failed for show tmdb_id=${show.tmdb_id}:`, err.message);
+    }
+  }
+  res.json({ checked: (showsMissingRuntime || []).length, updated, failed });
+});
+app.get("/admin/backfill-episode-runtimes", backfillRuntimesHandler);
+app.post("/admin/backfill-episode-runtimes", backfillRuntimesHandler);
 
 // Sends a custom push notification to every registered device —
 // reusable for announcements like "new version available", not tied
