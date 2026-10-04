@@ -15,7 +15,7 @@
 // maps directly onto movies.js's setMovieStatus(..., "watched",
 // watchedAt), the same helper the rest of the app already uses.
 
-const { refreshTokenIfNeeded } = require("./traktAuth");
+const { refreshTokenIfNeeded, getClientId } = require("./traktAuth");
 const { syncShowProgress } = require("./episodeSync");
 const { setMovieStatus } = require("./movies");
 const { getShowDetails } = require("./tmdbMatcher");
@@ -26,7 +26,7 @@ function traktHeaders(accessToken) {
   return {
     "Content-Type": "application/json",
     "trakt-api-version": "2",
-    "trakt-api-key": process.env.TRAKT_CLIENT_ID,
+    "trakt-api-key": getClientId(),
     Authorization: `Bearer ${accessToken}`,
   };
 }

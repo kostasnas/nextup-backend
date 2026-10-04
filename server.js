@@ -250,6 +250,24 @@ app.get("/trakt/connect", requireAuth, asyncHandler(async (req, res) => {
   res.json({ url });
 }));
 
+// TEMPORARY — diagnosing the "client_id is required" error Kostas hit
+// testing the real Connect button. Shows exactly what client_id value
+// the server actually has for TRAKT_CLIENT_ID (masked), to rule out a
+// stray whitespace/newline from a clipboard paste on Render. Remove
+// once confirmed working.
+app.get("/trakt/debug-client-id", asyncHandler(async (req, res) => {
+  if (req.query.secret !== process.env.CRON_SECRET) return res.status(401).json({ error: "Unauthorized" });
+  const raw = process.env.TRAKT_CLIENT_ID || "";
+  res.json({
+    length: raw.length,
+    trimmedLength: raw.trim().length,
+    startsWithMatch: raw.trim().startsWith("5e7BQHL1"),
+    endsWithMatch: raw.trim().endsWith("hfAfON4"),
+    hasLeadingOrTrailingWhitespace: raw !== raw.trim(),
+    hasInternalWhitespace: /\s/.test(raw.trim()),
+  });
+}));
+
 // Public — Trakt redirects the user's browser straight here with no
 // Bearer token available, so this route can't use requireAuth; the
 // `state` param (created while the user WAS authenticated, above) is

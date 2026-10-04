@@ -32,6 +32,13 @@ function getRedirectUri() {
   return `${base}/trakt/callback`;
 }
 
+// Defensive trim — a copy-pasted env var value picking up a stray
+// trailing newline/space (easy to do from a phone's clipboard) would
+// otherwise silently produce an invalid client_id Trakt rejects.
+function getClientId() {
+  return (process.env.TRAKT_CLIENT_ID || "").trim();
+}
+
 async function createConnectUrl(supabase, userId) {
   const state = crypto.randomBytes(24).toString("hex");
   const codeVerifier = crypto.randomBytes(32).toString("base64url");
@@ -42,7 +49,7 @@ async function createConnectUrl(supabase, userId) {
 
   const params = new URLSearchParams({
     response_type: "code",
-    client_id: process.env.TRAKT_CLIENT_ID,
+    client_id: getClientId(),
     redirect_uri: getRedirectUri(),
     state,
     code_challenge: codeChallenge,
@@ -65,7 +72,7 @@ async function handleCallback(supabase, code, state) {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       code,
-      client_id: process.env.TRAKT_CLIENT_ID,
+      client_id: getClientId(),
       redirect_uri: getRedirectUri(),
       grant_type: "authorization_code",
       code_verifier: stateRow.code_verifier,
@@ -103,7 +110,7 @@ async function refreshTokenIfNeeded(supabase, connection) {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       refresh_token: connection.refresh_token,
-      client_id: process.env.TRAKT_CLIENT_ID,
+      client_id: getClientId(),
       redirect_uri: getRedirectUri(),
       grant_type: "refresh_token",
     }),
@@ -138,4 +145,4 @@ async function getTraktStatus(supabase, userId) {
   return { connected: !!data, connectedAt: data?.connected_at || null, lastSyncedAt: data?.last_synced_at || null };
 }
 
-module.exports = { createConnectUrl, handleCallback, refreshTokenIfNeeded, disconnectTrakt, getTraktStatus };
+module.exports = { createConnectUrl, handleCallback, refreshTokenIfNeeded, disconnectTrakt, getTraktStatus, getClientId };
