@@ -15,7 +15,8 @@ const { parseSimklExport } = require("./simklParser");
 const { parseSofaTimeExport } = require("./sofaTimeParser");
 const { parseTraktExport } = require("./traktParser");
 const { parseLetterboxdExport } = require("./letterboxdParser");
-const { matchShows, searchShow, searchMovie, matchMovie } = require("./tmdbMatcher");
+const { parseImdbRatingsExport } = require("./imdbParser");
+const { matchShows, searchShow, searchMovie, matchMovie, findByImdbId } = require("./tmdbMatcher");
 const { syncShowProgress, fetchAllEpisodes, cacheEpisodes } = require("./episodeSync");
 const { sendFriendRequest, listFriends, acceptFriendRequest, declineFriendRequest, removeFriend, getFriendFavorites, getFriendWatching } = require("./friends");
 const { sendMessage, getMessages, deleteMessage } = require("./messages");
@@ -1359,6 +1360,105 @@ app.post("/import/letterboxd-zip", requireAuth, uploadZip.single("export_zip"), 
   res.json(result);
 }));
 
+// IMDb's export (profile -> Your ratings -> Export) is a single
+// ratings.csv, not a zip like every other source above — uploadCsv
+// (not uploadZip) accepts it directly. Verified against a real export
+// from Kostas's own IMDb account (4 Oct 2026, 2 movies + 2 TV series).
+async function processImdbImport(userId, fileContent) {
+  const { shows, movies, stats } = parseImdbRatingsExport(fileContent);
+
+  const { data: job, error: jobError } = await supabase
+    .from("import_jobs")
+    .insert({ user_id: userId, source: "imdb", status: "matching", total_records: stats.totalShows + stats.totalMovies })
+    .select()
+    .single();
+  if (jobError) throw jobError;
+
+  let showMatchedCount = 0;
+  let showUnmatchedCount = 0;
+  for (const show of shows) {
+    try {
+      const { tv } = await findByImdbId(show.imdbId);
+      if (!tv) { showUnmatchedCount++; continue; }
+      await upsertShowProgress(
+        userId,
+        {
+          title: show.title,
+          match: { status: "matched", tmdbId: tv.id, posterPath: tv.poster_path || null },
+          episodesSeenCount: 0,
+          isArchived: false,
+        },
+        job.id,
+        { forceWatching: true } // rated on IMDb -> watched, but no per-episode data to count
+      );
+      showMatchedCount++;
+    } catch (e) {
+      console.error(`IMDb import: failed to match/import show "${show.title}" (${show.imdbId}):`, e.message);
+      showUnmatchedCount++;
+    }
+  }
+
+  let movieMatchedCount = 0;
+  let movieUnmatchedCount = 0;
+  for (const movie of movies) {
+    try {
+      const { movie: tmdbMovie } = await findByImdbId(movie.imdbId);
+      if (!tmdbMovie) { movieUnmatchedCount++; continue; }
+      const details = await getMovieDetails(tmdbMovie.id);
+      await setMovieStatus(
+        supabase,
+        userId,
+        {
+          tmdb_id: tmdbMovie.id,
+          title: details.title || movie.title,
+          poster_path: details.posterPath,
+          release_date: details.releaseDate,
+          runtime: details.runtime,
+          overview: details.overview,
+        },
+        "watched",
+        movie.watchedAt
+      );
+      movieMatchedCount++;
+    } catch (e) {
+      console.error(`IMDb import: failed to match/import movie "${movie.title}" (${movie.imdbId}):`, e.message);
+      movieUnmatchedCount++;
+    }
+  }
+
+  await supabase
+    .from("import_jobs")
+    .update({
+      status: "completed",
+      matched_records: showMatchedCount + movieMatchedCount,
+      unmatched_records: showUnmatchedCount + movieUnmatchedCount,
+      completed_at: new Date().toISOString(),
+    })
+    .eq("id", job.id);
+
+  return {
+    jobId: job.id,
+    matchedCount: showMatchedCount,
+    unmatchedCount: showUnmatchedCount,
+    totalShows: stats.totalShows,
+    watchingCandidates: showMatchedCount,
+    warning: (stats.episodesSkipped > 0 || stats.unknownTypeSkipped > 0)
+      ? `${stats.episodesSkipped} individually-rated episode(s) and ${stats.unknownTypeSkipped} other row(s) in your export weren't imported — only movie and full-series ratings are supported right now.`
+      : null,
+    movieMatchedCount,
+    movieUnmatchedCount,
+    totalMovies: stats.totalMovies,
+  };
+}
+
+app.post("/import/imdb-csv", requireAuth, uploadCsv.single("ratings_csv"), asyncHandler(async (req, res) => {
+  if (!req.file) return res.status(400).json({ error: "ratings_csv file is required" });
+
+  const fileContent = req.file.buffer.toString("utf8");
+  const result = await processImdbImport(req.userId, fileContent);
+  res.json(result);
+}));
+
 async function upsertShowProgress(userId, show, jobId, extras = {}) {
   const tmdbId = show.match.tmdbId;
 
@@ -1384,7 +1484,12 @@ async function upsertShowProgress(userId, show, jobId, extras = {}) {
     {
       user_id: userId,
       show_id: showRowId,
-      status: show.isArchived ? "dropped" : show.episodesSeenCount > 0 ? "watching" : "planned",
+      // forceWatching covers a source that knows the whole show was
+      // watched (e.g. a rated IMDb series) but has no episode-level
+      // data at all to produce a real episodesSeenCount from — see
+      // imdbParser.js. Without it such a show would wrongly land on
+      // "planned" (0 episodes seen) despite being rated/watched.
+      status: show.isArchived ? "dropped" : (show.episodesSeenCount > 0 || extras.forceWatching) ? "watching" : "planned",
       updated_at: new Date().toISOString(),
     },
     { onConflict: "user_id,show_id" }

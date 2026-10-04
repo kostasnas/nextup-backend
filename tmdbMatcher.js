@@ -110,6 +110,38 @@ async function searchMovie(title) {
 }
 
 /**
+ * Resolves a real external ID (IMDb's "tt..." const) straight to a
+ * TMDB id — no fuzzy title matching needed, unlike matchShow/matchMovie
+ * above, since the ID itself is authoritative. Used by imdbParser.js's
+ * import pipeline (IMDb ratings exports carry a real imdb_id per row,
+ * no TMDB id at all).
+ *
+ * TMDB's /find endpoint doesn't know in advance whether an id is a
+ * movie or a show, so it returns both result arrays — the caller
+ * picks whichever one is non-empty (an id is never both).
+ * @returns {Promise<{movie: object|null, tv: object|null}>}
+ */
+async function findByImdbId(imdbId) {
+  const apiKey = process.env.TMDB_API_KEY;
+  if (!apiKey) throw new Error("TMDB_API_KEY is not set in environment");
+
+  const url = `${TMDB_BASE}/find/${imdbId}?api_key=${apiKey}&external_source=imdb_id`;
+  const data = await throttle(async () => {
+    const res = await fetch(url);
+    if (!res.ok) throw new Error(`TMDB find failed: ${res.status}`);
+    return res.json();
+  });
+
+  return {
+    movie: (data.movie_results || [])[0] || null,
+    // IMDb doesn't distinguish "TV Mini Series" from a regular series
+    // in a way TMDB's /find mirrors — both land in tv_results, which
+    // is all this needs.
+    tv: (data.tv_results || [])[0] || null,
+  };
+}
+
+/**
  * Fetches full season/episode structure for a matched show, needed
  * to translate "episodesSeenCount" into a season/episode marker.
  */
@@ -274,4 +306,4 @@ async function matchShows(tvTimeShows, { concurrency = 5 } = {}) {
   return results;
 }
 
-module.exports = { searchShow, searchMovie, getShowDetails, matchShow, matchShows, matchMovie, similarity, normalizeTitle, alternativeTitleVariants };
+module.exports = { searchShow, searchMovie, getShowDetails, matchShow, matchShows, matchMovie, findByImdbId, similarity, normalizeTitle, alternativeTitleVariants };
