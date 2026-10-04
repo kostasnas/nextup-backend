@@ -25,7 +25,11 @@
 // row since it's needed again at token-exchange time.
 const crypto = require("crypto");
 
-const TRAKT_BASE = "https://api.trakt.tv";
+// Same split as /oauth/authorize above — Trakt's token endpoint for
+// PKCE apps also lives on auth.trakt.tv, not api.trakt.tv (confirmed
+// after /oauth/authorize worked but /oauth/token 403'd using the old
+// api.trakt.tv host).
+const TRAKT_BASE = "https://auth.trakt.tv";
 
 function getRedirectUri() {
   const base = process.env.BACKEND_PUBLIC_URL || "https://nextup-backend-ccq7.onrender.com";
