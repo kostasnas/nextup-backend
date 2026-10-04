@@ -268,6 +268,25 @@ app.get("/trakt/debug-client-id", asyncHandler(async (req, res) => {
   });
 }));
 
+// TEMPORARY — shows the exact authorize URL createConnectUrl would
+// hand to the app right now (no DB write, fake state/verifier), so we
+// can inspect it directly instead of guessing what the real Connect
+// button produced. Remove once confirmed working.
+app.get("/trakt/debug-url", asyncHandler(async (req, res) => {
+  if (req.query.secret !== process.env.CRON_SECRET) return res.status(401).json({ error: "Unauthorized" });
+  const { getClientId } = require("./traktAuth");
+  const base = process.env.BACKEND_PUBLIC_URL || "https://nextup-backend-ccq7.onrender.com";
+  const params = new URLSearchParams({
+    response_type: "code",
+    client_id: getClientId(),
+    redirect_uri: `${base}/trakt/callback`,
+    state: "debugstate123",
+    code_challenge: "debugchallenge",
+    code_challenge_method: "S256",
+  });
+  res.json({ url: `https://trakt.tv/oauth/authorize?${params}` });
+}));
+
 // Public — Trakt redirects the user's browser straight here with no
 // Bearer token available, so this route can't use requireAuth; the
 // `state` param (created while the user WAS authenticated, above) is
