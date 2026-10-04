@@ -278,11 +278,11 @@ app.get("/favorite-characters", requireAuth, asyncHandler(async (req, res) => {
 }));
 
 app.post("/favorite-characters", requireAuth, asyncHandler(async (req, res) => {
-  const { tmdbPersonId, personName, profilePath, sourceType, sourceTmdbId, sourceTitle, characterName } = req.body;
+  const { tmdbPersonId, personName, profilePath, sourceType, sourceTmdbId, sourceTitle, characterName, isAnime, showTitle } = req.body;
   if (!tmdbPersonId || !personName || !sourceType || !sourceTmdbId || !sourceTitle) {
     return res.status(400).json({ error: "tmdbPersonId, personName, sourceType, sourceTmdbId, and sourceTitle are required" });
   }
-  const result = await addFavoriteCharacter(supabase, req.userId, { tmdbPersonId, personName, profilePath, sourceType, sourceTmdbId, sourceTitle, characterName });
+  const result = await addFavoriteCharacter(supabase, req.userId, { tmdbPersonId, personName, profilePath, sourceType, sourceTmdbId, sourceTitle, characterName, isAnime: !!isAnime, showTitle });
   res.json(result);
 }));
 
