@@ -26,6 +26,7 @@ const { listFeatureRequests, createFeatureRequest, toggleVote } = require("./fea
 const { logRewatch, removeRewatch, getRewatchCountsForShow } = require("./episodeRewatches");
 const { getEmotionCountsForShow } = require("./episodeEmotions");
 const { createConnectUrl, handleCallback, disconnectTrakt, getTraktStatus } = require("./traktAuth");
+const { syncAllTraktUsers } = require("./traktSync");
 const { findUserByEmail, findUserByUsername } = require("./db");
 const { getShowCommunityRating } = require("./showRatings");
 const { createNotification, listNotifications, getUnreadCount, markAllRead, markRead } = require("./notifications");
@@ -2337,6 +2338,22 @@ const engagementNudgeHandler = asyncHandler(async (req, res) => {
   const result = await sendDailyEngagementNudge(supabase);
   res.json(result);
 });
+
+// Trakt auto-tracking sync — pulls new watch history for every
+// connected user since their last sync and applies it (see
+// traktSync.js). Same shared-secret cron pattern as the other
+// scheduled maintenance endpoints above; meant to run every hour or
+// so once a scheduler is pointed at it.
+const traktSyncHandler = asyncHandler(async (req, res) => {
+  const providedSecret = req.headers["x-cron-secret"];
+  if (!process.env.CRON_SECRET || providedSecret !== process.env.CRON_SECRET) {
+    return res.status(401).json({ error: "Unauthorized" });
+  }
+  const results = await syncAllTraktUsers(supabase);
+  res.json({ results });
+});
+app.get("/trakt/sync-all", traktSyncHandler);
+app.post("/trakt/sync-all", traktSyncHandler);
 app.get("/notifications/send-engagement-nudge", engagementNudgeHandler);
 app.post("/notifications/send-engagement-nudge", engagementNudgeHandler);
 

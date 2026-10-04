@@ -92,7 +92,7 @@ async function cacheEpisodes(supabase, showRowId, episodes) {
  * (ignoreDuplicates) — if it's already marked watched (from a
  * previous run, or about to be top-filled below), we leave it alone.
  */
-async function applyEpisodeLog(supabase, userId, cachedEpisodes, episodeLog) {
+async function applyEpisodeLog(supabase, userId, cachedEpisodes, episodeLog, source = "import_tvtime_log") {
   if (!episodeLog || episodeLog.length === 0) return 0;
 
   const byKey = {};
@@ -106,7 +106,7 @@ async function applyEpisodeLog(supabase, userId, cachedEpisodes, episodeLog) {
       user_id: userId,
       episode_id: ep.id,
       watched_at: entry.watchedAt || new Date().toISOString(),
-      source: "import_tvtime_log",
+      source,
     });
   }
   if (rows.length === 0) return 0;
@@ -165,11 +165,11 @@ async function markProgress(supabase, userId, cachedEpisodes, episodesSeenCount)
  * and set the right watchlist status (completed vs up_to_date vs
  * left as watching).
  */
-async function syncShowProgress(supabase, { userId, showRowId, tmdbId, episodesSeenCount, episodeLog, emotionLog }) {
+async function syncShowProgress(supabase, { userId, showRowId, tmdbId, episodesSeenCount, episodeLog, emotionLog, source }) {
   const { episodes, showStatus } = await fetchAllEpisodes(tmdbId);
   const cached = await cacheEpisodes(supabase, showRowId, episodes);
 
-  await applyEpisodeLog(supabase, userId, cached, episodeLog);
+  await applyEpisodeLog(supabase, userId, cached, episodeLog, source);
   const markedCount = await markProgress(supabase, userId, cached, episodesSeenCount);
   await applyEmotionLog(supabase, userId, cached, emotionLog);
 
