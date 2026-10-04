@@ -82,10 +82,18 @@ async function handleCallback(supabase, code, state) {
     // headers, including your trakt-api-key" — the 403 we hit testing
     // this without these two headers suggests /oauth/token now
     // enforces that too, not just the data endpoints.
+    //
+    // User-Agent: auth.trakt.tv sits behind Cloudflare, which was
+    // blocking this exact request outright (no Trakt error body at
+    // all — a Cloudflare challenge page instead) because Node's
+    // default fetch sends no User-Agent / a bare "node" one, which
+    // Cloudflare's bot heuristics flag as non-browser traffic. A
+    // normal browser-style UA clears it.
     headers: {
       "Content-Type": "application/json",
       "trakt-api-version": "2",
       "trakt-api-key": getClientId(),
+      "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
     },
     body: JSON.stringify({
       code,
@@ -134,10 +142,13 @@ async function refreshTokenIfNeeded(supabase, connection) {
 
   const res = await fetch(`${TRAKT_BASE}/oauth/token`, {
     method: "POST",
+    // Same Cloudflare/User-Agent issue as the token exchange above —
+    // see the comment there.
     headers: {
       "Content-Type": "application/json",
       "trakt-api-version": "2",
       "trakt-api-key": getClientId(),
+      "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
     },
     body: JSON.stringify({
       refresh_token: connection.refresh_token,
