@@ -25,6 +25,7 @@ const { getFavoriteCharacters, addFavoriteCharacter, removeFavoriteCharacter, ge
 const { listFeatureRequests, createFeatureRequest, toggleVote } = require("./featureRequests");
 const { logRewatch, removeRewatch, getRewatchCountsForShow } = require("./episodeRewatches");
 const { getEmotionCountsForShow } = require("./episodeEmotions");
+const { createConnectUrl, handleCallback, disconnectTrakt, getTraktStatus } = require("./traktAuth");
 const { findUserByEmail, findUserByUsername } = require("./db");
 const { getShowCommunityRating } = require("./showRatings");
 const { createNotification, listNotifications, getUnreadCount, markAllRead, markRead } = require("./notifications");
@@ -239,6 +240,45 @@ app.get("/shows/:id/rewatch-counts", requireAuth, asyncHandler(async (req, res) 
 app.get("/shows/:id/emotion-counts", requireAuth, asyncHandler(async (req, res) => {
   const counts = await getEmotionCountsForShow(req.params.id);
   res.json(counts);
+}));
+
+// Trakt OAuth connect flow — "Auto-Tracking (Scrobbling)". See
+// traktAuth.js for the full flow explanation.
+app.get("/trakt/connect", requireAuth, asyncHandler(async (req, res) => {
+  const url = await createConnectUrl(supabase, req.userId);
+  res.json({ url });
+}));
+
+// Public — Trakt redirects the user's browser straight here with no
+// Bearer token available, so this route can't use requireAuth; the
+// `state` param (created while the user WAS authenticated, above) is
+// what recovers which Scenera user this belongs to. Renders a plain
+// HTML page since a real browser lands here, not our app's fetch code.
+app.get("/trakt/callback", asyncHandler(async (req, res) => {
+  const { code, state, error } = req.query;
+  if (error) {
+    return res.send(`<html><body style="font-family: sans-serif; text-align:center; padding-top:80px;">
+      <h2>Trakt connection cancelled</h2><p>You can close this tab and try again from Scenera.</p></body></html>`);
+  }
+  try {
+    await handleCallback(supabase, code, state);
+    res.send(`<html><body style="font-family: sans-serif; text-align:center; padding-top:80px;">
+      <h2>✅ Trakt connected!</h2><p>You can close this tab and go back to Scenera.</p></body></html>`);
+  } catch (e) {
+    console.error("Trakt callback failed:", e.message);
+    res.send(`<html><body style="font-family: sans-serif; text-align:center; padding-top:80px;">
+      <h2>Something went wrong</h2><p>${e.message}</p><p>You can close this tab and try again from Scenera.</p></body></html>`);
+  }
+}));
+
+app.get("/trakt/status", requireAuth, asyncHandler(async (req, res) => {
+  const status = await getTraktStatus(supabase, req.userId);
+  res.json(status);
+}));
+
+app.delete("/trakt/connection", requireAuth, asyncHandler(async (req, res) => {
+  const result = await disconnectTrakt(supabase, req.userId);
+  res.json(result);
 }));
 
 app.post("/episodes/:id/rewatch", requireAuth, asyncHandler(async (req, res) => {
