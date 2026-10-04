@@ -1993,7 +1993,23 @@ app.get("/widget/continue-watching", requireAuth, asyncHandler(async (req, res) 
 // scrollable widget list without ever needing pagination there.
 app.get("/widget/watch-next-list", requireAuth, asyncHandler(async (req, res) => {
   const today = new Date().toISOString().slice(0, 10);
-  const readyShows = await getReadyToWatchByShow(req.userId, today);
+
+  // Sentry NODE-EXPRESS-A (28 Sep 2026): a transient Supabase outage
+  // (Cloudflare 502 upstream of Supabase) during this call surfaced as
+  // an unhandled 500 from this endpoint, 11 times in ~30 minutes. This
+  // is a background widget refresh with no one watching for an error
+  // screen — there's nothing useful to show the person for a blip that
+  // isn't their fault, and it isn't actionable for us either. Same
+  // graceful-degrade shape as the backdrop fetch in
+  // /widget/continue-watching above: log it, return an empty list
+  // instead of a 500, and let the next scheduled refresh pick it back
+  // up once Supabase is back.
+  let readyShows = [];
+  try {
+    readyShows = await getReadyToWatchByShow(req.userId, today);
+  } catch (err) {
+    console.error("widget/watch-next-list: getReadyToWatchByShow failed:", err.message);
+  }
 
   res.json({
     items: readyShows.slice(0, 15).map((r) => ({
@@ -2045,7 +2061,17 @@ async function getUpcomingByShow(userId, today) {
 
 app.get("/widget/upcoming-list", requireAuth, asyncHandler(async (req, res) => {
   const today = new Date().toISOString().slice(0, 10);
-  const upcoming = await getUpcomingByShow(req.userId, today);
+
+  // Same graceful-degrade reasoning as /widget/watch-next-list above
+  // (Sentry NODE-EXPRESS-A, 28 Sep 2026 Supabase outage) — this pulls
+  // from the same per-show Supabase query path, so it's exposed to the
+  // identical failure mode.
+  let upcoming = [];
+  try {
+    upcoming = await getUpcomingByShow(req.userId, today);
+  } catch (err) {
+    console.error("widget/upcoming-list: getUpcomingByShow failed:", err.message);
+  }
 
   res.json({
     items: upcoming.slice(0, 15).map((r) => ({
