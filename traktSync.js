@@ -28,6 +28,11 @@ function traktHeaders(accessToken) {
     "trakt-api-version": "2",
     "trakt-api-key": getClientId(),
     Authorization: `Bearer ${accessToken}`,
+    // Same Cloudflare bot-detection issue as auth.trakt.tv's /oauth/token
+    // (see traktAuth.js) — api.trakt.tv sits behind it too, and blocked
+    // this exact history fetch with a 403 until a browser-style
+    // User-Agent was added.
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
   };
 }
 
