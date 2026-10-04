@@ -169,8 +169,15 @@ async function syncShowProgress(supabase, { userId, showRowId, tmdbId, episodesS
   const { episodes, showStatus } = await fetchAllEpisodes(tmdbId);
   const cached = await cacheEpisodes(supabase, showRowId, episodes);
 
-  await applyEpisodeLog(supabase, userId, cached, episodeLog, source);
-  const markedCount = await markProgress(supabase, userId, cached, episodesSeenCount);
+  // Both can contribute real marks for the same show (an exact Trakt/
+  // TV-Time-log date for some episodes, a count-based guess filling in
+  // the rest) — summed rather than just reporting one, otherwise a
+  // Trakt sync (episodesSeenCount always 0, since every watch already
+  // has a real date) always reported 0 marked even when applyEpisodeLog
+  // actually wrote rows.
+  const logMarkedCount = await applyEpisodeLog(supabase, userId, cached, episodeLog, source);
+  const progressMarkedCount = await markProgress(supabase, userId, cached, episodesSeenCount);
+  const markedCount = logMarkedCount + progressMarkedCount;
   await applyEmotionLog(supabase, userId, cached, emotionLog);
 
   const showHasEnded = showStatus === "Ended" || showStatus === "Canceled";
