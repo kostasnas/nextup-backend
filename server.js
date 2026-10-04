@@ -422,12 +422,12 @@ app.get("/stats/summary", requireAuth, asyncHandler(async (req, res) => {
 
   const { data: movieRows, error: movieErr } = await supabase
     .from("user_movie_watchlist")
-    .select("runtime")
+    .select("movies(runtime)")
     .eq("user_id", req.userId)
     .eq("status", "watched");
   if (movieErr) throw movieErr;
 
-  const movieMinutes = (movieRows || []).reduce((sum, m) => sum + (m.runtime || 0), 0);
+  const movieMinutes = (movieRows || []).reduce((sum, m) => sum + (m.movies?.runtime || 0), 0);
   const totalHours = Math.round((episodeMinutes + movieMinutes) / 60);
 
   res.json({ showsCount: showIds.size, moviesCount: (movieRows || []).length, totalHours });
