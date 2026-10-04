@@ -275,13 +275,19 @@ app.get("/trakt/debug-client-id", asyncHandler(async (req, res) => {
 app.get("/trakt/debug-url", asyncHandler(async (req, res) => {
   if (req.query.secret !== process.env.CRON_SECRET) return res.status(401).json({ error: "Unauthorized" });
   const { getClientId } = require("./traktAuth");
+  const crypto = require("crypto");
   const base = process.env.BACKEND_PUBLIC_URL || "https://nextup-backend-ccq7.onrender.com";
+  // Real-shaped code_challenge this time (SHA256 of a real verifier,
+  // same as the live flow) — a too-short fake one may have been why
+  // the first debug URL also errored, independent of client_id.
+  const codeVerifier = crypto.randomBytes(32).toString("base64url");
+  const codeChallenge = crypto.createHash("sha256").update(codeVerifier).digest("base64url");
   const params = new URLSearchParams({
     response_type: "code",
     client_id: getClientId(),
     redirect_uri: `${base}/trakt/callback`,
     state: "debugstate123",
-    code_challenge: "debugchallenge",
+    code_challenge: codeChallenge,
     code_challenge_method: "S256",
   });
   res.json({ url: `https://trakt.tv/oauth/authorize?${params}` });
