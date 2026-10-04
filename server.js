@@ -2688,7 +2688,11 @@ app.post("/admin/backfill-episode-runtimes", backfillRuntimesHandler);
 // already created before the fix (Kostas found Toy Story 5 and Moana
 // blank in Movies → Watched).
 const backfillMoviePostersHandler = asyncHandler(async (req, res) => {
-  const providedSecret = req.headers["x-cron-secret"];
+  // Accepts the secret either as the x-cron-secret header (curl/scripts)
+  // or a ?secret= query param — the latter so this one-off maintenance
+  // call can be run by just pasting a URL into a browser, no terminal
+  // needed (4 Οκτ 2026: Kostas doesn't code himself, see project notes).
+  const providedSecret = req.headers["x-cron-secret"] || req.query.secret;
   if (!process.env.CRON_SECRET || providedSecret !== process.env.CRON_SECRET) {
     return res.status(401).json({ error: "Unauthorized" });
   }
