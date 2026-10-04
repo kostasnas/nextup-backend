@@ -290,7 +290,7 @@ app.get("/trakt/debug-url", asyncHandler(async (req, res) => {
     code_challenge: codeChallenge,
     code_challenge_method: "S256",
   });
-  res.json({ url: `https://trakt.tv/oauth/authorize?${params}` });
+  res.json({ url: `https://auth.trakt.tv/oauth/authorize?${params}` });
 }));
 
 // Public — Trakt redirects the user's browser straight here with no

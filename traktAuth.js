@@ -55,7 +55,12 @@ async function createConnectUrl(supabase, userId) {
     code_challenge: codeChallenge,
     code_challenge_method: "S256",
   });
-  return `https://trakt.tv/oauth/authorize?${params}`;
+  // PKCE apps authorize on auth.trakt.tv, NOT trakt.tv — confirmed via
+  // Trakt's own PKCE docs (step 3) after trakt.tv/oauth/authorize kept
+  // redirecting to a broken /api/auth error page that dropped our
+  // query params ("client_id is required" even with a verified-correct
+  // client_id and code_challenge).
+  return `https://auth.trakt.tv/oauth/authorize?${params}`;
 }
 
 async function handleCallback(supabase, code, state) {
