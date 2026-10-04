@@ -2680,6 +2680,46 @@ const backfillRuntimesHandler = asyncHandler(async (req, res) => {
 app.get("/admin/backfill-episode-runtimes", backfillRuntimesHandler);
 app.post("/admin/backfill-episode-runtimes", backfillRuntimesHandler);
 
+// One-off backfill for movies with a null poster_path — mainly ones
+// created by the Trakt sync bug fixed 4 Οκτ 2026 (traktSync.js used to
+// create a movie row with just {tmdb_id, title}, no TMDB lookup, so
+// poster/release_date/runtime/overview all landed null). The sync
+// itself is fixed going forward; this catches any rows that bug
+// already created before the fix (Kostas found Toy Story 5 and Moana
+// blank in Movies → Watched).
+const backfillMoviePostersHandler = asyncHandler(async (req, res) => {
+  const providedSecret = req.headers["x-cron-secret"];
+  if (!process.env.CRON_SECRET || providedSecret !== process.env.CRON_SECRET) {
+    return res.status(401).json({ error: "Unauthorized" });
+  }
+  const { data: moviesMissingPoster, error } = await supabase
+    .from("movies")
+    .select("id, tmdb_id")
+    .is("poster_path", null);
+  if (error) throw error;
+
+  let updated = 0;
+  let failed = 0;
+  for (const movie of moviesMissingPoster || []) {
+    try {
+      const details = await getMovieDetails(movie.tmdb_id);
+      await supabase.from("movies").update({
+        poster_path: details.posterPath || null,
+        release_date: details.releaseDate || null,
+        runtime: details.runtime || null,
+        overview: details.overview || null,
+      }).eq("id", movie.id);
+      updated++;
+    } catch (err) {
+      failed++;
+      console.error(`Poster backfill failed for movie tmdb_id=${movie.tmdb_id}:`, err.message);
+    }
+  }
+  res.json({ checked: (moviesMissingPoster || []).length, updated, failed });
+});
+app.get("/admin/backfill-movie-posters", backfillMoviePostersHandler);
+app.post("/admin/backfill-movie-posters", backfillMoviePostersHandler);
+
 // Sends a custom push notification to every registered device —
 // reusable for announcements like "new version available", not tied
 // to any show/episode. Title and body are supplied in the request

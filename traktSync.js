@@ -19,6 +19,7 @@ const { refreshTokenIfNeeded, getClientId } = require("./traktAuth");
 const { syncShowProgress } = require("./episodeSync");
 const { setMovieStatus } = require("./movies");
 const { getShowDetails } = require("./tmdbMatcher");
+const { getMovieDetails } = require("./discover");
 
 const TRAKT_BASE = "https://api.trakt.tv";
 
@@ -84,6 +85,36 @@ async function getOrCreateShowRow(supabase, tmdbId, title) {
     .single();
   if (error) throw error;
   return inserted.id;
+}
+
+/**
+ * setMovieStatus's upsertMovie only fills in poster_path/release_date/
+ * runtime/overview from whatever's passed in — it doesn't fetch TMDB
+ * itself. Previously this call site only passed {tmdb_id, title}, so
+ * any movie first created via Trakt sync got a blank poster forever
+ * (4 Οκτ 2026: Kostas found exactly this — two Trakt-synced movies
+ * with no poster). Mirrors getOrCreateShowRow above: only hits TMDB
+ * when the movie doesn't already exist, since upsertMovie ignores the
+ * extra fields for a row that's already there anyway.
+ */
+async function movieUpsertFields(supabase, tmdbId, title) {
+  const { data: existing } = await supabase.from("movies").select("id").eq("tmdb_id", tmdbId).maybeSingle();
+  if (existing) return { tmdb_id: tmdbId, title };
+
+  try {
+    const details = await getMovieDetails(tmdbId);
+    return {
+      tmdb_id: tmdbId,
+      title: details.title || title,
+      poster_path: details.posterPath || null,
+      release_date: details.releaseDate || null,
+      runtime: details.runtime || null,
+      overview: details.overview || null,
+    };
+  } catch (e) {
+    console.error(`Trakt sync: couldn't fetch TMDB details for movie ${tmdbId}:`, e.message);
+    return { tmdb_id: tmdbId, title };
+  }
 }
 
 /**
@@ -159,7 +190,7 @@ async function syncUserTrakt(supabase, connection) {
     const tmdbId = entry.movie?.ids?.tmdb;
     const title = entry.movie?.title;
     if (!tmdbId || !title) continue;
-    await setMovieStatus(supabase, connection.user_id, { tmdb_id: tmdbId, title }, "watched", entry.watched_at);
+    await setMovieStatus(supabase, connection.user_id, await movieUpsertFields(supabase, tmdbId, title), "watched", entry.watched_at);
     moviesSynced++;
   }
 
