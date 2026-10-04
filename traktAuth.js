@@ -78,7 +78,15 @@ async function handleCallback(supabase, code, state) {
 
   const res = await fetch(`${TRAKT_BASE}/oauth/token`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    // Trakt's own docs: "every app should send the required Trakt API
+    // headers, including your trakt-api-key" — the 403 we hit testing
+    // this without these two headers suggests /oauth/token now
+    // enforces that too, not just the data endpoints.
+    headers: {
+      "Content-Type": "application/json",
+      "trakt-api-version": "2",
+      "trakt-api-key": getClientId(),
+    },
     body: JSON.stringify({
       code,
       client_id: getClientId(),
@@ -87,7 +95,13 @@ async function handleCallback(supabase, code, state) {
       code_verifier: stateRow.code_verifier,
     }),
   });
-  if (!res.ok) throw new Error(`Trakt token exchange failed (${res.status})`);
+  if (!res.ok) {
+    // Docs: "Make sure your HTTP client preserves response bodies for
+    // non-successful requests so this information is not discarded" —
+    // surface it instead of just the status code.
+    const bodyText = await res.text().catch(() => "");
+    throw new Error(`Trakt token exchange failed (${res.status}): ${bodyText}`);
+  }
   const tokens = await res.json();
 
   const expiresAt = new Date(Date.now() + tokens.expires_in * 1000).toISOString();
@@ -106,17 +120,25 @@ async function handleCallback(supabase, code, state) {
   return { ok: true };
 }
 
-// Trakt access tokens expire (typically ~3 months) — refreshed here
-// using the stored refresh_token, called by traktSync.js right
-// before a sync run if the stored token is expired or close to it.
-// Never called mid-user-request; always from the background sync job.
+// Trakt access tokens are valid for 7 days (per current docs — shorter
+// than we first assumed) — refreshed here using the stored
+// refresh_token, called by traktSync.js right before a sync run if
+// the stored token is expired or close to it. Never called
+// mid-user-request; always from the background sync job. Note: Trakt
+// refresh tokens are single-use — every refresh returns a NEW
+// refresh_token too, and the old one is invalidated immediately, so
+// this always stores both values from the response.
 async function refreshTokenIfNeeded(supabase, connection) {
   const expiresSoon = new Date(connection.expires_at).getTime() - Date.now() < 60 * 60 * 1000; // 1h buffer
   if (!expiresSoon) return connection;
 
   const res = await fetch(`${TRAKT_BASE}/oauth/token`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: {
+      "Content-Type": "application/json",
+      "trakt-api-version": "2",
+      "trakt-api-key": getClientId(),
+    },
     body: JSON.stringify({
       refresh_token: connection.refresh_token,
       client_id: getClientId(),
@@ -124,7 +146,10 @@ async function refreshTokenIfNeeded(supabase, connection) {
       grant_type: "refresh_token",
     }),
   });
-  if (!res.ok) throw new Error(`Trakt token refresh failed (${res.status})`);
+  if (!res.ok) {
+    const bodyText = await res.text().catch(() => "");
+    throw new Error(`Trakt token refresh failed (${res.status}): ${bodyText}`);
+  }
   const tokens = await res.json();
   const expiresAt = new Date(Date.now() + tokens.expires_in * 1000).toISOString();
 
