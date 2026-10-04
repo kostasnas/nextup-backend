@@ -24,6 +24,7 @@ const { getMovieWatchlist, setMovieStatus, updateMovieEntry, removeMovie } = req
 const { getFavoriteCharacters, addFavoriteCharacter, removeFavoriteCharacter, getCharacterVoteCounts } = require("./favoriteCharacters");
 const { listFeatureRequests, createFeatureRequest, toggleVote } = require("./featureRequests");
 const { logRewatch, removeRewatch, getRewatchCountsForShow } = require("./episodeRewatches");
+const { getEmotionCountsForShow } = require("./episodeEmotions");
 const { findUserByEmail, findUserByUsername } = require("./db");
 const { getShowCommunityRating } = require("./showRatings");
 const { createNotification, listNotifications, getUnreadCount, markAllRead, markRead } = require("./notifications");
@@ -229,6 +230,14 @@ app.get("/shows/:id/comment-counts", requireAuth, asyncHandler(async (req, res) 
 
 app.get("/shows/:id/rewatch-counts", requireAuth, asyncHandler(async (req, res) => {
   const counts = await getRewatchCountsForShow(req.userId, req.params.id);
+  res.json(counts);
+}));
+
+// Public "Emotion Vote" tally — see episodeEmotions.js. Same
+// auth-required-but-not-user-scoped convention as comment-counts
+// above (the data itself is global, counting every user's reaction).
+app.get("/shows/:id/emotion-counts", requireAuth, asyncHandler(async (req, res) => {
+  const counts = await getEmotionCountsForShow(req.params.id);
   res.json(counts);
 }));
 
