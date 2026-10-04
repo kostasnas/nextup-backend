@@ -186,6 +186,61 @@ app.get("/movies/:id/watch-providers", asyncHandler(async (req, res) => {
   res.json(providers);
 }));
 
+// Batch version of the two /watch-providers routes above, for the
+// "Where to Stream" filter on the person's own Watchlist (both shows
+// and movies) — fetching one title at a time from the client would be
+// one request per watchlist row. getShowWatchProviders/
+// getMovieWatchProviders are already cached per title+region for 12h
+// (see discover.js), so this just fans out concurrently through that
+// same cache rather than adding a second one here.
+//
+// Deliberately returns raw providerIds per title rather than doing the
+// "is this on one of my services" filtering here — the person's chosen
+// services live in their own Supabase user_metadata (same pattern as
+// theme/accent/language, see i18n.jsx), which this endpoint has no
+// reason to know about; the frontend already has it from the session
+// and does the matching client-side.
+app.get("/watchlist/availability", requireAuth, asyncHandler(async (req, res) => {
+  const region = (req.query.region || "US").toUpperCase();
+
+  const [{ data: showRows, error: showErr }, { data: movieRows, error: movieErr }] = await Promise.all([
+    supabase.from("user_watchlist").select("shows(tmdb_id)").eq("user_id", req.userId).in("status", ["planned", "watching"]),
+    supabase.from("user_movie_watchlist").select("movies(tmdb_id)").eq("user_id", req.userId).eq("status", "planned"),
+  ]);
+  if (showErr) throw showErr;
+  if (movieErr) throw movieErr;
+
+  const showTmdbIds = [...new Set((showRows || []).map((r) => r.shows?.tmdb_id).filter(Boolean))];
+  const movieTmdbIds = [...new Set((movieRows || []).map((r) => r.movies?.tmdb_id).filter(Boolean))];
+
+  const CONCURRENCY = 8;
+  async function fetchAll(ids, fetcher, type) {
+    const out = {};
+    for (let i = 0; i < ids.length; i += CONCURRENCY) {
+      const batch = ids.slice(i, i + CONCURRENCY);
+      await Promise.all(
+        batch.map(async (id) => {
+          try {
+            const providers = await fetcher(id, region);
+            out[id] = providers.map((p) => p.id);
+          } catch (e) {
+            console.error(`watchlist/availability: failed to fetch ${type} ${id}:`, e.message);
+            out[id] = [];
+          }
+        })
+      );
+    }
+    return out;
+  }
+
+  const [showProviders, movieProviders] = await Promise.all([
+    fetchAll(showTmdbIds, getShowWatchProviders, "show"),
+    fetchAll(movieTmdbIds, getMovieWatchProviders, "movie"),
+  ]);
+
+  res.json({ shows: showProviders, movies: movieProviders });
+}));
+
 // Actor/cast-member detail card — photo, bio, filmography. Public,
 // cached, no auth needed (same reasoning as the watch-providers routes).
 app.get("/people/:id", asyncHandler(async (req, res) => {
@@ -432,6 +487,73 @@ app.get("/stats/summary", requireAuth, asyncHandler(async (req, res) => {
   const totalHours = Math.round((episodeMinutes + movieMinutes) / 60);
 
   res.json({ showsCount: showIds.size, moviesCount: (movieRows || []).length, totalHours });
+}));
+
+// "Surprise Me" — picks one random title off the person's own watchlist
+// (shows they're watching/planned to watch next episode of, movies
+// they've planned but not watched yet), optionally filtered to what
+// fits in the time they say they have right now. Reuses the exact
+// same runtime data /stats/summary already relies on — shows.
+// avg_episode_runtime (backfilled from TMDB at sync time, see
+// episodeSync.js) and movies.runtime — so this needed no new data
+// plumbing, just a new way to query what's already there.
+app.get("/surprise-pick", requireAuth, asyncHandler(async (req, res) => {
+  // Same fallback value and reasoning as /stats/summary above — a
+  // show TMDB never gave us an episode runtime for still needs SOME
+  // estimate, rather than being silently treated as "0 minutes" (which
+  // would make it match every time filter, including "I have 5 min").
+  const DEFAULT_EPISODE_MINUTES = 42;
+  const maxMinutes = req.query.maxMinutes ? parseInt(req.query.maxMinutes, 10) : null;
+
+  const { data: showRows, error: showErr } = await supabase
+    .from("user_watchlist")
+    .select("shows(id, tmdb_id, title, poster_path, avg_episode_runtime)")
+    .eq("user_id", req.userId)
+    .in("status", ["planned", "watching"]);
+  if (showErr) throw showErr;
+
+  const { data: movieRows, error: movieErr } = await supabase
+    .from("user_movie_watchlist")
+    .select("movies(id, tmdb_id, title, poster_path, runtime)")
+    .eq("user_id", req.userId)
+    .eq("status", "planned");
+  if (movieErr) throw movieErr;
+
+  let pool = [
+    ...(showRows || [])
+      .filter((r) => r.shows)
+      .map((r) => ({
+        type: "show",
+        tmdbId: r.shows.tmdb_id,
+        title: r.shows.title,
+        posterPath: r.shows.poster_path,
+        estimatedMinutes: r.shows.avg_episode_runtime || DEFAULT_EPISODE_MINUTES,
+      })),
+    ...(movieRows || [])
+      .filter((r) => r.movies)
+      .map((r) => ({
+        type: "movie",
+        tmdbId: r.movies.tmdb_id,
+        title: r.movies.title,
+        posterPath: r.movies.poster_path,
+        estimatedMinutes: r.movies.runtime || null,
+      })),
+  ];
+
+  // A time filter only means something for items we actually have a
+  // runtime estimate for — a movie TMDB never gave a runtime to can't
+  // be confidently said to "fit" a 45-minute window, so it's excluded
+  // rather than guessed at. Without a filter, everything's eligible.
+  if (maxMinutes !== null && !Number.isNaN(maxMinutes)) {
+    pool = pool.filter((item) => item.estimatedMinutes !== null && item.estimatedMinutes <= maxMinutes);
+  }
+
+  if (pool.length === 0) {
+    return res.json({ pick: null });
+  }
+
+  const pick = pool[Math.floor(Math.random() * pool.length)];
+  res.json({ pick, poolSize: pool.length });
 }));
 
 app.get("/feature-requests", requireAuth, asyncHandler(async (req, res) => {
