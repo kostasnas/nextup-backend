@@ -241,6 +241,47 @@ app.get("/watchlist/availability", requireAuth, asyncHandler(async (req, res) =>
   res.json({ shows: showProviders, movies: movieProviders });
 }));
 
+// Streaming availability for an arbitrary batch of titles (Explore rows
+// and genre/theme results) — same raw providerIds-per-title shape as
+// /watchlist/availability, but for ids the caller passes in rather than
+// the user's own watchlist. Public (TMDB provider data isn't per-user,
+// same as the watch-providers routes above), capped per type so it can't
+// be used to fan out unbounded TMDB calls; results come from the same
+// 12h cache in discover.js.
+app.get("/discover/availability", asyncHandler(async (req, res) => {
+  const region = (req.query.region || "US").toUpperCase();
+  const MAX_IDS = 60;
+  const parseIds = (raw) => [...new Set(String(raw || "").split(",").map((s) => parseInt(s, 10)).filter((n) => Number.isInteger(n) && n > 0))].slice(0, MAX_IDS);
+  const tvIds = parseIds(req.query.tv);
+  const movieIds = parseIds(req.query.movie);
+
+  const CONCURRENCY = 8;
+  async function fetchAll(ids, fetcher, type) {
+    const out = {};
+    for (let i = 0; i < ids.length; i += CONCURRENCY) {
+      const batch = ids.slice(i, i + CONCURRENCY);
+      await Promise.all(
+        batch.map(async (id) => {
+          try {
+            const providers = await fetcher(id, region);
+            out[id] = providers.map((p) => p.id);
+          } catch (e) {
+            console.error(`discover/availability: failed to fetch ${type} ${id}:`, e.message);
+            out[id] = [];
+          }
+        })
+      );
+    }
+    return out;
+  }
+
+  const [shows, movies] = await Promise.all([
+    fetchAll(tvIds, getShowWatchProviders, "show"),
+    fetchAll(movieIds, getMovieWatchProviders, "movie"),
+  ]);
+  res.json({ shows, movies });
+}));
+
 // Actor/cast-member detail card — photo, bio, filmography. Public,
 // cached, no auth needed (same reasoning as the watch-providers routes).
 app.get("/people/:id", asyncHandler(async (req, res) => {
