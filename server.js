@@ -58,13 +58,23 @@ process.on("unhandledRejection", (reason) => {
 app.set("trust proxy", 1);
 app.use(helmet());
 
+// CORS goes BEFORE the rate limiter so a 429 still carries CORS headers —
+// otherwise the browser reports a rate-limited request as a bare
+// "Failed to fetch" instead of the real error.
+app.use(cors({
+  origin: (origin, callback) => {
+    if (!origin || ALLOWED_ORIGINS.includes(origin)) return callback(null, true);
+    return callback(new Error("Not allowed by CORS"));
+  },
+}));
+
 // Catches abuse/flooding across every endpoint, not just AI chat —
 // generous enough that no real user should ever hit it in normal use.
 // The stricter aiChatRateLimiter below still applies on top of this
 // for that one specifically expensive route.
 app.use(rateLimit({
   windowMs: 15 * 60 * 1000,
-  max: 300,
+  max: 1000,
   standardHeaders: true,
   legacyHeaders: false,
   message: { error: "Too many requests — please slow down and try again later." },
@@ -90,12 +100,7 @@ app.use(rateLimit({
 // here, which (unlike the Android WebView) are actually subject to
 // CORS enforcement.
 const ALLOWED_ORIGINS = ["https://localhost", "http://localhost:5173", "null", "https://scenera-web.vercel.app", "https://scenera.online", "https://www.scenera.online"];
-app.use(cors({
-  origin: (origin, callback) => {
-    if (!origin || ALLOWED_ORIGINS.includes(origin)) return callback(null, true);
-    return callback(new Error("Not allowed by CORS"));
-  },
-}));
+
 app.use(express.json());
 
 // Two separate instances since the two import paths have very
