@@ -139,7 +139,10 @@ async function requireAuth(req, res, next) {
   const { data, error } = await supabase.auth.getUser(token);
   if (error || !data.user) {
     console.warn(`requireAuth rejected token: ${error?.status || ""} ${error?.code || ""} ${error?.message || "no user"}`);
-    return res.status(401).json({ error: "Invalid or expired session" });
+    // `code` (e.g. session_not_found, bad_jwt, session_expired) is Supabase's own
+    // machine-readable reason — safe to expose, and it tells us whether the
+    // session was revoked server-side vs. the token simply expired.
+    return res.status(401).json({ error: "Invalid or expired session", code: error?.code || error?.name || "no_user" });
   }
 
   req.userId = data.user.id;
