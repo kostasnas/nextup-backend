@@ -11,6 +11,15 @@ const { getPool } = require("./db");
  * per comment.
  */
 async function getComments(episodeId, userId) {
+  return queryComments("ec.episode_id", episodeId, userId);
+}
+
+/** Same as getComments but for a movie (keyed by TMDB id). */
+async function getMovieComments(tmdbId, userId) {
+  return queryComments("ec.movie_tmdb_id", Number(tmdbId), userId);
+}
+
+async function queryComments(column, value, userId) {
   const { rows } = await getPool().query(
     `select ec.id, ec.content, ec.created_at, ec.user_id, ec.image_url, ec.parent_id,
             au.raw_user_meta_data->>'display_name' as display_name,
@@ -19,10 +28,10 @@ async function getComments(episodeId, userId) {
      from episode_comments ec
      join auth.users au on au.id = ec.user_id
      left join comment_likes cl on cl.comment_id = ec.id
-     where ec.episode_id = $1
+     where ${column} = $1
      group by ec.id, au.raw_user_meta_data
      order by ec.created_at asc`,
-    [episodeId, userId || null]
+    [value, userId || null]
   );
   return rows;
 }
@@ -37,7 +46,7 @@ async function getComments(episodeId, userId) {
 async function toggleCommentLike(supabase, userId, commentId) {
   const { data: comment, error: commentError } = await supabase
     .from("episode_comments")
-    .select("user_id, episode_id")
+    .select("user_id, episode_id, movie_tmdb_id")
     .eq("id", commentId)
     .single();
   if (commentError || !comment) {
@@ -70,7 +79,7 @@ async function toggleCommentLike(supabase, userId, commentId) {
     .select("id", { count: "exact", head: true })
     .eq("comment_id", commentId);
 
-  return { liked, likeCount: count || 0, commentAuthorId: comment.user_id, episodeId: comment.episode_id };
+  return { liked, likeCount: count || 0, commentAuthorId: comment.user_id, episodeId: comment.episode_id, movieTmdbId: comment.movie_tmdb_id };
 }
 
 /**
@@ -90,6 +99,18 @@ async function getEpisodeContext(episodeId) {
 }
 
 /**
+ * Movie title for notification text. Falls back to the client-provided
+ * title (the movie may not be cached in our `movies` table yet), then null.
+ */
+async function getMovieContext(tmdbId, fallbackTitle) {
+  try {
+    const { rows } = await getPool().query("select title from movies where tmdb_id = $1", [Number(tmdbId)]);
+    if (rows[0]?.title) return { title: rows[0].title };
+  } catch {}
+  return fallbackTitle ? { title: String(fallbackTitle).slice(0, 120) } : null;
+}
+
+/**
  * `parentId`, when given, makes this a reply — nested one level under
  * an existing comment on the SAME episode (verified below, since a
  * stray/forged parentId from another episode would otherwise render
@@ -99,16 +120,28 @@ async function getEpisodeContext(episodeId) {
  * table actually asks for ("replies"), not full nested sub-threads.
  */
 async function addComment(supabase, episodeId, userId, content, imageUrl, parentId) {
+  return insertComment(supabase, { episode_id: episodeId }, userId, content, imageUrl, parentId);
+}
+
+/** Movie variant of addComment — target is the TMDB id. */
+async function addMovieComment(supabase, tmdbId, userId, content, imageUrl, parentId) {
+  return insertComment(supabase, { movie_tmdb_id: Number(tmdbId) }, userId, content, imageUrl, parentId);
+}
+
+async function insertComment(supabase, target, userId, content, imageUrl, parentId) {
   let resolvedParentId = null;
   let parentAuthorId = null;
   if (parentId) {
     const { data: parent, error: parentError } = await supabase
       .from("episode_comments")
-      .select("id, user_id, episode_id, parent_id")
+      .select("id, user_id, episode_id, movie_tmdb_id, parent_id")
       .eq("id", parentId)
       .single();
-    if (parentError || !parent || parent.episode_id !== episodeId) {
-      const e = new Error("Comment being replied to was not found on this episode");
+    const sameTarget = target.episode_id !== undefined
+      ? parent?.episode_id === target.episode_id
+      : parent?.movie_tmdb_id === target.movie_tmdb_id;
+    if (parentError || !parent || !sameTarget) {
+      const e = new Error("Comment being replied to was not found here");
       e.status = 404;
       throw e;
     }
@@ -120,7 +153,7 @@ async function addComment(supabase, episodeId, userId, content, imageUrl, parent
 
   const { data: comment, error } = await supabase
     .from("episode_comments")
-    .insert({ episode_id: episodeId, user_id: userId, content, image_url: imageUrl || null, parent_id: resolvedParentId })
+    .insert({ ...target, user_id: userId, content, image_url: imageUrl || null, parent_id: resolvedParentId })
     .select()
     .single();
   if (error) throw error;
@@ -171,4 +204,4 @@ async function getCommentCountsForShow(tmdbShowId) {
   return rows;
 }
 
-module.exports = { getComments, getCommentCountsForShow, addComment, deleteComment, toggleCommentLike, getEpisodeContext };
+module.exports = { getMovieComments, addMovieComment, getMovieContext, getComments, getCommentCountsForShow, addComment, deleteComment, toggleCommentLike, getEpisodeContext };

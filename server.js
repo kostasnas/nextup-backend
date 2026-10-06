@@ -20,7 +20,7 @@ const { matchShows, searchShow, searchMovie, matchMovie, findByImdbId } = requir
 const { syncShowProgress, fetchAllEpisodes, cacheEpisodes } = require("./episodeSync");
 const { sendFriendRequest, listFriends, acceptFriendRequest, declineFriendRequest, removeFriend, getFriendFavorites, getFriendWatching } = require("./friends");
 const { sendMessage, getMessages, deleteMessage } = require("./messages");
-const { getComments, getCommentCountsForShow, addComment, deleteComment, toggleCommentLike, getEpisodeContext } = require("./episodeComments");
+const { getComments, getCommentCountsForShow, addComment, deleteComment, toggleCommentLike, getEpisodeContext, getMovieComments, addMovieComment, getMovieContext } = require("./episodeComments");
 const { getMovieWatchlist, setMovieStatus, updateMovieEntry, removeMovie } = require("./movies");
 const { getFavoriteCharacters, addFavoriteCharacter, removeFavoriteCharacter, getCharacterVoteCounts } = require("./favoriteCharacters");
 const { listFeatureRequests, createFeatureRequest, toggleVote } = require("./featureRequests");
@@ -661,6 +661,35 @@ app.post("/episodes/:id/comments", requireAuth, asyncHandler(async (req, res) =>
   res.json(comment);
 }));
 
+app.get("/movies/:tmdbId/comments", requireAuth, asyncHandler(async (req, res) => {
+  const comments = await getMovieComments(req.params.tmdbId, req.userId);
+  res.json(comments);
+}));
+
+app.post("/movies/:tmdbId/comments", requireAuth, asyncHandler(async (req, res) => {
+  const { content, imageUrl, parentId, title } = req.body;
+  const trimmed = (content || "").trim();
+  if (!trimmed && !imageUrl) return res.status(400).json({ error: "content or imageUrl is required" });
+  if (!/^\d+$/.test(String(req.params.tmdbId))) return res.status(400).json({ error: "invalid movie id" });
+  const comment = await addMovieComment(supabase, req.params.tmdbId, req.userId, trimmed, imageUrl, parentId || null);
+
+  if (comment.parentAuthorId && comment.parentAuthorId !== req.userId) {
+    getMovieContext(req.params.tmdbId, title)
+      .then((ctx) => {
+        const where = ctx?.title || "a movie";
+        return createNotification(supabase, comment.parentAuthorId, {
+          type: "comment_reply",
+          title: "Someone replied to your comment",
+          body: `New reply on ${where}: "${trimmed.slice(0, 80)}"`,
+          data: { movieId: Number(req.params.tmdbId), label: where },
+        });
+      })
+      .catch((e) => console.error("Failed to create movie comment-reply notification:", e.message));
+  }
+
+  res.json(comment);
+}));
+
 app.delete("/comments/:id", requireAuth, asyncHandler(async (req, res) => {
   const result = await deleteComment(supabase, req.params.id, req.userId);
   res.json(result);
@@ -674,16 +703,21 @@ app.post("/comments/:id/like", requireAuth, asyncHandler(async (req, res) => {
   // never let a notification failure fail the like itself —
   // fire-and-forget with its own catch.
   if (result.liked && result.commentAuthorId !== req.userId) {
-    getEpisodeContext(result.episodeId)
-      .then((ctx) => {
-        const where = ctx ? `${ctx.show_title} S${ctx.season_number}E${ctx.episode_number}` : "an episode";
-        return createNotification(supabase, result.commentAuthorId, {
+    const ctxPromise = result.movieTmdbId
+      ? getMovieContext(result.movieTmdbId).then((ctx) => ({ where: ctx?.title || "a movie", data: { movieId: result.movieTmdbId } }))
+      : getEpisodeContext(result.episodeId).then((ctx) => ({
+          where: ctx ? `${ctx.show_title} S${ctx.season_number}E${ctx.episode_number}` : "an episode",
+          data: { episodeId: result.episodeId },
+        }));
+    ctxPromise
+      .then(({ where, data }) =>
+        createNotification(supabase, result.commentAuthorId, {
           type: "comment_like",
           title: "Someone liked your comment",
           body: `Your comment on ${where} got a like.`,
-          data: { episodeId: result.episodeId, label: where },
-        });
-      })
+          data: { ...data, label: where },
+        })
+      )
       .catch((e) => console.error("Failed to create comment-like notification:", e.message));
   }
 
