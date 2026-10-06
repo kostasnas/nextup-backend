@@ -132,7 +132,10 @@ async function requireAuth(req, res, next) {
   if (!token) return res.status(401).json({ error: "Missing Authorization header" });
 
   const { data, error } = await supabase.auth.getUser(token);
-  if (error || !data.user) return res.status(401).json({ error: "Invalid or expired session" });
+  if (error || !data.user) {
+    console.warn(`requireAuth rejected token: ${error?.status || ""} ${error?.code || ""} ${error?.message || "no user"}`);
+    return res.status(401).json({ error: "Invalid or expired session" });
+  }
 
   req.userId = data.user.id;
   req.userEmail = data.user.email;
