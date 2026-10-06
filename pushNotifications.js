@@ -211,9 +211,16 @@ async function checkUpcomingPremieres(supabase) {
       tokensByUser.get(t.user_id).push(t.token);
     }
 
-    const body = daysUntil === 0
-      ? `${show.title} premieres today!`
-      : `${show.title} premieres in ${daysUntil} day${daysUntil === 1 ? "" : "s"}.`;
+    // Episode 1 = a genuine season premiere. Anything else is just the
+    // next episode of a season that's already running (the show was
+    // "up_to_date" only because the person caught up before the next
+    // episode aired), so calling that a "new season" would be wrong.
+    const isSeasonPremiere = nextEp.episode_number === 1;
+    const when = daysUntil === 0 ? "today" : `in ${daysUntil} day${daysUntil === 1 ? "" : "s"}`;
+    const body = isSeasonPremiere
+      ? (daysUntil === 0 ? `${show.title} premieres today!` : `${show.title} premieres ${when}.`)
+      : `A new episode of ${show.title} comes out ${when}.`;
+    const title = isSeasonPremiere ? "New season coming up" : "New episode coming up";
     const image = show.poster_path ? `https://image.tmdb.org/t/p/w500${show.poster_path}` : undefined;
 
     for (const userId of userIds) {
@@ -222,7 +229,7 @@ async function checkUpcomingPremieres(supabase) {
       try {
         await admin.messaging().sendEachForMulticast({
           tokens,
-          notification: { title: "New season coming up", body, imageUrl: image },
+          notification: { title, body, imageUrl: image },
           android: ANDROID_NOTIFICATION_STYLE,
         });
         usersNotified++;
