@@ -204,4 +204,9 @@ async function getCommentCountsForShow(tmdbShowId) {
   return rows;
 }
 
-module.exports = { getMovieComments, addMovieComment, getMovieContext, getComments, getCommentCountsForShow, addComment, deleteComment, toggleCommentLike, getEpisodeContext };
+async function getMovieCommentCount(tmdbId) {
+  const { rows } = await getPool().query("select count(*)::int as count from episode_comments where movie_tmdb_id = $1", [Number(tmdbId)]);
+  return rows[0]?.count || 0;
+}
+
+module.exports = { getMovieCommentCount, getMovieComments, addMovieComment, getMovieContext, getComments, getCommentCountsForShow, addComment, deleteComment, toggleCommentLike, getEpisodeContext };

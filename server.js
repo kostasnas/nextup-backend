@@ -20,7 +20,7 @@ const { matchShows, searchShow, searchMovie, matchMovie, findByImdbId } = requir
 const { syncShowProgress, fetchAllEpisodes, cacheEpisodes } = require("./episodeSync");
 const { sendFriendRequest, listFriends, acceptFriendRequest, declineFriendRequest, removeFriend, getFriendFavorites, getFriendWatching } = require("./friends");
 const { sendMessage, getMessages, deleteMessage } = require("./messages");
-const { getComments, getCommentCountsForShow, addComment, deleteComment, toggleCommentLike, getEpisodeContext, getMovieComments, addMovieComment, getMovieContext } = require("./episodeComments");
+const { getComments, getCommentCountsForShow, addComment, deleteComment, toggleCommentLike, getEpisodeContext, getMovieComments, addMovieComment, getMovieContext, getMovieCommentCount } = require("./episodeComments");
 const { getMovieWatchlist, setMovieStatus, updateMovieEntry, removeMovie } = require("./movies");
 const { getFavoriteCharacters, addFavoriteCharacter, removeFavoriteCharacter, getCharacterVoteCounts } = require("./favoriteCharacters");
 const { listFeatureRequests, createFeatureRequest, toggleVote } = require("./featureRequests");
@@ -666,6 +666,11 @@ app.get("/movies/:tmdbId/comments", requireAuth, asyncHandler(async (req, res) =
   res.json(comments);
 }));
 
+app.get("/movies/:tmdbId/comments/count", requireAuth, asyncHandler(async (req, res) => {
+  if (!/^\d+$/.test(String(req.params.tmdbId))) return res.status(400).json({ error: "invalid movie id" });
+  res.json({ count: await getMovieCommentCount(req.params.tmdbId) });
+}));
+
 app.post("/movies/:tmdbId/comments", requireAuth, asyncHandler(async (req, res) => {
   const { content, imageUrl, parentId, title } = req.body;
   const trimmed = (content || "").trim();
@@ -755,7 +760,7 @@ function mapGiphyResults(data) {
   return (data.data || []).map((g) => ({
     id: g.id,
     url: g.images?.fixed_height?.url || g.images?.original?.url,
-    previewUrl: g.images?.fixed_width_small?.url || g.images?.fixed_height_small?.url,
+    previewUrl: g.images?.fixed_width?.url || g.images?.fixed_width_small?.url || g.images?.fixed_height_small?.url,
   })).filter((g) => g.url);
 }
 
