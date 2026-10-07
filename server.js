@@ -2272,15 +2272,28 @@ app.get("/shows/:tmdbId/full-progress", requireAuth, asyncHandler(async (req, re
     }
   }
 
-  const { data: watchedRows } = await supabase
-    .from("watched_episodes")
-    .select("episode_id")
-    .eq("user_id", req.userId)
-    .in("episode_id", cached.map((e) => e.id));
+  // Filter by the show (a join), NOT by .in(<every episode id>): a show with
+  // hundreds of episodes made that request URL too long / hit the default
+  // 1000-row cap, the error was swallowed, and every episode came back as
+  // "not watched" (then marking one failed with a duplicate-key error).
+  // Paged so a show with >1000 watched episodes still comes back whole.
+  const watchedIds = [];
+  for (let from = 0; ; from += 1000) {
+    const { data: page, error: wErr } = await supabase
+      .from("watched_episodes")
+      .select("episode_id, episodes!inner(show_id)")
+      .eq("user_id", req.userId)
+      .eq("episodes.show_id", showRow.id)
+      .order("episode_id", { ascending: true })
+      .range(from, from + 999);
+    if (wErr) throw wErr;
+    (page || []).forEach((w) => watchedIds.push(w.episode_id));
+    if (!page || page.length < 1000) break;
+  }
 
   res.json({
     episodes: cached.map((e) => ({ id: e.id, season_number: e.season_number, episode_number: e.episode_number })),
-    watchedEpisodeIds: (watchedRows || []).map((w) => w.episode_id),
+    watchedEpisodeIds: watchedIds,
     showStatus,
   });
 }));
