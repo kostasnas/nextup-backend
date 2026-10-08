@@ -166,7 +166,7 @@ app.get("/", async (req, res) => {
   }
 });
 
-const { getWatchProviders, getShowWatchProviders, getMovieWatchProviders, getShowBackdrop, getMovieDetails, getTopShows, getTrending, getGenres, getPersonDetails } = require("./discover");
+const { getWatchProviders, getShowWatchProviders, getMovieWatchProviders, getShowBackdrop, getShowPoster, getMovieDetails, getTopShows, getTrending, getGenres, getPersonDetails } = require("./discover");
 const { getRottenTomatoesRating } = require("./rottenTomatoes");
 const { getMovieCommunityRating } = require("./movieRatings");
 const { getFriendsActivityFeed, getFriendsSummary } = require("./feed");
@@ -2203,6 +2203,25 @@ app.post("/widget/mark-watched", requireAuth, asyncHandler(async (req, res) => {
 // for a still-airing show. Ended/canceled shows never go stale (their
 // episode list can't change), so they skip this entirely once synced.
 const EPISODE_SYNC_TTL_MS = 6 * 60 * 60 * 1000; // 6 hours
+
+// A show's poster_path is stored once, when it's first added. If TMDB
+// had no artwork yet at that moment (new/announced shows), the card in
+// the Shows list stayed blank forever. The app calls this when a show
+// is opened and its stored poster differs from TMDB's current one.
+app.post("/shows/:tmdbId/refresh-poster", requireAuth, asyncHandler(async (req, res) => {
+  const tmdbId = Number(req.params.tmdbId);
+  if (!Number.isInteger(tmdbId)) return res.status(400).json({ error: "Invalid show id" });
+
+  const { data: showRow } = await supabase.from("shows").select("id, poster_path").eq("tmdb_id", tmdbId).maybeSingle();
+  if (!showRow) return res.json({ posterPath: null, updated: false });
+
+  const posterPath = await getShowPoster(tmdbId);
+  if (!posterPath || posterPath === showRow.poster_path) return res.json({ posterPath: showRow.poster_path, updated: false });
+
+  const { error } = await supabase.from("shows").update({ poster_path: posterPath }).eq("id", showRow.id);
+  if (error) throw error;
+  res.json({ posterPath, updated: true });
+}));
 
 app.get("/shows/:tmdbId/full-progress", requireAuth, asyncHandler(async (req, res) => {
   const tmdbId = req.params.tmdbId;

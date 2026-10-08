@@ -120,6 +120,17 @@ async function getShowBackdrop(showId) {
 }
 
 /**
+ * The show's current poster path, fetched live from TMDB. The `shows`
+ * row stores poster_path once (at add time), so a show added before
+ * TMDB had artwork keeps an empty poster forever; refresh-poster uses
+ * this to fill it in later.
+ */
+async function getShowPoster(showId) {
+  const data = await tmdbGet(`/tv/${showId}`);
+  return data.poster_path || null;
+}
+
+/**
  * Direct movie lookup by TMDB id — no search/matching involved, so
  * unlike searchMovie() in tmdbMatcher.js there's no ambiguity to
  * resolve. Used by the Bingers importer, which already has a
@@ -239,4 +250,4 @@ async function getPersonDetails(personId) {
   return person;
 }
 
-module.exports = { getWatchProviders, getShowWatchProviders, getMovieWatchProviders, getShowBackdrop, getMovieDetails, getTopShows, getTrending, getGenres, getPersonDetails };
+module.exports = { getWatchProviders, getShowWatchProviders, getMovieWatchProviders, getShowBackdrop, getShowPoster, getMovieDetails, getTopShows, getTrending, getGenres, getPersonDetails };
