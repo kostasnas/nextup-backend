@@ -159,6 +159,29 @@
       updateCount();
     });
 
+    // The synopsis comes from TMDB and is not always a good hook, so it is off by default.
+    if (item.synopsis) {
+      var synLabel = document.createElement("label");
+      synLabel.className = "meta";
+      var syn = document.createElement("input");
+      syn.type = "checkbox";
+      syn.style.marginInlineEnd = "6px";
+      syn.addEventListener("change", function () {
+        var c = ta.value;
+        if (c.indexOf(item.captionHead) !== 0) return; // caption was rewritten by hand: leave it alone
+        var rest = c.slice(item.captionHead.length);
+        if (curWhere && rest.indexOf(curWhere) === 0) rest = rest.slice(curWhere.length);
+        var add = " " + item.synopsis;
+        if (syn.checked) { if (rest.indexOf(add) !== 0) rest = add + rest; }
+        else if (rest.indexOf(add) === 0) rest = rest.slice(add.length);
+        ta.value = item.captionHead + curWhere + rest;
+        updateCount();
+      });
+      synLabel.appendChild(syn);
+      synLabel.appendChild(document.createTextNode("Προσθήκη περίληψης στο caption"));
+      el.appendChild(synLabel);
+    }
+
     var count = document.createElement("div");
     count.className = "count";
     function updateCount() { count.textContent = countTweet(ta.value) + " / 280"; }

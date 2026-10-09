@@ -180,7 +180,8 @@ function captionHead({ title, when, kind = "premiere", season, episode, L = LANG
   return L.head[kind]({ title, when, season, episode });
 }
 
-function buildCaption({ title, when, platforms, overview, tags, kind = "premiere", season, episode, L = LANGS.pt }) {
+// The caption in three pieces, so the page can offer the synopsis as an option.
+function captionParts({ title, when, platforms, overview, tags, kind = "premiere", season, episode, L = LANGS.pt }) {
   const where = platforms.length ? `${L.whereCaption}${platforms.join(", ")}.` : "";
   const head = `${captionHead({ title, when, kind, season, episode, L })}${where}`;
   const tail = `\n\n${L.tail}\n${tags.map((t) => `#${t}`).join(" ")}`;
@@ -202,7 +203,12 @@ function buildCaption({ title, when, platforms, overview, tags, kind = "premiere
     synopsis = comma > 30 ? `${cut.slice(0, comma)}.` : "";
     caption = build(synopsis);
   }
-  return caption;
+  return { head, synopsis, tail };
+}
+
+function buildCaption(args) {
+  const { head, synopsis, tail } = captionParts(args);
+  return `${head}${synopsis ? ` ${synopsis}` : ""}${tail}`;
 }
 
 // ---- data -----------------------------------------------------------------
@@ -251,6 +257,7 @@ function toItem(detail, category, today, ev, L = LANGS.pt) {
   if (!detail.overview) warnings.push(L.warnOverview);
 
   const args = { title, when, kind: ev.kind, season: ev.season, episode: ev.episode, L };
+  const cp = captionParts({ ...args, platforms, overview: detail.overview, tags });
   return {
     id: detail.id,
     title,
@@ -277,7 +284,10 @@ function toItem(detail, category, today, ev, L = LANGS.pt) {
     votes: detail.vote_count || 0,
     posterUrl: detail.poster_path ? `${IMG_BASE}/w780${detail.poster_path}` : null,
     captionHead: captionHead(args),
-    caption: buildCaption({ ...args, platforms, overview: detail.overview, tags }),
+    // TMDB's synopsis is a machine-picked first sentence and can be a bad hook out of context
+    // (e.g. an illness), so the default caption leaves it out; the page has a checkbox to add it.
+    caption: `${cp.head}${cp.tail}`,
+    synopsis: cp.synopsis,
     warnings,
   };
 }
