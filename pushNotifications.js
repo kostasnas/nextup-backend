@@ -260,17 +260,21 @@ const ENGAGEMENT_MESSAGES = [
 async function sendDailyEngagementNudge(supabase) {
   ensureInitialized();
 
-  // Only nudge people who genuinely seem to have drifted away — not
-  // everyone, every day. A token's updated_at refreshes every time the
-  // app opens (see App.jsx's push registration effect), so "hasn't
-  // updated in N days" is a reliable stand-in for "hasn't opened the
-  // app in N days."
-  const INACTIVE_AFTER_DAYS = 5;
-  const cutoff = new Date(Date.now() - INACTIVE_AFTER_DAYS * 24 * 60 * 60 * 1000).toISOString();
+  // ONE reminder per absence: only people whose last app open was
+  // between 2 and 3 days ago. This runs once a day, so each person falls
+  // into that 24h window exactly once and gets a single nudge — not a
+  // daily one for as long as they stay away. A token's updated_at
+  // refreshes every time the app opens (see App.jsx's push registration
+  // effect), so it's a reliable stand-in for "last opened the app".
+  const INACTIVE_AFTER_DAYS = 2;
+  const DAY_MS = 24 * 60 * 60 * 1000;
+  const cutoffNewest = new Date(Date.now() - INACTIVE_AFTER_DAYS * DAY_MS).toISOString();
+  const cutoffOldest = new Date(Date.now() - (INACTIVE_AFTER_DAYS + 1) * DAY_MS).toISOString();
   const { data: tokenRows, error } = await supabase
     .from("push_tokens")
     .select("token")
-    .lt("updated_at", cutoff);
+    .lt("updated_at", cutoffNewest)
+    .gte("updated_at", cutoffOldest);
   if (error) throw error;
 
   const tokens = [...new Set((tokenRows || []).map((t) => t.token))];
