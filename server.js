@@ -23,6 +23,7 @@ const { sendMessage, getMessages, deleteMessage } = require("./messages");
 const { getComments, getCommentCountsForShow, addComment, deleteComment, toggleCommentLike, getEpisodeContext, getMovieComments, addMovieComment, getMovieContext, getMovieCommentCount } = require("./episodeComments");
 const { getMovieWatchlist, setMovieStatus, updateMovieEntry, removeMovie } = require("./movies");
 const { getFavoriteCharacters, addFavoriteCharacter, removeFavoriteCharacter, getCharacterVoteCounts } = require("./favoriteCharacters");
+const { buildAccountExport } = require("./accountExport");
 const { listFeatureRequests, createFeatureRequest, toggleVote } = require("./featureRequests");
 const { logRewatch, removeRewatch, getRewatchCountsForShow } = require("./episodeRewatches");
 const { getEmotionCountsForShow } = require("./episodeEmotions");
@@ -2350,6 +2351,14 @@ app.post("/profile/username", requireAuth, asyncHandler(async (req, res) => {
 app.get("/profile/username", requireAuth, asyncHandler(async (req, res) => {
   const { data } = await supabase.from("user_profiles").select("username").eq("user_id", req.userId).maybeSingle();
   res.json({ username: data?.username || null });
+}));
+
+// "Export my data" — the account's full data as JSON (see accountExport.js).
+// Registered before DELETE /account only for readability; different method.
+app.get("/account/export", requireAuth, asyncHandler(async (req, res) => {
+  const payload = await buildAccountExport(supabase, req.userId, req.userEmail);
+  res.setHeader("Cache-Control", "no-store");
+  res.json(payload);
 }));
 
 // Real, in-app account deletion — required by Google Play policy
