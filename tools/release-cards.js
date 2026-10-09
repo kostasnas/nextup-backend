@@ -75,7 +75,7 @@
 
     // One tap to see where it streams in Brazil, instead of typing the title.
     var g = document.createElement("a");
-    g.href = "https://www.google.com/search?q=" + encodeURIComponent(item.title + " estreia onde assistir");
+    g.href = "https://www.google.com/search?q=" + encodeURIComponent(item.title + " onde assistir") + "&gl=br&hl=pt-BR"; // results as seen from Brazil
     g.target = "_blank"; g.rel = "noopener";
     g.className = "gsearch";
     g.textContent = "Αναζήτηση στο Google ↗";
