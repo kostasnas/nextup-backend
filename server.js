@@ -1847,17 +1847,6 @@ async function isUserPro(userId) {
   }
 }
 
-// Friends is a Pro perk. Returns 403 (not 404) for non-Pro users —
-// unlike the old email-allowlist version, the feature is now meant to
-// be visible-but-locked in the UI (an upsell), not hidden entirely.
-async function requireFriendsFeature(req, res, next) {
-  const pro = await isUserPro(req.userId);
-  if (!pro) {
-    return res.status(403).json({ error: "Friends requires Scenera Pro." });
-  }
-  next();
-}
-
 // Gives the frontend everything it needs to detect a "gap" in
 // watched episodes across ALL seasons at once — the show detail
 // screen otherwise only ever knows about the single season currently
@@ -2443,7 +2432,7 @@ app.delete("/friends/:id", requireAuth, asyncHandler(async (req, res) => {
   res.json(result);
 }));
 
-app.get("/friends/:id/favorites", requireAuth, requireFriendsFeature, asyncHandler(async (req, res) => {
+app.get("/friends/:id/favorites", requireAuth, asyncHandler(async (req, res) => {
   const result = await getFriendFavorites(supabase, req.params.id, req.userId);
   res.json(result);
 }));
@@ -2451,7 +2440,7 @@ app.get("/friends/:id/favorites", requireAuth, requireFriendsFeature, asyncHandl
 // Shows a friend has watched, with episode-watched count and their
 // most recent episode per show — backs the Activity Feed's per-friend
 // drill-down (see getFriendWatching in friends.js).
-app.get("/friends/:id/watching", requireAuth, requireFriendsFeature, asyncHandler(async (req, res) => {
+app.get("/friends/:id/watching", requireAuth, asyncHandler(async (req, res) => {
   const result = await getFriendWatching(supabase, req.params.id, req.userId);
   res.json(result);
 }));
