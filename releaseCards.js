@@ -22,12 +22,16 @@ const CACHE_TTL_MS = 6 * 60 * 60 * 1000;
 const PER_CATEGORY = 20;
 const TWEET_LIMIT = 270; // X allows 280; leave headroom (emoji count double)
 
+// TMDB genre ids: 16 Animation, 10764 Reality, 10767 Talk. Variety shows (e.g. Running Man) are
+// not dramas, so they get their own list instead of topping the drama lists with #kdrama on them.
+const NOT_DRAMA = [16, 10764, 10767];
 const CATEGORIES = [
-  { key: "kdrama", label: "K-drama", params: "with_origin_country=KR&without_genres=16", tags: ["dorama", "kdrama"] },
-  { key: "cdrama", label: "C-drama", params: "with_origin_country=CN&without_genres=16", tags: ["dorama", "cdrama"] },
-  { key: "dorama", label: "Dorama", params: "with_origin_country=JP|TH|TW&without_genres=16", tags: ["dorama"] },
+  { key: "kdrama", label: "K-drama", params: "with_origin_country=KR&without_genres=16|10764|10767", exclude: NOT_DRAMA, tags: ["dorama", "kdrama"] },
+  { key: "cdrama", label: "C-drama", params: "with_origin_country=CN&without_genres=16|10764|10767", exclude: NOT_DRAMA, tags: ["dorama", "cdrama"] },
+  { key: "dorama", label: "Dorama", params: "with_origin_country=JP|TH|TW&without_genres=16|10764|10767", exclude: NOT_DRAMA, tags: ["dorama"] },
   { key: "anime", label: "Anime", params: "with_origin_country=JP&with_genres=16", tags: ["anime"] },
   { key: "turca", label: "Novela turca", params: "with_origin_country=TR", tags: ["novelaturca", "diziturca"] },
+  { key: "variedades", label: "Variedades", params: "with_origin_country=KR&with_genres=10764|10767&without_genres=16", tags: ["variedades", "coreia"] },
 ];
 
 const cache = new Map(); // key -> { data, expiresAt }
@@ -132,9 +136,11 @@ function buildCaption({ title, when, platforms, overview, tags, kind = "premiere
   const build = (syn) => `${head}${syn ? ` ${syn}` : ""}${tail}`;
   let caption = build(synopsis);
   while (synopsis && tweetLength(caption) > TWEET_LIMIT) {
-    const room = synopsis.length - 10;
-    // cut back to a whole word, then drop dangling punctuation
-    synopsis = room > 30 ? `${synopsis.slice(0, room).replace(/\s+\S*$/, "").replace(/[\s,;:.]+$/, "")}…` : "";
+    // Never end on a half sentence: cut back to the last comma and close it, or drop the synopsis.
+    const room = Math.min(synopsis.length - 10, 200);
+    const cut = synopsis.slice(0, room);
+    const comma = cut.lastIndexOf(", ");
+    synopsis = comma > 30 ? `${cut.slice(0, comma)}.` : "";
     caption = build(synopsis);
   }
   return caption;
@@ -208,6 +214,7 @@ function toItem(detail, category, today, ev) {
     episodes: ev.kind === "premiere" && detail.number_of_episodes > 2 ? detail.number_of_episodes : null,
     // TMDB's own numbers. Very new titles have few or no votes, so the rating is only
     // shown once there are enough votes to mean something; popularity is always present.
+    genreIds: (detail.genres || []).map((g) => g.id),
     popularity: Math.round((detail.popularity || 0) * 10) / 10,
     rating: detail.vote_count >= 5 ? Math.round(detail.vote_average * 10) / 10 : null,
     votes: detail.vote_count || 0,
@@ -236,7 +243,10 @@ async function loadCategory(category, today, until) {
   ]);
 
   const fetchDetail = (id) => tmdbGet(`/tv/${id}?language=${LANG}&append_to_response=watch/providers,translations`);
-  const usable = (item) => item && LATIN_ONLY.test(item.title); // e.g. 美人余 — nothing a Brazilian reader can use
+  const usable = (item) =>
+    item &&
+    LATIN_ONLY.test(item.title) && // e.g. 美人余 — nothing a Brazilian reader can use
+    !(category.exclude || []).some((g) => item.genreIds.includes(g));
   const safe = (label, fn) => async (r) => {
     try { return await fn(r); } catch (e) { console.error(`release-cards: skipped ${category.key} ${label} ${r.id}:`, e.message); return null; }
   };
