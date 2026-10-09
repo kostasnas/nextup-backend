@@ -300,10 +300,20 @@
     ctx.font = "600 36px " + FONT;
     ctx.fillStyle = "#f4f4f7";
     var maxW = W - x - 90 - lw - 24;
-    var v = value;
-    while (v.length > 1 && ctx.measureText(v).width > maxW) v = v.slice(0, -1);
-    if (v !== value) v = v.replace(/\s+$/, "") + "…";
-    ctx.fillText(v, x + lw + 24, y);
+    // Up to two lines (e.g. "Crunchyroll Oct 11 · Netflix Oct 17"); anything longer is cut with "…".
+    var lines = wrapLines(ctx, value, maxW).slice(0, 3);
+    if (lines.length > 2) {
+      lines = lines.slice(0, 2);
+      var last = lines[1];
+      while (last.length > 1 && ctx.measureText(last + "…").width > maxW) last = last.slice(0, -1);
+      lines[1] = last.replace(/\s+$/, "") + "…";
+    }
+    lines.forEach(function (ln, i) {
+      var v = ln;
+      while (v.length > 1 && ctx.measureText(v).width > maxW) v = v.slice(0, -1); // a single very long word
+      ctx.fillText(v, x + lw + 24, y + i * 44);
+    });
+    return (lines.length - 1) * 44; // extra height used, so the next row moves down
   }
 
   function capitalize(s) { return s.charAt(0).toUpperCase() + s.slice(1); }
@@ -381,12 +391,14 @@
 
     // info rows
     var iy = ty + (t.lines.length - 1) * t.size * 1.08 + 80;
-    infoRow(ctx, iy, item.kindLabel, capitalize(item.dateLong));
-    iy += 64;
-    infoRow(ctx, iy, ui.whereLabel, item.platforms.length ? item.platforms.join(" · ") : ui.whereTbc);
-    if (item.kind === "episode") { iy += 64; infoRow(ctx, iy, ui.episodeLabel, item.episode + " (" + ui.seasonOf + " " + item.season + ")"); }
-    else if (item.kind === "season") { iy += 64; infoRow(ctx, iy, ui.seasonLabel, String(item.season)); }
-    else if (item.episodes) { iy += 64; infoRow(ctx, iy, ui.episodesLabel, String(item.episodes)); }
+    iy += 64 + infoRow(ctx, iy, item.kindLabel, capitalize(item.dateLong));
+    iy += 64 + infoRow(ctx, iy, ui.whereLabel, item.platforms.length ? item.platforms.join(" · ") : ui.whereTbc);
+    // The last row is the least important: skip it if it would run into the footer line.
+    var last = null;
+    if (item.kind === "episode") last = [ui.episodeLabel, item.episode + " (" + ui.seasonOf + " " + item.season + ")"];
+    else if (item.kind === "season") last = [ui.seasonLabel, String(item.season)];
+    else if (item.episodes) last = [ui.episodesLabel, String(item.episodes)];
+    if (last && iy < H - 125) infoRow(ctx, iy, last[0], last[1]);
 
     // footer
     ctx.fillStyle = "rgba(255,255,255,0.14)";
