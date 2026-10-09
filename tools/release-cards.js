@@ -12,10 +12,12 @@
   var filtersEl = document.getElementById("filters");
   var daysEl = document.getElementById("days");
   var activeCategory = "all";
+  var sortKey = "popularity";
   var data = null;
 
   document.getElementById("reload").addEventListener("click", load);
   daysEl.addEventListener("change", load);
+  document.getElementById("sort").addEventListener("change", function (e) { sortKey = e.target.value; if (data) render(); });
 
   function load() {
     statusEl.textContent = "Φόρτωση…";
@@ -44,6 +46,11 @@
   function render() {
     grid.innerHTML = "";
     var items = data.items.filter(function (it) { return activeCategory === "all" || it.category === activeCategory; });
+    items.sort(function (a, b) {
+      if (sortKey === "rating") return (b.rating || 0) - (a.rating || 0) || b.popularity - a.popularity;
+      if (sortKey === "date") return a.date.localeCompare(b.date) || b.popularity - a.popularity;
+      return b.popularity - a.popularity;
+    });
     if (!items.length) { statusEl.textContent = "Δεν βρέθηκαν τίτλοι σε αυτό το διάστημα."; statusEl.style.display = "block"; return; }
     statusEl.style.display = "none";
     items.forEach(function (it) { grid.appendChild(buildCard(it)); });
@@ -62,8 +69,17 @@
 
     var meta = document.createElement("div");
     meta.className = "meta";
-    meta.textContent = item.categoryLabel + " · " + item.dateLong;
+    var score = item.rating !== null ? "★ " + item.rating + " (" + item.votes + " ψήφοι)" : "χωρίς βαθμολογία ακόμα";
+    meta.textContent = item.categoryLabel + " · " + item.dateLong + " · " + score + " · δημοφιλία " + item.popularity;
     el.appendChild(meta);
+
+    // One tap to see where it streams in Brazil, instead of typing the title.
+    var g = document.createElement("a");
+    g.href = "https://www.google.com/search?q=" + encodeURIComponent(item.title + " estreia onde assistir");
+    g.target = "_blank"; g.rel = "noopener";
+    g.className = "gsearch";
+    g.textContent = "Αναζήτηση στο Google ↗";
+    el.appendChild(g);
 
     item.warnings.forEach(function (w) {
       var d = document.createElement("div"); d.className = "warn"; d.textContent = "⚠ " + w; el.appendChild(d);

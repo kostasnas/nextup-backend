@@ -188,6 +188,11 @@ function toItem(detail, category, today) {
     // For a title that has only just been listed TMDB often knows only the first
     // episode or two, so a very small count is not the real total — leave it off the card.
     episodes: detail.number_of_episodes > 2 ? detail.number_of_episodes : null,
+    // TMDB's own numbers. Very new titles have few or no votes, so the rating is only
+    // shown once there are enough votes to mean something; popularity is always present.
+    popularity: Math.round((detail.popularity || 0) * 10) / 10,
+    rating: detail.vote_count >= 5 ? Math.round(detail.vote_average * 10) / 10 : null,
+    votes: detail.vote_count || 0,
     posterUrl: detail.poster_path ? `${IMG_BASE}/w780${detail.poster_path}` : null,
     caption: buildCaption({ title, when, platforms, overview: detail.overview, tags }),
     warnings,

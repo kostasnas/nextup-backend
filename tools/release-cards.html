@@ -26,6 +26,7 @@
   .card canvas { width:100%; height:auto; border-radius:10px; background:#000; display:block; }
   .meta { color: var(--muted); font-size: 13px; }
   .warn { color: #f0b36a; font-size: 13px; }
+  a.gsearch { color: var(--accent); font-size: 14px; text-decoration: none; }
   input.plat { width:100%; background:#0e0f14; color:var(--text); border:1px solid var(--line); border-radius:10px; padding:9px 10px; font:inherit; }
   textarea { width:100%; min-height: 150px; resize: vertical; background:#0e0f14; color:var(--text); border:1px solid var(--line); border-radius:10px; padding:8px; font:13px/1.4 system-ui,sans-serif; }
   .row { display:flex; gap:8px; flex-wrap:wrap; }
@@ -41,6 +42,7 @@
   <p class="note">Η ημερομηνία και η πλατφόρμα προέρχονται από το TMDB. Έλεγξε τες πριν ποστάρεις, ειδικά για Βραζιλία.</p>
   <div class="bar">
     <label>Ημέρες: <select id="days"><option>7</option><option selected>10</option><option>14</option><option>21</option><option>30</option></select></label>
+    <label>Ταξινόμηση: <select id="sort"><option value="popularity" selected>Δημοφιλία</option><option value="rating">Βαθμολογία</option><option value="date">Ημερομηνία</option></select></label>
     <button id="reload">Ανανέωση</button>
   </div>
   <div class="filters" id="filters" style="margin-bottom:16px"></div>
