@@ -69,9 +69,28 @@
       var d = document.createElement("div"); d.className = "warn"; d.textContent = "⚠ " + w; el.appendChild(d);
     });
 
+    // TMDB often doesn't know the platform yet. Type it here (after checking Google) and the
+    // card and the caption update.
+    var plat = document.createElement("input");
+    plat.type = "text";
+    plat.placeholder = "Πλατφόρμα (π.χ. Netflix)";
+    plat.value = item.platforms.join(", ");
+    plat.className = "plat";
+    el.appendChild(plat);
+
     var ta = document.createElement("textarea");
     ta.value = item.caption;
     el.appendChild(ta);
+
+    plat.addEventListener("input", function () {
+      var v = plat.value.trim();
+      item.platforms = v ? v.split(/\s*,\s*/).filter(Boolean) : [];
+      redraw(canvas, item);
+      var c = ta.value.replace(/ Onde assistir: [^.\n]*\./, "");
+      if (item.platforms.length) c = c.replace(/(estreia [^.\n]*\.)/, "$1 Onde assistir: " + item.platforms.join(", ") + ".");
+      ta.value = c;
+      updateCount();
+    });
 
     var count = document.createElement("div");
     count.className = "count";
@@ -203,8 +222,10 @@
     var ctx = canvas.getContext("2d");
     // Paint something immediately, then redraw once the poster arrives.
     paint(ctx, item, null);
-    loadImage(item.posterUrl).then(function (img) { if (img) paint(ctx, item, img); });
+    loadImage(item.posterUrl).then(function (img) { if (img) { item._poster = img; paint(ctx, item, img); } });
   }
+
+  function redraw(canvas, item) { paint(canvas.getContext("2d"), item, item._poster || null); }
 
   function paint(ctx, item, poster) {
     ctx.clearRect(0, 0, W, H);

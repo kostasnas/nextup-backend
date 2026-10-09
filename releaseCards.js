@@ -131,7 +131,9 @@ function buildCaption({ title, when, platforms, overview, tags }) {
 // ---- data -----------------------------------------------------------------
 
 function pickPlatforms(detail) {
-  const flat = detail["watch/providers"]?.results?.[REGION]?.flatrate || [];
+  // Subscription first, then free/ad-supported (e.g. Viki) — both answer "onde assistir".
+  const r = detail["watch/providers"]?.results?.[REGION] || {};
+  const flat = [...(r.flatrate || []), ...(r.free || []), ...(r.ads || [])];
   const sorted = [...flat].sort((a, b) => (a.display_priority ?? 999) - (b.display_priority ?? 999));
   const names = [];
   for (const p of sorted) {
