@@ -110,6 +110,12 @@ function buildCaption({ title, when, platforms, overview, tags }) {
   const tail = `\n\nVai ver? Conta pra gente 👇 Link na bio.\n${tags.map((t) => `#${t}`).join(" ")}`;
 
   let synopsis = firstSentence(overview);
+  // TMDB overviews often start with the title itself ("X é um remake…"): the caption
+  // already opens with it, so drop the repeat and keep the rest.
+  if (synopsis.toLowerCase().startsWith(String(title).toLowerCase())) {
+    synopsis = synopsis.slice(String(title).length).replace(/^[\s,:;–-]+/, "");
+    synopsis = synopsis.charAt(0).toUpperCase() + synopsis.slice(1);
+  }
   const build = (syn) => `${head}${syn ? ` ${syn}` : ""}${tail}`;
   let caption = build(synopsis);
   while (synopsis && tweetLength(caption) > TWEET_LIMIT) {
@@ -159,7 +165,9 @@ function toItem(detail, category, today) {
     when,
     dateLong: longDatePt(date),
     platforms,
-    episodes: detail.number_of_episodes > 0 ? detail.number_of_episodes : null,
+    // For a title that has only just been listed TMDB often knows only the first
+    // episode or two, so a very small count is not the real total — leave it off the card.
+    episodes: detail.number_of_episodes > 2 ? detail.number_of_episodes : null,
     posterUrl: detail.poster_path ? `${IMG_BASE}/w780${detail.poster_path}` : null,
     caption: buildCaption({ title, when, platforms, overview: detail.overview, tags }),
     warnings,
