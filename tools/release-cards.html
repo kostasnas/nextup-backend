@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="el">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<link rel="icon" href="data:,">
+<title>Scenera release cards</title>
+<style>
+  :root { color-scheme: dark; --bg:#0e0f14; --panel:#171922; --line:#2a2d3a; --text:#f2f2f5; --muted:#9a9db0; --accent:#E8A33D; }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--text); font:15px/1.45 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif; }
+  main { max-width: 980px; margin: 0 auto; padding: 20px 16px 60px; }
+  h1 { font-size: 20px; margin: 0 0 4px; }
+  .sub { color: var(--muted); margin: 0 0 14px; }
+  .note { background: #2a2312; border: 1px solid #5c4a1c; color: #f0d9a0; border-radius: 10px; padding: 10px 12px; margin: 0 0 16px; }
+  .bar { display:flex; flex-wrap:wrap; gap:8px; align-items:center; margin-bottom:16px; }
+  select, button { font: inherit; border-radius: 10px; border: 1px solid var(--line); background: var(--panel); color: var(--text); padding: 9px 12px; }
+  button { cursor: pointer; }
+  button.primary { background: var(--accent); color: #1a1405; border-color: var(--accent); font-weight: 600; }
+  button:disabled { opacity: .5; cursor: default; }
+  .filters { display:flex; flex-wrap:wrap; gap:6px; }
+  .chip.on { background: var(--accent); color:#1a1405; border-color: var(--accent); }
+  .grid { display:grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap:16px; }
+  .card { background: var(--panel); border:1px solid var(--line); border-radius:14px; padding:12px; display:flex; flex-direction:column; gap:10px; }
+  .card canvas { width:100%; height:auto; border-radius:10px; background:#000; display:block; }
+  .meta { color: var(--muted); font-size: 13px; }
+  .warn { color: #f0b36a; font-size: 13px; }
+  textarea { width:100%; min-height: 150px; resize: vertical; background:#0e0f14; color:var(--text); border:1px solid var(--line); border-radius:10px; padding:8px; font:13px/1.4 system-ui,sans-serif; }
+  .row { display:flex; gap:8px; flex-wrap:wrap; }
+  .row button { flex:1; }
+  .count { color: var(--muted); font-size: 12px; }
+  #status { color: var(--muted); padding: 24px 0; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Release cards (pt-BR)</h1>
+  <p class="sub">Επερχόμενα doramas, anime και τουρκικές σειρές, με κάρτα εικόνας και caption έτοιμο για post.</p>
+  <p class="note">Η ημερομηνία και η πλατφόρμα προέρχονται από το TMDB. Έλεγξε τες πριν ποστάρεις, ειδικά για Βραζιλία.</p>
+  <div class="bar">
+    <label>Ημέρες: <select id="days"><option>7</option><option selected>10</option><option>14</option><option>21</option><option>30</option></select></label>
+    <button id="reload">Ανανέωση</button>
+  </div>
+  <div class="filters" id="filters" style="margin-bottom:16px"></div>
+  <div id="status">Φόρτωση…</div>
+  <div class="grid" id="grid"></div>
+</main>
+<script src="/tools/release-cards.js"></script>
+</body>
+</html>

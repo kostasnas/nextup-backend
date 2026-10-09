@@ -24,6 +24,7 @@ const { getComments, getCommentCountsForShow, addComment, deleteComment, toggleC
 const { getMovieWatchlist, setMovieStatus, updateMovieEntry, removeMovie } = require("./movies");
 const { getFavoriteCharacters, addFavoriteCharacter, removeFavoriteCharacter, getCharacterVoteCounts } = require("./favoriteCharacters");
 const { buildAccountExport } = require("./accountExport");
+const { mountReleaseCards } = require("./releaseCards");
 const { listFeatureRequests, createFeatureRequest, toggleVote } = require("./featureRequests");
 const { logRewatch, removeRewatch, getRewatchCountsForShow } = require("./episodeRewatches");
 const { getEmotionCountsForShow } = require("./episodeEmotions");
@@ -2360,6 +2361,10 @@ app.get("/account/export", requireAuth, asyncHandler(async (req, res) => {
   res.setHeader("Cache-Control", "no-store");
   res.json(payload);
 }));
+
+// Marketing helper: upcoming doramas/anime/Turkish series as ready-to-post
+// cards (page at /tools/release-cards). Public TMDB data only, cached.
+mountReleaseCards(app, asyncHandler);
 
 // Real, in-app account deletion — required by Google Play policy
 // alongside the web-based deletion link already in delete-account.html
