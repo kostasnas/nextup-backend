@@ -10,8 +10,10 @@
   var grid = document.getElementById("grid");
   var statusEl = document.getElementById("status");
   var filtersEl = document.getElementById("filters");
+  var kindsEl = document.getElementById("kinds");
   var daysEl = document.getElementById("days");
   var activeCategory = "all";
+  var activeKind = "all";
   var sortKey = "popularity";
   var data = null;
 
@@ -29,7 +31,18 @@
       .catch(function (e) { statusEl.textContent = "Δεν φορτώθηκε: " + e.message; });
   }
 
+  var KIND_CHIPS = [["all", "Όλα"], ["premiere", "Πρεμιέρες"], ["season", "Νέες σεζόν"], ["episode", "Νέα επεισόδια"]];
+
   function renderFilters() {
+    kindsEl.innerHTML = "";
+    KIND_CHIPS.forEach(function (c) {
+      var b = document.createElement("button");
+      b.className = "chip" + (c[0] === activeKind ? " on" : "");
+      b.textContent = c[1];
+      b.addEventListener("click", function () { activeKind = c[0]; renderFilters(); render(); });
+      kindsEl.appendChild(b);
+    });
+
     var cats = [["all", "Όλα"]];
     var seen = {};
     data.items.forEach(function (it) { if (!seen[it.category]) { seen[it.category] = 1; cats.push([it.category, it.categoryLabel]); } });
@@ -45,7 +58,9 @@
 
   function render() {
     grid.innerHTML = "";
-    var items = data.items.filter(function (it) { return activeCategory === "all" || it.category === activeCategory; });
+    var items = data.items.filter(function (it) {
+      return (activeCategory === "all" || it.category === activeCategory) && (activeKind === "all" || it.kind === activeKind);
+    });
     items.sort(function (a, b) {
       if (sortKey === "rating") return (b.rating || 0) - (a.rating || 0) || b.popularity - a.popularity;
       if (sortKey === "date") return a.date.localeCompare(b.date) || b.popularity - a.popularity;
@@ -98,13 +113,20 @@
     ta.value = item.caption;
     el.appendChild(ta);
 
+    var curWhere = item.platforms.length ? " Onde assistir: " + item.platforms.join(", ") + "." : "";
     plat.addEventListener("input", function () {
       var v = plat.value.trim();
       item.platforms = v ? v.split(/\s*,\s*/).filter(Boolean) : [];
       redraw(canvas, item);
-      var c = ta.value.replace(/ Onde assistir: [^.\n]*\./, "");
-      if (item.platforms.length) c = c.replace(/(estreia [^.\n]*\.)/, "$1 Onde assistir: " + item.platforms.join(", ") + ".");
-      ta.value = c;
+      var newWhere = item.platforms.length ? " Onde assistir: " + item.platforms.join(", ") + "." : "";
+      var c = ta.value;
+      var at = item.captionHead ? c.indexOf(item.captionHead) : -1;
+      if (at === 0) {
+        var rest = c.slice(item.captionHead.length);
+        if (curWhere && rest.indexOf(curWhere) === 0) rest = rest.slice(curWhere.length);
+        ta.value = item.captionHead + newWhere + rest;
+        curWhere = newWhere;
+      }
       updateCount();
     });
 
@@ -276,7 +298,7 @@
     ctx.textAlign = "right";
     ctx.fillStyle = "rgba(255,255,255,0.75)";
     ctx.font = "700 28px " + FONT;
-    ctx.fillText("ESTREIA " + item.when.replace(/\s*\(.*\)/, "").toUpperCase(), W - 90, 99);
+    ctx.fillText(item.kindTag + " " + item.when.replace(/\s*\(.*\)/, "").toUpperCase(), W - 90, 99);
     ctx.textAlign = "left";
 
     // poster
@@ -307,10 +329,12 @@
 
     // info rows
     var iy = ty + (t.lines.length - 1) * t.size * 1.08 + 80;
-    infoRow(ctx, iy, "Estreia", capitalize(item.dateLong));
+    infoRow(ctx, iy, item.kindLabel, capitalize(item.dateLong));
     iy += 64;
     infoRow(ctx, iy, "Onde assistir", item.platforms.length ? item.platforms.join(" · ") : "a confirmar");
-    if (item.episodes) { iy += 64; infoRow(ctx, iy, "Episódios", String(item.episodes)); }
+    if (item.kind === "episode") { iy += 64; infoRow(ctx, iy, "Episódio", item.episode + " (temporada " + item.season + ")"); }
+    else if (item.kind === "season") { iy += 64; infoRow(ctx, iy, "Temporada", String(item.season)); }
+    else if (item.episodes) { iy += 64; infoRow(ctx, iy, "Episódios", String(item.episodes)); }
 
     // footer
     ctx.fillStyle = "rgba(255,255,255,0.14)";

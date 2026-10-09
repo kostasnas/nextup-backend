@@ -19,7 +19,7 @@ const TZ = "America/Sao_Paulo";
 const REGION = "BR";
 const LANG = "pt-BR";
 const CACHE_TTL_MS = 6 * 60 * 60 * 1000;
-const PER_CATEGORY = 10;
+const PER_CATEGORY = 20;
 const TWEET_LIMIT = 270; // X allows 280; leave headroom (emoji count double)
 
 const CATEGORIES = [
@@ -105,9 +105,21 @@ function tweetLength(s) {
   return n;
 }
 
-function buildCaption({ title, when, platforms, overview, tags }) {
+const KINDS = {
+  premiere: { tag: "ESTREIA", label: "Estreia" },
+  season: { tag: "NOVA TEMPORADA", label: "Nova temporada" },
+  episode: { tag: "NOVO EPISÓDIO", label: "Novo episódio" },
+};
+
+function captionHead({ title, when, kind = "premiere", season, episode }) {
+  if (kind === "season") return `A temporada ${season} de ${title} estreia ${when}.`;
+  if (kind === "episode") return `Novo episódio de ${title} ${when}: temporada ${season}, episódio ${episode}.`;
+  return `${title} estreia ${when}.`;
+}
+
+function buildCaption({ title, when, platforms, overview, tags, kind = "premiere", season, episode }) {
   const where = platforms.length ? ` Onde assistir: ${platforms.join(", ")}.` : "";
-  const head = `${title} estreia ${when}.${where}`;
+  const head = `${captionHead({ title, when, kind, season, episode })}${where}`;
   const tail = `\n\nVai ver? Conta pra gente 👇 Link na bio.\n${tags.map((t) => `#${t}`).join(" ")}`;
 
   let synopsis = firstSentence(overview);
@@ -159,8 +171,8 @@ function pickTitle(detail) {
   );
 }
 
-function toItem(detail, category, today) {
-  const date = detail.first_air_date;
+function toItem(detail, category, today, ev) {
+  const date = ev.date;
   const platforms = pickPlatforms(detail);
   const when = whenPt(date, today);
   const title = pickTitle(detail);
@@ -175,9 +187,15 @@ function toItem(detail, category, today) {
   if (!platforms.length) warnings.push("Plataforma ainda não confirmada no TMDB — verifique antes de postar.");
   if (!detail.overview) warnings.push("Sem sinopse em português.");
 
+  const args = { title, when, kind: ev.kind, season: ev.season, episode: ev.episode };
   return {
     id: detail.id,
     title,
+    kind: ev.kind,
+    kindTag: KINDS[ev.kind].tag,
+    kindLabel: KINDS[ev.kind].label,
+    season: ev.season ?? null,
+    episode: ev.episode ?? null,
     category: category.key,
     categoryLabel: category.label,
     date,
@@ -187,37 +205,60 @@ function toItem(detail, category, today) {
     platforms,
     // For a title that has only just been listed TMDB often knows only the first
     // episode or two, so a very small count is not the real total — leave it off the card.
-    episodes: detail.number_of_episodes > 2 ? detail.number_of_episodes : null,
+    episodes: ev.kind === "premiere" && detail.number_of_episodes > 2 ? detail.number_of_episodes : null,
     // TMDB's own numbers. Very new titles have few or no votes, so the rating is only
     // shown once there are enough votes to mean something; popularity is always present.
     popularity: Math.round((detail.popularity || 0) * 10) / 10,
     rating: detail.vote_count >= 5 ? Math.round(detail.vote_average * 10) / 10 : null,
     votes: detail.vote_count || 0,
     posterUrl: detail.poster_path ? `${IMG_BASE}/w780${detail.poster_path}` : null,
-    caption: buildCaption({ title, when, platforms, overview: detail.overview, tags }),
+    captionHead: captionHead(args),
+    caption: buildCaption({ ...args, platforms, overview: detail.overview, tags }),
     warnings,
   };
 }
 
+// Runs fn over arr in small parallel batches (the shared TMDB throttle still applies).
+async function mapPool(arr, size, fn) {
+  const out = [];
+  for (let i = 0; i < arr.length; i += size) out.push(...(await Promise.all(arr.slice(i, i + size).map(fn))));
+  return out;
+}
+
 async function loadCategory(category, today, until) {
-  const list = await tmdbGet(
-    `/discover/tv?language=${LANG}&sort_by=popularity.desc&include_null_first_air_dates=false` +
-    `&first_air_date.gte=${today}&first_air_date.lte=${until}&${category.params}`
-  );
-  const picks = (list.results || []).slice(0, PER_CATEGORY);
-  const items = [];
-  for (const r of picks) {
-    try {
-      const detail = await tmdbGet(`/tv/${r.id}?language=${LANG}&append_to_response=watch/providers,translations`);
-      if (!detail.first_air_date) continue;
-      const item = toItem(detail, category, today);
-      if (!LATIN_ONLY.test(item.title)) continue; // e.g. 美人余 — nothing a Brazilian reader can use
-      items.push(item);
-    } catch (e) {
-      console.error(`release-cards: skipped ${category.key} ${r.id}:`, e.message);
-    }
-  }
-  return items;
+  const base = `language=${LANG}&sort_by=popularity.desc&${category.params}`;
+  const yesterday = addDays(today, -1);
+  const [premieres, onAir] = await Promise.all([
+    // first episode in the window = a premiere
+    tmdbGet(`/discover/tv?${base}&include_null_first_air_dates=false&first_air_date.gte=${today}&first_air_date.lte=${until}`),
+    // some episode in the window, but the show started earlier = new season or new episode
+    tmdbGet(`/discover/tv?${base}&air_date.gte=${today}&air_date.lte=${until}&first_air_date.lte=${yesterday}`),
+  ]);
+
+  const fetchDetail = (id) => tmdbGet(`/tv/${id}?language=${LANG}&append_to_response=watch/providers,translations`);
+  const usable = (item) => item && LATIN_ONLY.test(item.title); // e.g. 美人余 — nothing a Brazilian reader can use
+  const safe = (label, fn) => async (r) => {
+    try { return await fn(r); } catch (e) { console.error(`release-cards: skipped ${category.key} ${label} ${r.id}:`, e.message); return null; }
+  };
+
+  const premiereItems = await mapPool((premieres.results || []).slice(0, PER_CATEGORY), 8, safe("premiere", async (r) => {
+    const d = await fetchDetail(r.id);
+    if (!d.first_air_date) return null;
+    return toItem(d, category, today, { kind: "premiere", date: d.first_air_date });
+  }));
+
+  const seen = new Set(premiereItems.filter(Boolean).map((i) => i.id));
+  const ongoingPicks = (onAir.results || []).filter((r) => !seen.has(r.id)).slice(0, PER_CATEGORY);
+  const ongoingItems = await mapPool(ongoingPicks, 8, safe("on-air", async (r) => {
+    const d = await fetchDetail(r.id);
+    const ne = d.next_episode_to_air;
+    // Only a real upcoming episode inside the window (not specials, which are season 0).
+    if (!ne || !ne.air_date || ne.season_number < 1 || ne.air_date < today || ne.air_date > until) return null;
+    const kind = ne.episode_number === 1 && ne.season_number > 1 ? "season" : "episode";
+    return toItem(d, category, today, { kind, date: ne.air_date, season: ne.season_number, episode: ne.episode_number });
+  }));
+
+  return [...premiereItems, ...ongoingItems].filter(usable);
 }
 
 async function buildReleaseCards(days) {
