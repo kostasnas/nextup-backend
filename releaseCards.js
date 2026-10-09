@@ -19,7 +19,7 @@ const TZ = "America/Sao_Paulo";
 const REGION = "BR";
 const LANG = "pt-BR";
 const CACHE_TTL_MS = 6 * 60 * 60 * 1000;
-const PER_CATEGORY = 6;
+const PER_CATEGORY = 10;
 const TWEET_LIMIT = 270; // X allows 280; leave headroom (emoji count double)
 
 const CATEGORIES = [
@@ -139,11 +139,28 @@ function pickPlatforms(detail) {
   return names.slice(0, 2);
 }
 
+const LATIN_ONLY = /^[\p{Script=Latin}\p{N}\p{P}\p{S}\p{Z}]+$/u;
+
+// TMDB returns the original-language name when there is no Portuguese title (most
+// Chinese/Turkish series), which is useless for a Brazilian audience. Prefer the pt-BR
+// title, then pt-PT, then English, then whatever TMDB gave us.
+function pickTitle(detail) {
+  const tr = detail.translations?.translations || [];
+  const nameOf = (pred) => tr.find((t) => pred(t) && t.data?.name)?.data.name;
+  return (
+    nameOf((t) => t.iso_639_1 === "pt" && t.iso_3166_1 === "BR") ||
+    nameOf((t) => t.iso_639_1 === "pt") ||
+    nameOf((t) => t.iso_639_1 === "en") ||
+    detail.name ||
+    detail.original_name
+  );
+}
+
 function toItem(detail, category, today) {
   const date = detail.first_air_date;
   const platforms = pickPlatforms(detail);
   const when = whenPt(date, today);
-  const title = detail.name || detail.original_name;
+  const title = pickTitle(detail);
   const tags = [...category.tags];
   const titleTag = slugTag(title);
   // A hashtag cut in the middle of a word looks broken, so very long titles get none.
@@ -183,9 +200,11 @@ async function loadCategory(category, today, until) {
   const items = [];
   for (const r of picks) {
     try {
-      const detail = await tmdbGet(`/tv/${r.id}?language=${LANG}&append_to_response=watch/providers`);
+      const detail = await tmdbGet(`/tv/${r.id}?language=${LANG}&append_to_response=watch/providers,translations`);
       if (!detail.first_air_date) continue;
-      items.push(toItem(detail, category, today));
+      const item = toItem(detail, category, today);
+      if (!LATIN_ONLY.test(item.title)) continue; // e.g. 美人余 — nothing a Brazilian reader can use
+      items.push(item);
     } catch (e) {
       console.error(`release-cards: skipped ${category.key} ${r.id}:`, e.message);
     }
@@ -202,7 +221,10 @@ async function buildReleaseCards(days) {
       return [];
     }))
   );
-  const items = settled.flat().sort((a, b) => a.date.localeCompare(b.date) || a.title.localeCompare(b.title));
+  // Titles with a confirmed platform first (they are the ones you can post without checking),
+  // then by date.
+  const items = settled.flat().sort((a, b) =>
+    (b.platforms.length > 0) - (a.platforms.length > 0) || a.date.localeCompare(b.date) || a.title.localeCompare(b.title));
   return { generatedAt: new Date().toISOString(), today, days, region: REGION, items };
 }
 
@@ -261,4 +283,4 @@ function mountReleaseCards(app, asyncHandler) {
   }));
 }
 
-module.exports = { mountReleaseCards, getReleaseCards, buildCaption, whenPt, todayInBrazil, slugTag };
+module.exports = { mountReleaseCards, getReleaseCards, buildCaption, whenPt, todayInBrazil, slugTag, pickTitle, LATIN_ONLY };
