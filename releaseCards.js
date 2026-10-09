@@ -24,7 +24,8 @@ const TWEET_LIMIT = 270; // X allows 280; leave headroom (emoji count double)
 
 const CATEGORIES = [
   { key: "kdrama", label: "K-drama", params: "with_origin_country=KR&without_genres=16", tags: ["dorama", "kdrama"] },
-  { key: "dorama", label: "Dorama", params: "with_origin_country=JP|CN|TH|TW&without_genres=16", tags: ["dorama"] },
+  { key: "cdrama", label: "C-drama", params: "with_origin_country=CN&without_genres=16", tags: ["dorama", "cdrama"] },
+  { key: "dorama", label: "Dorama", params: "with_origin_country=JP|TH|TW&without_genres=16", tags: ["dorama"] },
   { key: "anime", label: "Anime", params: "with_origin_country=JP&with_genres=16", tags: ["anime"] },
   { key: "turca", label: "Novela turca", params: "with_origin_country=TR", tags: ["novelaturca", "diziturca"] },
 ];
