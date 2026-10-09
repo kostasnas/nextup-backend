@@ -31,6 +31,7 @@ const LANGS = {
       premiere: { tag: "ESTREIA", label: "Estreia" },
       season: { tag: "NOVA TEMPORADA", label: "Nova temporada" },
       episode: { tag: "NOVO EPISÓDIO", label: "Novo episódio" },
+      streaming: { tag: "JÁ DISPONÍVEL", label: "Estreou em" },
     },
     ui: {
       whereLabel: "Onde assistir", whereTbc: "a confirmar", episodeLabel: "Episódio", episodesLabel: "Episódios",
@@ -43,13 +44,14 @@ const LANGS = {
       season: ({ title, season, when }) => `A temporada ${season} de ${title} estreia ${when}.`,
       episode: ({ title, season, episode, when }) => `Novo episódio de ${title} ${when}: temporada ${season}, episódio ${episode}.`,
       premiere: ({ title, when }) => `${title} estreia ${when}.`,
+      streaming: ({ title }) => `${title} já está disponível.`,
     },
     whereCaption: " Onde assistir: ",
     tail: "Vai ver? Conta pra gente 👇 Link na bio.",
     warnPlatform: "Η πλατφόρμα δεν είναι ακόμα επιβεβαιωμένη στο TMDB — έλεγξε πριν ποστάρεις.",
     warnOverview: "Δεν υπάρχει περίληψη στα πορτογαλικά.",
-    labels: { kdrama: "K-drama", cdrama: "C-drama", dorama: "Dorama", anime: "Anime", turca: "Novela turca", variedades: "Variedades" },
-    tags: { kdrama: ["dorama", "kdrama"], cdrama: ["dorama", "cdrama"], dorama: ["dorama"], anime: ["anime"], turca: ["novelaturca", "diziturca"], variedades: ["variedades", "coreia"] },
+    labels: { kdrama: "K-drama", cdrama: "C-drama", dorama: "Dorama", anime: "Anime", turca: "Novela turca", variedades: "Variedades", other: "Série" },
+    tags: { kdrama: ["dorama", "kdrama"], cdrama: ["dorama", "cdrama"], dorama: ["dorama"], anime: ["anime"], turca: ["novelaturca", "diziturca"], variedades: ["variedades", "coreia"], other: [] },
   },
   en: {
     code: "en", tmdbLang: "en-US", region: "US", tz: "America/New_York", intl: "en-US",
@@ -59,6 +61,7 @@ const LANGS = {
       premiere: { tag: "PREMIERE", label: "Premiere" },
       season: { tag: "NEW SEASON", label: "New season" },
       episode: { tag: "NEW EPISODE", label: "New episode" },
+      streaming: { tag: "OUT NOW", label: "Premiered" },
     },
     ui: {
       whereLabel: "Where to watch", whereTbc: "to be confirmed", episodeLabel: "Episode", episodesLabel: "Episodes",
@@ -71,13 +74,14 @@ const LANGS = {
       season: ({ title, season, when }) => `Season ${season} of ${title} premieres ${when}.`,
       episode: ({ title, season, episode, when }) => `New episode of ${title} ${when}: season ${season}, episode ${episode}.`,
       premiere: ({ title, when }) => `${title} premieres ${when}.`,
+      streaming: ({ title }) => `${title} is out now.`,
     },
     whereCaption: " Where to watch: ",
     tail: "Will you watch? Tell us 👇 Link in bio.",
     warnPlatform: "Η πλατφόρμα δεν είναι ακόμα επιβεβαιωμένη στο TMDB — έλεγξε πριν ποστάρεις.",
     warnOverview: "Δεν υπάρχει αγγλική περίληψη.",
-    labels: { kdrama: "K-drama", cdrama: "C-drama", dorama: "Asian drama", anime: "Anime", turca: "Turkish drama", variedades: "K-variety" },
-    tags: { kdrama: ["kdrama"], cdrama: ["cdrama"], dorama: ["asiandrama"], anime: ["anime"], turca: ["turkishdrama", "dizi"], variedades: ["kvariety", "korea"] },
+    labels: { kdrama: "K-drama", cdrama: "C-drama", dorama: "Asian drama", anime: "Anime", turca: "Turkish drama", variedades: "K-variety", other: "Series" },
+    tags: { kdrama: ["kdrama"], cdrama: ["cdrama"], dorama: ["asiandrama"], anime: ["anime"], turca: ["turkishdrama", "dizi"], variedades: ["kvariety", "korea"], other: [] },
   },
 };
 const DEFAULT_LANG = "pt";
@@ -233,7 +237,7 @@ function pickTitle(detail, L = LANGS.pt) {
 function toItem(detail, category, today, ev, L = LANGS.pt) {
   const date = ev.date;
   const platforms = pickPlatforms(detail, L);
-  const when = whenText(date, today, L);
+  const when = ev.kind === "streaming" ? "" : whenText(date, today, L);
   const title = pickTitle(detail, L);
   const tags = [...L.tags[category.key]];
   const titleTag = slugTag(title);
@@ -264,7 +268,7 @@ function toItem(detail, category, today, ev, L = LANGS.pt) {
     platforms,
     // For a title that has only just been listed TMDB often knows only the first
     // episode or two, so a very small count is not the real total — leave it off the card.
-    episodes: ev.kind === "premiere" && detail.number_of_episodes > 2 ? detail.number_of_episodes : null,
+    episodes: (ev.kind === "premiere" || ev.kind === "streaming") && detail.number_of_episodes > 2 ? detail.number_of_episodes : null,
     // TMDB's own numbers. Very new titles have few or no votes, so the rating is only
     // shown once there are enough votes to mean something; popularity is always present.
     genreIds: (detail.genres || []).map((g) => g.id),
@@ -324,6 +328,72 @@ async function loadCategory(category, today, until, L) {
   return [...premiereItems, ...ongoingItems].filter(usable);
 }
 
+// Which of our categories a title belongs to, from TMDB's own country and genre data
+// (used by the title search, where the title did not come out of a category list).
+function categoryFor(detail) {
+  const c = detail.origin_country || [];
+  const g = (detail.genres || []).map((x) => x.id);
+  if (c.includes("JP") && g.includes(16)) return CATEGORIES.find((x) => x.key === "anime");
+  if (c.includes("KR") && (g.includes(10764) || g.includes(10767))) return CATEGORIES.find((x) => x.key === "variedades");
+  if (c.includes("KR")) return CATEGORIES.find((x) => x.key === "kdrama");
+  if (c.includes("CN")) return CATEGORIES.find((x) => x.key === "cdrama");
+  if (c.includes("TR")) return CATEGORIES.find((x) => x.key === "turca");
+  if (c.some((x) => ["JP", "TH", "TW"].includes(x))) return CATEGORIES.find((x) => x.key === "dorama");
+  return { key: "other" };
+}
+
+// One TMDB title -> a card item, whatever its state: upcoming premiere, upcoming
+// season/episode, or already out ("now streaming").
+function itemForTitle(d, today, L) {
+  const category = categoryFor(d);
+  const ne = d.next_episode_to_air;
+  if (d.first_air_date && d.first_air_date >= today) {
+    return toItem(d, category, today, { kind: "premiere", date: d.first_air_date }, L);
+  }
+  if (ne && ne.air_date && ne.air_date >= today && ne.season_number >= 1) {
+    const kind = ne.episode_number === 1 && ne.season_number > 1 ? "season" : "episode";
+    return toItem(d, category, today, { kind, date: ne.air_date, season: ne.season_number, episode: ne.episode_number }, L);
+  }
+  if (!d.first_air_date) return null;
+  return toItem(d, category, today, { kind: "streaming", date: d.first_air_date }, L);
+}
+
+const searchCache = new Map(); // `${lang}:${query}` -> { data, expiresAt }
+const SEARCH_TTL_MS = 60 * 60 * 1000;
+const SEARCH_MAX_ENTRIES = 200;
+
+async function searchTitles(query, langCode = DEFAULT_LANG) {
+  const L = getLang(langCode);
+  const q = String(query || "").trim().slice(0, 100);
+  if (q.length < 2) return { query: q, lang: L.code, items: [], ui: uiFor(L) };
+  const key = `${L.code}:${q.toLowerCase()}`;
+  const hit = searchCache.get(key);
+  if (hit && hit.expiresAt > Date.now()) return hit.data;
+
+  const today = todayIn(L.tz);
+  const found = await tmdbGet(`/search/tv?language=${L.tmdbLang}&query=${encodeURIComponent(q)}&include_adult=false`);
+  const picks = (found.results || []).slice(0, 6);
+  const items = (await Promise.all(picks.map(async (r) => {
+    try {
+      const d = await tmdbGet(`/tv/${r.id}?language=${L.tmdbLang}&append_to_response=watch/providers,translations`);
+      return itemForTitle(d, today, L);
+    } catch (e) {
+      console.error(`release-cards: search skipped ${r.id}:`, e.message);
+      return null;
+    }
+  }))).filter(Boolean);
+
+  const data = { query: q, lang: L.code, today, items, ui: uiFor(L) };
+  if (searchCache.size >= SEARCH_MAX_ENTRIES) searchCache.delete(searchCache.keys().next().value);
+  searchCache.set(key, { data, expiresAt: Date.now() + SEARCH_TTL_MS });
+  return data;
+}
+
+function uiFor(L) {
+  // Text the page needs for the card image and the Google link (so the client has no language of its own).
+  return { ...L.ui, whereCaption: L.whereCaption, googleWhere: L.googleWhere, gl: L.gl, hl: L.hl };
+}
+
 async function buildReleaseCards(days, L) {
   const today = todayIn(L.tz);
   const until = addDays(today, days);
@@ -339,8 +409,7 @@ async function buildReleaseCards(days, L) {
     (b.platforms.length > 0) - (a.platforms.length > 0) || a.date.localeCompare(b.date) || a.title.localeCompare(b.title));
   return {
     generatedAt: new Date().toISOString(), today, days, lang: L.code, region: L.region, items,
-    // Text the page needs for the card image and the Google link (so the client has no language of its own).
-    ui: { ...L.ui, whereCaption: L.whereCaption, googleWhere: L.googleWhere, gl: L.gl, hl: L.hl },
+    ui: uiFor(L),
   };
 }
 
@@ -386,6 +455,17 @@ function mountReleaseCards(app, asyncHandler) {
     res.setHeader("Cache-Control", "no-store");
     res.type("application/javascript").send(read("release-cards.js"));
   });
+
+  app.get("/tools/release-cards-search.json", asyncHandler(async (req, res) => {
+    try {
+      const data = await searchTitles(req.query.q, req.query.lang === "en" ? "en" : "pt");
+      res.setHeader("Cache-Control", "no-store");
+      res.json(data);
+    } catch (e) {
+      console.error("release-cards search failed:", e.message);
+      res.status(503).json({ error: "Could not search right now. Try again in a minute." });
+    }
+  }));
 
   app.get("/tools/release-cards.json", asyncHandler(async (req, res) => {
     const days = Math.min(30, Math.max(1, parseInt(req.query.days, 10) || 10));

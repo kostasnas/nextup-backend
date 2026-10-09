@@ -19,12 +19,29 @@
   var langEl = document.getElementById("lang");
   var ui = null; // card text for the current language, sent by the server with the data
   try { var savedLang = localStorage.getItem("rc_lang"); if (savedLang === "en" || savedLang === "pt") langEl.value = savedLang; } catch (e) { /* storage blocked: default stays */ }
+  var qEl = document.getElementById("q");
+  var searchItems = null; // null = showing the release list; an array = showing title-search results
   langEl.addEventListener("change", function () {
     try { localStorage.setItem("rc_lang", langEl.value); } catch (e) { /* ignore */ }
-    load();
+    if (searchItems !== null) doSearch(); else load();
   });
+  document.getElementById("searchBtn").addEventListener("click", doSearch);
+  qEl.addEventListener("keydown", function (e) { if (e.key === "Enter") { e.preventDefault(); doSearch(); } });
 
-  document.getElementById("reload").addEventListener("click", load);
+  // Search any title (even one that is not in the release list, e.g. something already out).
+  function doSearch() {
+    var q = qEl.value.trim();
+    if (q.length < 2) { searchItems = null; if (data) { renderFilters(); render(); } else load(); return; }
+    statusEl.textContent = "Αναζήτηση…";
+    statusEl.style.display = "block";
+    grid.innerHTML = "";
+    fetch("/tools/release-cards-search.json?q=" + encodeURIComponent(q) + "&lang=" + encodeURIComponent(langEl.value))
+      .then(function (r) { return r.json().then(function (j) { if (!r.ok) throw new Error(j.error || "Σφάλμα"); return j; }); })
+      .then(function (j) { searchItems = j.items; ui = j.ui; renderFilters(); render(); })
+      .catch(function (e) { statusEl.textContent = "Δεν φορτώθηκε: " + e.message; });
+  }
+
+  document.getElementById("reload").addEventListener("click", function () { searchItems = null; qEl.value = ""; load(); });
   daysEl.addEventListener("change", load);
   document.getElementById("sort").addEventListener("change", function (e) { sortKey = e.target.value; if (data) render(); });
 
@@ -41,6 +58,10 @@
   var KIND_CHIPS = [["all", "Όλα"], ["premiere", "Πρεμιέρες"], ["season", "Νέες σεζόν"], ["episode", "Νέα επεισόδια"]];
 
   function renderFilters() {
+    var searching = searchItems !== null;
+    kindsEl.style.display = searching ? "none" : "flex";
+    filtersEl.style.display = searching ? "none" : "flex";
+    if (searching || !data) return;
     kindsEl.innerHTML = "";
     KIND_CHIPS.forEach(function (c) {
       var b = document.createElement("button");
@@ -65,15 +86,16 @@
 
   function render() {
     grid.innerHTML = "";
-    var items = data.items.filter(function (it) {
-      return (activeCategory === "all" || it.category === activeCategory) && (activeKind === "all" || it.kind === activeKind);
+    var searching = searchItems !== null;
+    var items = (searching ? searchItems : data.items).filter(function (it) {
+      return searching || ((activeCategory === "all" || it.category === activeCategory) && (activeKind === "all" || it.kind === activeKind));
     });
-    items.sort(function (a, b) {
+    if (!searching) items.sort(function (a, b) {
       if (sortKey === "rating") return (b.rating || 0) - (a.rating || 0) || b.popularity - a.popularity;
       if (sortKey === "date") return a.date.localeCompare(b.date) || b.popularity - a.popularity;
       return b.popularity - a.popularity;
     });
-    if (!items.length) { statusEl.textContent = "Δεν βρέθηκαν τίτλοι σε αυτό το διάστημα."; statusEl.style.display = "block"; return; }
+    if (!items.length) { statusEl.textContent = searching ? "Δεν βρέθηκε τίτλος με αυτό το όνομα." : "Δεν βρέθηκαν τίτλοι σε αυτό το διάστημα."; statusEl.style.display = "block"; return; }
     statusEl.style.display = "none";
     items.forEach(function (it) { grid.appendChild(buildCard(it)); });
   }
@@ -305,7 +327,7 @@
     ctx.textAlign = "right";
     ctx.fillStyle = "rgba(255,255,255,0.75)";
     ctx.font = "700 28px " + FONT;
-    ctx.fillText(item.kindTag + " " + item.when.replace(/\s*\(.*\)/, "").toUpperCase(), W - 90, 99);
+    ctx.fillText((item.kindTag + " " + item.when.replace(/\s*\(.*\)/, "")).trim().toUpperCase(), W - 90, 99);
     ctx.textAlign = "left";
 
     // poster
