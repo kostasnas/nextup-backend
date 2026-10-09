@@ -16,6 +16,13 @@
   var activeKind = "all";
   var sortKey = "popularity";
   var data = null;
+  var langEl = document.getElementById("lang");
+  var ui = null; // card text for the current language, sent by the server with the data
+  try { var savedLang = localStorage.getItem("rc_lang"); if (savedLang === "en" || savedLang === "pt") langEl.value = savedLang; } catch (e) { /* storage blocked: default stays */ }
+  langEl.addEventListener("change", function () {
+    try { localStorage.setItem("rc_lang", langEl.value); } catch (e) { /* ignore */ }
+    load();
+  });
 
   document.getElementById("reload").addEventListener("click", load);
   daysEl.addEventListener("change", load);
@@ -25,9 +32,9 @@
     statusEl.textContent = "Φόρτωση…";
     statusEl.style.display = "block";
     grid.innerHTML = "";
-    fetch("/tools/release-cards.json?days=" + encodeURIComponent(daysEl.value))
+    fetch("/tools/release-cards.json?days=" + encodeURIComponent(daysEl.value) + "&lang=" + encodeURIComponent(langEl.value))
       .then(function (r) { return r.json().then(function (j) { if (!r.ok) throw new Error(j.error || "Σφάλμα"); return j; }); })
-      .then(function (j) { data = j; renderFilters(); render(); })
+      .then(function (j) { data = j; ui = j.ui; renderFilters(); render(); })
       .catch(function (e) { statusEl.textContent = "Δεν φορτώθηκε: " + e.message; });
   }
 
@@ -90,7 +97,7 @@
 
     // One tap to see where it streams in Brazil, instead of typing the title.
     var g = document.createElement("a");
-    g.href = "https://www.google.com/search?q=" + encodeURIComponent(item.title + " onde assistir") + "&gl=br&hl=pt-BR"; // results as seen from Brazil
+    g.href = "https://www.google.com/search?q=" + encodeURIComponent(item.title + " " + ui.googleWhere) + "&gl=" + ui.gl + "&hl=" + ui.hl; // results as seen from the audience's country
     g.target = "_blank"; g.rel = "noopener";
     g.className = "gsearch";
     g.textContent = "Αναζήτηση στο Google ↗";
@@ -113,12 +120,12 @@
     ta.value = item.caption;
     el.appendChild(ta);
 
-    var curWhere = item.platforms.length ? " Onde assistir: " + item.platforms.join(", ") + "." : "";
+    var curWhere = item.platforms.length ? ui.whereCaption + item.platforms.join(", ") + "." : "";
     plat.addEventListener("input", function () {
       var v = plat.value.trim();
       item.platforms = v ? v.split(/\s*,\s*/).filter(Boolean) : [];
       redraw(canvas, item);
-      var newWhere = item.platforms.length ? " Onde assistir: " + item.platforms.join(", ") + "." : "";
+      var newWhere = item.platforms.length ? ui.whereCaption + item.platforms.join(", ") + "." : "";
       var c = ta.value;
       var at = item.captionHead ? c.indexOf(item.captionHead) : -1;
       if (at === 0) {
@@ -316,7 +323,7 @@
     } else {
       ctx.fillStyle = "rgba(255,255,255,0.35)";
       ctx.font = "600 30px " + FONT; ctx.textAlign = "center"; ctx.textBaseline = "middle";
-      ctx.fillText("sem pôster", W / 2, py + ph / 2); ctx.textAlign = "left";
+      ctx.fillText(ui.noPoster, W / 2, py + ph / 2); ctx.textAlign = "left";
     }
 
     // title
@@ -331,10 +338,10 @@
     var iy = ty + (t.lines.length - 1) * t.size * 1.08 + 80;
     infoRow(ctx, iy, item.kindLabel, capitalize(item.dateLong));
     iy += 64;
-    infoRow(ctx, iy, "Onde assistir", item.platforms.length ? item.platforms.join(" · ") : "a confirmar");
-    if (item.kind === "episode") { iy += 64; infoRow(ctx, iy, "Episódio", item.episode + " (temporada " + item.season + ")"); }
-    else if (item.kind === "season") { iy += 64; infoRow(ctx, iy, "Temporada", String(item.season)); }
-    else if (item.episodes) { iy += 64; infoRow(ctx, iy, "Episódios", String(item.episodes)); }
+    infoRow(ctx, iy, ui.whereLabel, item.platforms.length ? item.platforms.join(" · ") : ui.whereTbc);
+    if (item.kind === "episode") { iy += 64; infoRow(ctx, iy, ui.episodeLabel, item.episode + " (" + ui.seasonOf + " " + item.season + ")"); }
+    else if (item.kind === "season") { iy += 64; infoRow(ctx, iy, ui.seasonLabel, String(item.season)); }
+    else if (item.episodes) { iy += 64; infoRow(ctx, iy, ui.episodesLabel, String(item.episodes)); }
 
     // footer
     ctx.fillStyle = "rgba(255,255,255,0.14)";
@@ -346,10 +353,10 @@
     ctx.textAlign = "right";
     ctx.fillStyle = "rgba(255,255,255,0.7)";
     ctx.font = "600 28px " + FONT;
-    ctx.fillText("Acompanhe suas séries · link na bio", W - 90, H - 58);
+    ctx.fillText(ui.footer, W - 90, H - 58);
     ctx.font = "500 20px " + FONT;
     ctx.fillStyle = "rgba(255,255,255,0.4)";
-    ctx.fillText("Dados: TMDB", W - 90, H - 24);
+    ctx.fillText(ui.credit, W - 90, H - 24);
     ctx.textAlign = "left";
   }
 
