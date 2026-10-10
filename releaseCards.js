@@ -32,6 +32,7 @@ const LANGS = {
       season: { tag: "NOVA TEMPORADA", label: "Nova temporada" },
       episode: { tag: "NOVO EPISÓDIO", label: "Novo episódio" },
       streaming: { tag: "JÁ DISPONÍVEL", label: "Estreou em" },
+      movie: { tag: "NOS CINEMAS", label: "Estreia nos cinemas" },
     },
     ui: {
       whereLabel: "Onde assistir", whereTbc: "a confirmar", episodeLabel: "Episódio", episodesLabel: "Episódios",
@@ -45,14 +46,16 @@ const LANGS = {
       episode: ({ title, season, episode, when }) => `Novo episódio de ${title} ${when}: temporada ${season}, episódio ${episode}.`,
       premiere: ({ title, when }) => `${title} estreia ${when}.`,
       streaming: ({ title }) => `${title} já está disponível.`,
+      movie: ({ title, when }) => `${title} estreia nos cinemas ${when}.`,
     },
+    theaters: "Nos cinemas",
     whereCaption: " Onde assistir: ",
     tail: "Vai ver? Conta pra gente 👇 Link na bio.",
     tailTrending: "Você está assistindo? Conta pra gente 👇 Link na bio.",
     warnPlatform: "Η πλατφόρμα δεν είναι ακόμα επιβεβαιωμένη στο TMDB — έλεγξε πριν ποστάρεις.",
     warnOverview: "Δεν υπάρχει περίληψη στα πορτογαλικά.",
-    labels: { kdrama: "K-drama", cdrama: "C-drama", dorama: "Dorama", anime: "Anime", turca: "Novela turca", variedades: "Variedades", trending: "Em alta", other: "Série" },
-    tags: { kdrama: ["dorama", "kdrama"], cdrama: ["dorama", "cdrama"], dorama: ["dorama"], anime: ["anime"], turca: ["novelaturca", "diziturca"], variedades: ["variedades", "coreia"], trending: ["series"], other: [] },
+    labels: { kdrama: "K-drama", cdrama: "C-drama", dorama: "Dorama", anime: "Anime", turca: "Novela turca", variedades: "Variedades", trending: "Em alta", movies: "Filmes", other: "Série" },
+    tags: { kdrama: ["dorama", "kdrama"], cdrama: ["dorama", "cdrama"], dorama: ["dorama"], anime: ["anime"], turca: ["novelaturca", "diziturca"], variedades: ["variedades", "coreia"], trending: ["series"], movies: ["filmes", "cinema"], other: [] },
   },
   en: {
     code: "en", tmdbLang: "en-US", region: "US", tz: "America/New_York", intl: "en-US",
@@ -63,6 +66,7 @@ const LANGS = {
       season: { tag: "NEW SEASON", label: "New season" },
       episode: { tag: "NEW EPISODE", label: "New episode" },
       streaming: { tag: "OUT NOW", label: "Premiered" },
+      movie: { tag: "IN THEATERS", label: "In theaters" },
     },
     ui: {
       whereLabel: "Where to watch", whereTbc: "to be confirmed", episodeLabel: "Episode", episodesLabel: "Episodes",
@@ -76,14 +80,16 @@ const LANGS = {
       episode: ({ title, season, episode, when }) => `New episode of ${title} ${when}: season ${season}, episode ${episode}.`,
       premiere: ({ title, when }) => `${title} premieres ${when}.`,
       streaming: ({ title }) => `${title} is out now.`,
+      movie: ({ title, when }) => `${title} hits theaters ${when}.`,
     },
+    theaters: "In theaters",
     whereCaption: " Where to watch: ",
     tail: "Will you watch? Tell us 👇 Link in bio.",
     tailTrending: "Are you watching? Tell us 👇 Link in bio.",
     warnPlatform: "Η πλατφόρμα δεν είναι ακόμα επιβεβαιωμένη στο TMDB — έλεγξε πριν ποστάρεις.",
     warnOverview: "Δεν υπάρχει αγγλική περίληψη.",
-    labels: { kdrama: "K-drama", cdrama: "C-drama", dorama: "Asian drama", anime: "Anime", turca: "Turkish drama", variedades: "K-variety", trending: "Trending", other: "Series" },
-    tags: { kdrama: ["kdrama"], cdrama: ["cdrama"], dorama: ["asiandrama"], anime: ["anime"], turca: ["turkishdrama", "dizi"], variedades: ["kvariety", "korea"], trending: ["tvshows"], other: [] },
+    labels: { kdrama: "K-drama", cdrama: "C-drama", dorama: "Asian drama", anime: "Anime", turca: "Turkish drama", variedades: "K-variety", trending: "Trending", movies: "Movies", other: "Series" },
+    tags: { kdrama: ["kdrama"], cdrama: ["cdrama"], dorama: ["asiandrama"], anime: ["anime"], turca: ["turkishdrama", "dizi"], variedades: ["kvariety", "korea"], trending: ["tvshows"], movies: ["movies", "cinema"], other: [] },
   },
 };
 const DEFAULT_LANG = "pt";
@@ -251,11 +257,11 @@ function toItem(detail, category, today, ev, L = LANGS.pt) {
   const titleTag = slugTag(title);
   // A hashtag cut in the middle of a word looks broken, so very long titles get none.
   if (titleTag && titleTag.length <= 24) tags.push(titleTag);
-  const platformTag = slugTag(platforms[0]);
+  const platformTag = category.key === "movies" ? "" : slugTag(platforms[0]);
   if (platformTag) tags.push(platformTag);
 
   const warnings = [];
-  if (!platforms.length) warnings.push(L.warnPlatform);
+  if (!platforms.length && ev.kind !== "movie") warnings.push(L.warnPlatform);
   if (!detail.overview) warnings.push(L.warnOverview);
 
   const args = { title, when, kind: ev.kind, season: ev.season, episode: ev.episode, L };
@@ -338,6 +344,39 @@ async function loadCategory(category, today, until, L) {
   }));
 
   return [...premiereItems, ...ongoingItems].filter(usable);
+}
+
+// Upcoming theatrical releases in the audience's region. TMDB's release_dates tells the real
+// date per country and type (2 limited, 3 theatrical); the card says "in theaters" because
+// where a film streams is usually unknown until later.
+const MOVIES = { key: "movies", exclude: [] };
+async function loadMovies(today, until, L) {
+  const found = await tmdbGet(`/discover/movie?language=${L.tmdbLang}&region=${L.region}&sort_by=popularity.desc&with_release_type=2|3&release_date.gte=${today}&release_date.lte=${until}`);
+  const picks = (found.results || []).slice(0, PER_CATEGORY);
+  const items = await mapPool(picks, 8, async (r) => {
+    try {
+      const d = await tmdbGet(`/movie/${r.id}?language=${L.tmdbLang}&append_to_response=release_dates,translations`);
+      const entry = (d.release_dates?.results || []).find((x) => x.iso_3166_1 === L.region);
+      const dates = (entry?.release_dates || [])
+        .filter((x) => (x.type === 2 || x.type === 3) && x.release_date)
+        .map((x) => x.release_date.slice(0, 10))
+        .filter((x) => x >= today && x <= until)
+        .sort();
+      if (!dates.length) return null;
+      // Same shape as a series, so the shared title, caption and card code applies.
+      const asShow = {
+        ...d,
+        name: d.title,
+        original_name: d.original_title,
+        first_air_date: dates[0],
+        origin_country: (d.production_countries || []).map((c) => c.iso_3166_1),
+        translations: { translations: (d.translations?.translations || []).map((t) => ({ ...t, data: { ...t.data, name: t.data?.title } })) },
+        "watch/providers": { results: { [L.region]: { flatrate: [{ provider_name: L.theaters, display_priority: 1 }] } } },
+      };
+      return toItem(asShow, MOVIES, today, { kind: "movie", date: dates[0] }, L);
+    } catch (e) { console.error(`release-cards: skipped movie ${r.id}:`, e.message); return null; }
+  });
+  return items.filter((i) => i && LATIN_ONLY.test(i.title));
 }
 
 // What people are watching this week (TMDB's global weekly trending list). Only titles with
@@ -440,7 +479,7 @@ async function buildReleaseCards(days, L) {
   const today = todayIn(L.tz);
   const until = addDays(today, days);
   const settled = await Promise.all(
-    [...CATEGORIES.map((c) => loadCategory(c, today, until, L)), loadTrending(today, until, L)].map((p) => p.catch((e) => {
+    [...CATEGORIES.map((c) => loadCategory(c, today, until, L)), loadTrending(today, until, L), loadMovies(today, until, L)].map((p) => p.catch((e) => {
       console.error(`release-cards: category failed:`, e.message);
       return [];
     }))
