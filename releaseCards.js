@@ -48,7 +48,7 @@ const LANGS = {
       streaming: ({ title }) => `${title} já está disponível.`,
       movie: ({ title, when }) => `${title} estreia nos cinemas ${when}.`,
     },
-    theaters: "Nos cinemas do Brasil",
+    theatersIn: (m) => `Nos cinemas · ${m}`,
     whereCaption: " Onde assistir: ",
     tail: "Vai ver? Conta pra gente 👇 Link na bio.",
     tailTrending: "Você está assistindo? Conta pra gente 👇 Link na bio.",
@@ -82,7 +82,7 @@ const LANGS = {
       streaming: ({ title }) => `${title} is out now.`,
       movie: ({ title, when }) => `${title} hits theaters ${when}.`,
     },
-    theaters: "In US theaters",
+    theatersIn: (m) => `In theaters · ${m}`,
     whereCaption: " Where to watch: ",
     tail: "Will you watch? Tell us 👇 Link in bio.",
     tailTrending: "Are you watching? Tell us 👇 Link in bio.",
@@ -93,6 +93,22 @@ const LANGS = {
   },
 };
 const DEFAULT_LANG = "pt";
+
+// Where the film opens is a separate choice from the card language: an English card can be for
+// Europe, a Portuguese one for Portugal. A market is one or more TMDB regions; for a group the
+// date is the earliest of its countries. "auto" = the language's own region.
+const MARKETS = {
+  eu: { countries: ["FR", "DE", "ES", "IT", "GB", "PT", "GR"], name: { pt: "Europa", en: "Europe" } },
+  us: { countries: ["US"], name: { pt: "EUA", en: "US" } },
+  br: { countries: ["BR"], name: { pt: "Brasil", en: "Brazil" } },
+  gb: { countries: ["GB"], name: { pt: "Reino Unido", en: "UK" } },
+  pt: { countries: ["PT"], name: { pt: "Portugal", en: "Portugal" } },
+  mx: { countries: ["MX"], name: { pt: "México", en: "Mexico" } },
+};
+const getMarket = (code, L) => {
+  const m = MARKETS[code] || MARKETS[L.region.toLowerCase()] || MARKETS.us;
+  return { code: MARKETS[code] ? code : L.region.toLowerCase(), countries: m.countries, name: m.name[L.code] };
+};
 const getLang = (code) => LANGS[code] || LANGS[DEFAULT_LANG];
 
 // TMDB genre ids: 16 Animation, 10764 Reality, 10767 Talk. Variety shows (e.g. Running Man) are
@@ -350,21 +366,29 @@ async function loadCategory(category, today, until, L) {
 // date per country and type (2 limited, 3 theatrical); the card says "in theaters" because
 // where a film streams is usually unknown until later.
 const MOVIES = { key: "movies", exclude: [] };
-async function loadMovies(today, until, L) {
-  const found = await tmdbGet(`/discover/movie?language=${L.tmdbLang}&region=${L.region}&sort_by=popularity.desc&with_release_type=2|3&release_date.gte=${today}&release_date.lte=${until}`);
-  const picks = (found.results || []).slice(0, PER_CATEGORY);
+async function loadMovies(today, until, L, M) {
+  // One discover call per country of the market; merge by film, most popular first.
+  const lists = await Promise.all(M.countries.map((c) =>
+    tmdbGet(`/discover/movie?language=${L.tmdbLang}&region=${c}&sort_by=popularity.desc&with_release_type=2|3&release_date.gte=${today}&release_date.lte=${until}`).catch(() => ({ results: [] }))));
+  const byId = new Map();
+  for (const r of lists.flatMap((l) => l.results || [])) if (!byId.has(r.id) || (byId.get(r.id).popularity || 0) < (r.popularity || 0)) byId.set(r.id, r);
+  const picks = [...byId.values()].sort((a, b) => (b.popularity || 0) - (a.popularity || 0)).slice(0, PER_CATEGORY);
   const items = await mapPool(picks, 8, async (r) => {
     try {
       const d = await tmdbGet(`/movie/${r.id}?language=${L.tmdbLang}&append_to_response=release_dates,translations`);
-      const entry = (d.release_dates?.results || []).find((x) => x.iso_3166_1 === L.region);
-      // Theatrical dates in this region, all of them (not just the window). If the first one is
-      // already in the past this is a re-release or a film that is already out: not news.
-      const all = (entry?.release_dates || [])
-        .filter((x) => (x.type === 2 || x.type === 3) && x.release_date)
-        .map((x) => x.release_date.slice(0, 10))
-        .sort();
-      if (!all.length || all[0] < today || all[0] > until) return null;
-      const dates = [all[0]];
+      // First theatrical date in each country of the market. If any is already in the past the
+      // film is a re-release or already out there: not news. The card date is the earliest.
+      const firsts = [];
+      for (const c of M.countries) {
+        const entry = (d.release_dates?.results || []).find((x) => x.iso_3166_1 === c);
+        const ds = (entry?.release_dates || [])
+          .filter((x) => (x.type === 2 || x.type === 3) && x.release_date)
+          .map((x) => x.release_date.slice(0, 10)).sort();
+        if (ds.length) firsts.push(ds[0]);
+      }
+      firsts.sort();
+      if (!firsts.length || firsts[0] < today || firsts[0] > until) return null;
+      const dates = [firsts[0]];
       // Same shape as a series, so the shared title, caption and card code applies.
       const asShow = {
         ...d,
@@ -373,7 +397,7 @@ async function loadMovies(today, until, L) {
         first_air_date: dates[0],
         origin_country: (d.production_countries || []).map((c) => c.iso_3166_1),
         translations: { translations: (d.translations?.translations || []).map((t) => ({ ...t, data: { ...t.data, name: t.data?.title } })) },
-        "watch/providers": { results: { [L.region]: { flatrate: [{ provider_name: L.theaters, display_priority: 1 }] } } },
+        "watch/providers": { results: { [L.region]: { flatrate: [{ provider_name: L.theatersIn(M.name), display_priority: 1 }] } } },
       };
       const item = toItem(asShow, MOVIES, today, { kind: "movie", date: dates[0] }, L);
       // Where in the world it opens first. A film that opens abroad a week or two earlier is
@@ -509,11 +533,11 @@ function uiFor(L) {
   return { ...L.ui, whereCaption: L.whereCaption, googleWhere: L.googleWhere, gl: L.gl, hl: L.hl };
 }
 
-async function buildReleaseCards(days, L) {
+async function buildReleaseCards(days, L, M) {
   const today = todayIn(L.tz);
   const until = addDays(today, days);
   const settled = await Promise.all(
-    [...CATEGORIES.map((c) => loadCategory(c, today, until, L)), loadTrending(today, until, L), loadMovies(today, until, L)].map((p) => p.catch((e) => {
+    [...CATEGORIES.map((c) => loadCategory(c, today, until, L)), loadTrending(today, until, L), loadMovies(today, until, L, M)].map((p) => p.catch((e) => {
       console.error(`release-cards: category failed:`, e.message);
       return [];
     }))
@@ -523,19 +547,20 @@ async function buildReleaseCards(days, L) {
   const items = settled.flat().sort((a, b) =>
     (b.platforms.length > 0) - (a.platforms.length > 0) || a.date.localeCompare(b.date) || a.title.localeCompare(b.title));
   return {
-    generatedAt: new Date().toISOString(), today, days, lang: L.code, region: L.region, items,
+    generatedAt: new Date().toISOString(), today, days, lang: L.code, region: L.region, market: M.code, items,
     ui: uiFor(L),
   };
 }
 
-async function getReleaseCards(days, langCode = DEFAULT_LANG) {
+async function getReleaseCards(days, langCode = DEFAULT_LANG, marketCode = "auto") {
   const L = getLang(langCode);
-  const key = `${L.code}:${days}`;
+  const M = getMarket(marketCode, L);
+  const key = `${L.code}:${M.code}:${days}`;
   const hit = cache.get(key);
   if (hit && hit.expiresAt > Date.now()) return hit.data;
   if (inflight.has(key)) return inflight.get(key);
 
-  const p = buildReleaseCards(days, L)
+  const p = buildReleaseCards(days, L, M)
     .then((data) => {
       // Don't cache an all-empty result: it usually means TMDB hiccuped.
       if (data.items.length) cache.set(key, { data, expiresAt: Date.now() + CACHE_TTL_MS });
@@ -585,7 +610,7 @@ function mountReleaseCards(app, asyncHandler) {
   app.get("/tools/release-cards.json", asyncHandler(async (req, res) => {
     const days = Math.min(30, Math.max(1, parseInt(req.query.days, 10) || 10));
     try {
-      const data = await getReleaseCards(days, req.query.lang === "en" ? "en" : "pt");
+      const data = await getReleaseCards(days, req.query.lang === "en" ? "en" : "pt", String(req.query.market || "auto"));
       res.setHeader("Cache-Control", "no-store");
       res.json(data);
     } catch (e) {

@@ -18,6 +18,8 @@
   var data = null;
   var langEl = document.getElementById("lang");
   var styleEl = document.getElementById("style");
+  var marketEl = document.getElementById("market");
+  if (marketEl) marketEl.addEventListener("change", function () { searchItems = null; load(); });
   if (styleEl) styleEl.addEventListener("change", function () { if (data || searchItems !== null) render(); });
   var ui = null; // card text for the current language, sent by the server with the data
   try { var savedLang = localStorage.getItem("rc_lang"); if (savedLang === "en" || savedLang === "pt") langEl.value = savedLang; } catch (e) { /* storage blocked: default stays */ }
@@ -51,7 +53,7 @@
     statusEl.textContent = "Φόρτωση…";
     statusEl.style.display = "block";
     grid.innerHTML = "";
-    fetch("/tools/release-cards.json?days=" + encodeURIComponent(daysEl.value) + "&lang=" + encodeURIComponent(langEl.value))
+    fetch("/tools/release-cards.json?days=" + encodeURIComponent(daysEl.value) + "&lang=" + encodeURIComponent(langEl.value) + "&market=" + encodeURIComponent(marketEl ? marketEl.value : "auto"))
       .then(function (r) { return r.json().then(function (j) { if (!r.ok) throw new Error(j.error || "Σφάλμα"); return j; }); })
       .then(function (j) { data = j; ui = j.ui; renderFilters(); render(); })
       .catch(function (e) { statusEl.textContent = "Δεν φορτώθηκε: " + e.message; });
