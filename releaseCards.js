@@ -387,6 +387,14 @@ async function loadMovies(today, until, L) {
           }
         }
       }
+      // Opening dates in the countries that matter for this audience, for the page to show.
+      const WATCH = ["US", "GB", "FR", "DE", "ES", "IT", "PT", "BR", "MX", "GR", "TR", "JP", "KR"];
+      item.openingDates = {};
+      for (const c of d.release_dates?.results || []) {
+        if (!WATCH.includes(c.iso_3166_1)) continue;
+        const ds = (c.release_dates || []).filter((x) => (x.type === 2 || x.type === 3) && x.release_date).map((x) => x.release_date.slice(0, 10)).sort();
+        if (ds.length) item.openingDates[c.iso_3166_1] = ds[0];
+      }
       if (first) {
         const daysEarlier = Math.max(0, daysBetween(first.date, dates[0]));
         let countryName = first.country;

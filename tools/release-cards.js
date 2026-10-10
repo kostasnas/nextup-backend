@@ -118,6 +118,13 @@
     var score = item.rating !== null ? "★ " + item.rating + " (" + item.votes + " ψήφοι)" : "χωρίς βαθμολογία ακόμα";
     meta.textContent = item.categoryLabel + " · " + item.dateLong + " · " + score + " · δημοφιλία " + item.popularity;
     if (item.firstRelease) meta.textContent += " · πρώτη προβολή: " + item.firstRelease.countryName + " " + item.firstRelease.date;
+    if (item.openingDates && Object.keys(item.openingDates).length) {
+      var od = document.createElement("div"); od.className = "meta";
+      od.textContent = "Ημερομηνίες σε σινεμά: " + Object.keys(item.openingDates)
+        .sort(function (a, b) { return item.openingDates[a].localeCompare(item.openingDates[b]); })
+        .map(function (c) { return c + " " + item.openingDates[c].slice(8) + "/" + item.openingDates[c].slice(5, 7); }).join(" · ");
+      el.appendChild(od);
+    }
     el.appendChild(meta);
 
     // One tap to see where it streams in Brazil, instead of typing the title.
