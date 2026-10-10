@@ -48,10 +48,11 @@ const LANGS = {
     },
     whereCaption: " Onde assistir: ",
     tail: "Vai ver? Conta pra gente 👇 Link na bio.",
+    tailTrending: "Você está assistindo? Conta pra gente 👇 Link na bio.",
     warnPlatform: "Η πλατφόρμα δεν είναι ακόμα επιβεβαιωμένη στο TMDB — έλεγξε πριν ποστάρεις.",
     warnOverview: "Δεν υπάρχει περίληψη στα πορτογαλικά.",
-    labels: { kdrama: "K-drama", cdrama: "C-drama", dorama: "Dorama", anime: "Anime", turca: "Novela turca", variedades: "Variedades", other: "Série" },
-    tags: { kdrama: ["dorama", "kdrama"], cdrama: ["dorama", "cdrama"], dorama: ["dorama"], anime: ["anime"], turca: ["novelaturca", "diziturca"], variedades: ["variedades", "coreia"], other: [] },
+    labels: { kdrama: "K-drama", cdrama: "C-drama", dorama: "Dorama", anime: "Anime", turca: "Novela turca", variedades: "Variedades", trending: "Em alta", other: "Série" },
+    tags: { kdrama: ["dorama", "kdrama"], cdrama: ["dorama", "cdrama"], dorama: ["dorama"], anime: ["anime"], turca: ["novelaturca", "diziturca"], variedades: ["variedades", "coreia"], trending: ["series"], other: [] },
   },
   en: {
     code: "en", tmdbLang: "en-US", region: "US", tz: "America/New_York", intl: "en-US",
@@ -78,10 +79,11 @@ const LANGS = {
     },
     whereCaption: " Where to watch: ",
     tail: "Will you watch? Tell us 👇 Link in bio.",
+    tailTrending: "Are you watching? Tell us 👇 Link in bio.",
     warnPlatform: "Η πλατφόρμα δεν είναι ακόμα επιβεβαιωμένη στο TMDB — έλεγξε πριν ποστάρεις.",
     warnOverview: "Δεν υπάρχει αγγλική περίληψη.",
-    labels: { kdrama: "K-drama", cdrama: "C-drama", dorama: "Asian drama", anime: "Anime", turca: "Turkish drama", variedades: "K-variety", other: "Series" },
-    tags: { kdrama: ["kdrama"], cdrama: ["cdrama"], dorama: ["asiandrama"], anime: ["anime"], turca: ["turkishdrama", "dizi"], variedades: ["kvariety", "korea"], other: [] },
+    labels: { kdrama: "K-drama", cdrama: "C-drama", dorama: "Asian drama", anime: "Anime", turca: "Turkish drama", variedades: "K-variety", trending: "Trending", other: "Series" },
+    tags: { kdrama: ["kdrama"], cdrama: ["cdrama"], dorama: ["asiandrama"], anime: ["anime"], turca: ["turkishdrama", "dizi"], variedades: ["kvariety", "korea"], trending: ["tvshows"], other: [] },
   },
 };
 const DEFAULT_LANG = "pt";
@@ -181,10 +183,10 @@ function captionHead({ title, when, kind = "premiere", season, episode, L = LANG
 }
 
 // The caption in three pieces, so the page can offer the synopsis as an option.
-function captionParts({ title, when, platforms, overview, tags, kind = "premiere", season, episode, L = LANGS.pt }) {
+function captionParts({ title, when, platforms, overview, tags, kind = "premiere", season, episode, L = LANGS.pt, trending = false }) {
   const where = platforms.length ? `${L.whereCaption}${platforms.join(", ")}.` : "";
   const head = `${captionHead({ title, when, kind, season, episode, L })}${where}`;
-  const tail = `\n\n${L.tail}\n${tags.map((t) => `#${t}`).join(" ")}`;
+  const tail = `\n\n${trending ? L.tailTrending : L.tail}\n${tags.map((t) => `#${t}`).join(" ")}`;
 
   let synopsis = firstSentence(overview);
   // TMDB overviews often start with the title itself ("X is a remake…"): the caption
@@ -257,7 +259,7 @@ function toItem(detail, category, today, ev, L = LANGS.pt) {
   if (!detail.overview) warnings.push(L.warnOverview);
 
   const args = { title, when, kind: ev.kind, season: ev.season, episode: ev.episode, L };
-  const cp = captionParts({ ...args, platforms, overview: detail.overview, tags });
+  const cp = captionParts({ ...args, platforms, overview: detail.overview, tags, trending: category.key === "trending" });
   return {
     id: detail.id,
     title,
@@ -338,6 +340,36 @@ async function loadCategory(category, today, until, L) {
   return [...premiereItems, ...ongoingItems].filter(usable);
 }
 
+// What people are watching this week (TMDB's global weekly trending list). Only titles with
+// something to say on the card: an episode or a premiere in the window, or a very recent release.
+// Titles that already belong to one of the Asian lists are left to those lists.
+const TRENDING = { key: "trending", exclude: [10763, 10766, 10767] };
+const OWN_LIST_COUNTRIES = ["KR", "CN", "JP", "TH", "TW", "TR"];
+async function loadTrending(today, until, L) {
+  const t = await tmdbGet(`/trending/tv/week?language=${L.tmdbLang}`);
+  const picks = (t.results || []).slice(0, 20);
+  const recent = addDays(today, -21);
+  const items = await mapPool(picks, 8, async (r) => {
+    try {
+      if ((r.origin_country || []).some((c) => OWN_LIST_COUNTRIES.includes(c))) return null;
+      const d = await tmdbGet(`/tv/${r.id}?language=${L.tmdbLang}&append_to_response=watch/providers,translations`);
+      const ne = d.next_episode_to_air;
+      if (ne && ne.air_date && ne.season_number >= 1 && ne.air_date >= today && ne.air_date <= until) {
+        const kind = ne.episode_number === 1 && ne.season_number > 1 ? "season" : "episode";
+        return toItem(d, TRENDING, today, { kind, date: ne.air_date, season: ne.season_number, episode: ne.episode_number }, L);
+      }
+      if (d.first_air_date && d.first_air_date >= today && d.first_air_date <= until) {
+        return toItem(d, TRENDING, today, { kind: "premiere", date: d.first_air_date }, L);
+      }
+      if (d.first_air_date && d.first_air_date >= recent && d.first_air_date < today) {
+        return toItem(d, TRENDING, today, { kind: "streaming", date: d.first_air_date }, L);
+      }
+      return null;
+    } catch (e) { console.error(`release-cards: skipped trending ${r.id}:`, e.message); return null; }
+  });
+  return items.filter((i) => i && LATIN_ONLY.test(i.title) && !TRENDING.exclude.some((g) => i.genreIds.includes(g)));
+}
+
 // Which of our categories a title belongs to, from TMDB's own country and genre data
 // (used by the title search, where the title did not come out of a category list).
 function categoryFor(detail) {
@@ -408,8 +440,8 @@ async function buildReleaseCards(days, L) {
   const today = todayIn(L.tz);
   const until = addDays(today, days);
   const settled = await Promise.all(
-    CATEGORIES.map((c) => loadCategory(c, today, until, L).catch((e) => {
-      console.error(`release-cards: category ${c.key} failed:`, e.message);
+    [...CATEGORIES.map((c) => loadCategory(c, today, until, L)), loadTrending(today, until, L)].map((p) => p.catch((e) => {
+      console.error(`release-cards: category failed:`, e.message);
       return [];
     }))
   );
