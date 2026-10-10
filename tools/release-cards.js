@@ -17,6 +17,8 @@
   var sortKey = "popularity";
   var data = null;
   var langEl = document.getElementById("lang");
+  var styleEl = document.getElementById("style");
+  if (styleEl) styleEl.addEventListener("change", function () { if (data || searchItems !== null) render(); });
   var ui = null; // card text for the current language, sent by the server with the data
   try { var savedLang = localStorage.getItem("rc_lang"); if (savedLang === "en" || savedLang === "pt") langEl.value = savedLang; } catch (e) { /* storage blocked: default stays */ }
   var qEl = document.getElementById("q");
@@ -328,6 +330,7 @@
   function redraw(canvas, item) { paint(canvas.getContext("2d"), item, item._poster || null); }
 
   function paint(ctx, item, poster) {
+    if (styleEl && styleEl.value === "b") return paintB(ctx, item, poster);
     ctx.clearRect(0, 0, W, H);
 
     // background
@@ -414,6 +417,90 @@
     ctx.font = "500 20px " + FONT;
     ctx.fillStyle = "rgba(255,255,255,0.4)";
     ctx.fillText(ui.credit, W - 90, H - 24);
+    ctx.textAlign = "left";
+  }
+
+  // Style B: the poster fills the whole card and the date is the hero, in big letters
+  // that stay readable when the card is shown small in a feed.
+  function paintB(ctx, item, poster) {
+    ctx.clearRect(0, 0, W, H);
+    ctx.fillStyle = "#0e0f14";
+    ctx.fillRect(0, 0, W, H);
+    if (poster) drawCover(ctx, poster, 0, 0, W, H);
+    else {
+      var fb = ctx.createLinearGradient(0, 0, W, H);
+      fb.addColorStop(0, "#241a4a"); fb.addColorStop(1, "#4a1d3f");
+      ctx.fillStyle = fb; ctx.fillRect(0, 0, W, H);
+    }
+    var top = ctx.createLinearGradient(0, 0, 0, 280);
+    top.addColorStop(0, "rgba(8,8,12,0.70)"); top.addColorStop(1, "rgba(8,8,12,0)");
+    ctx.fillStyle = top; ctx.fillRect(0, 0, W, 280);
+    var bot = ctx.createLinearGradient(0, H * 0.28, 0, H);
+    bot.addColorStop(0, "rgba(8,8,12,0)"); bot.addColorStop(0.5, "rgba(8,8,12,0.80)"); bot.addColorStop(1, "rgba(8,8,12,0.97)");
+    ctx.fillStyle = bot; ctx.fillRect(0, H * 0.28, W, H * 0.72);
+
+    // category chip (top left) and brand (top right)
+    ctx.font = "800 30px " + FONT;
+    var label = item.categoryLabel.toUpperCase();
+    var cw = ctx.measureText(label).width + 52;
+    ctx.fillStyle = ACCENT;
+    roundRect(ctx, 70, 64, cw, 60, 30); ctx.fill();
+    ctx.fillStyle = "#1a1405";
+    ctx.textBaseline = "middle"; ctx.textAlign = "left";
+    ctx.fillText(label, 96, 95);
+    ctx.textAlign = "right";
+    ctx.fillStyle = "#ffffff";
+    ctx.font = "800 40px " + FONT;
+    ctx.fillText("Scenera", W - 70, 95);
+    ctx.textAlign = "left";
+    ctx.textBaseline = "alphabetic";
+
+    ctx.save();
+    ctx.shadowColor = "rgba(0,0,0,0.65)"; ctx.shadowBlur = 22; ctx.shadowOffsetY = 4;
+
+    // ---- bottom-up layout ----
+    var maxW = W - 140;
+    var hasPlat = item.platforms.length > 0;
+    var platText = hasPlat ? item.platforms.join(" · ") : ui.whereTbc;
+    ctx.font = "700 46px " + FONT;
+    var platLines = platText ? wrapLines(ctx, platText, maxW).slice(0, 2) : [];
+    var platLast = H - 130;
+    var platFirst = platLast - Math.max(0, platLines.length - 1) * 56;
+    var t = fitTitle(ctx, item.title, maxW, 2, 84, 52);
+    var lh = t.size * 1.08;
+    var titleLast = platFirst - 84;
+    var titleFirst = titleLast - (t.lines.length - 1) * lh;
+
+    // hero: weekday / TODAY / TOMORROW (or OUT NOW), then the date
+    var streaming = item.kind === "streaming";
+    var heroText = streaming ? item.kindTag : item.when.replace(/\s*\(.*\)/, "").toUpperCase();
+    var dm = item.when.match(/\((.*)\)/);
+    var dateLine = dm ? dm[1].toUpperCase() : "";
+    var heroSize = 160;
+    for (; heroSize > 70; heroSize -= 6) { ctx.font = "900 " + heroSize + "px " + FONT; if (ctx.measureText(heroText).width <= maxW) break; }
+    var dateBase = titleFirst - t.size - 30;
+    var heroBase = dateLine ? dateBase - 92 : dateBase - 4;
+    var kindBase = heroBase - heroSize * 0.82 - 26;
+
+    if (!streaming) {
+      ctx.font = "800 42px " + FONT; ctx.fillStyle = ACCENT;
+      ctx.fillText(item.kindTag, 70, kindBase);
+    }
+    ctx.font = "900 " + heroSize + "px " + FONT; ctx.fillStyle = "#ffffff";
+    ctx.fillText(heroText, 70, heroBase);
+    if (dateLine) { ctx.font = "800 76px " + FONT; ctx.fillStyle = ACCENT; ctx.fillText(dateLine, 70, dateBase); }
+
+    ctx.font = "800 " + t.size + "px " + FONT; ctx.fillStyle = "#ffffff";
+    t.lines.forEach(function (ln, i) { ctx.fillText(ln, 70, titleFirst + i * lh); });
+
+    ctx.font = "700 46px " + FONT; ctx.fillStyle = hasPlat ? "#f4f4f7" : "rgba(244,244,247,0.6)";
+    platLines.forEach(function (ln, i) { ctx.fillText(ln, 70, platFirst + i * 56); });
+    ctx.restore();
+
+    // credit line
+    ctx.textAlign = "right"; ctx.fillStyle = "rgba(255,255,255,0.45)";
+    ctx.font = "500 22px " + FONT;
+    ctx.fillText(ui.credit, W - 70, H - 36);
     ctx.textAlign = "left";
   }
 
