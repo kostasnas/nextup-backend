@@ -357,12 +357,14 @@ async function loadMovies(today, until, L) {
     try {
       const d = await tmdbGet(`/movie/${r.id}?language=${L.tmdbLang}&append_to_response=release_dates,translations`);
       const entry = (d.release_dates?.results || []).find((x) => x.iso_3166_1 === L.region);
-      const dates = (entry?.release_dates || [])
+      // Theatrical dates in this region, all of them (not just the window). If the first one is
+      // already in the past this is a re-release or a film that is already out: not news.
+      const all = (entry?.release_dates || [])
         .filter((x) => (x.type === 2 || x.type === 3) && x.release_date)
         .map((x) => x.release_date.slice(0, 10))
-        .filter((x) => x >= today && x <= until)
         .sort();
-      if (!dates.length) return null;
+      if (!all.length || all[0] < today || all[0] > until) return null;
+      const dates = [all[0]];
       // Same shape as a series, so the shared title, caption and card code applies.
       const asShow = {
         ...d,
