@@ -57,7 +57,7 @@
       .catch(function (e) { statusEl.textContent = "Δεν φορτώθηκε: " + e.message; });
   }
 
-  var KIND_CHIPS = [["all", "Όλα"], ["premiere", "Πρεμιέρες"], ["season", "Νέες σεζόν"], ["episode", "Νέα επεισόδια"]];
+  var KIND_CHIPS = [["all", "Όλα"], ["premiere", "Πρεμιέρες"], ["season", "Νέες σεζόν"], ["episode", "Νέα επεισόδια"], ["movie", "Ταινίες σε σινεμά"], ["movie_world", "Ταινίες: πρώτη προβολή εδώ"]];
 
   function renderFilters() {
     var searching = searchItems !== null;
@@ -90,7 +90,7 @@
     grid.innerHTML = "";
     var searching = searchItems !== null;
     var items = (searching ? searchItems : data.items).filter(function (it) {
-      return searching || ((activeCategory === "all" || it.category === activeCategory) && (activeKind === "all" || it.kind === activeKind));
+      return searching || ((activeCategory === "all" || it.category === activeCategory) && (activeKind === "all" || it.kind === activeKind || (activeKind === "movie_world" && it.kind === "movie" && it.worldPremiere)));
     });
     if (!searching) items.sort(function (a, b) {
       if (sortKey === "rating") return (b.rating || 0) - (a.rating || 0) || b.popularity - a.popularity;
@@ -117,6 +117,7 @@
     meta.className = "meta";
     var score = item.rating !== null ? "★ " + item.rating + " (" + item.votes + " ψήφοι)" : "χωρίς βαθμολογία ακόμα";
     meta.textContent = item.categoryLabel + " · " + item.dateLong + " · " + score + " · δημοφιλία " + item.popularity;
+    if (item.firstRelease) meta.textContent += " · πρώτη προβολή: " + item.firstRelease.countryName + " " + item.firstRelease.date;
     el.appendChild(meta);
 
     // One tap to see where it streams in Brazil, instead of typing the title.

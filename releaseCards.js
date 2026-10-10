@@ -375,7 +375,31 @@ async function loadMovies(today, until, L) {
         translations: { translations: (d.translations?.translations || []).map((t) => ({ ...t, data: { ...t.data, name: t.data?.title } })) },
         "watch/providers": { results: { [L.region]: { flatrate: [{ provider_name: L.theaters, display_priority: 1 }] } } },
       };
-      return toItem(asShow, MOVIES, today, { kind: "movie", date: dates[0] }, L);
+      const item = toItem(asShow, MOVIES, today, { kind: "movie", date: dates[0] }, L);
+      // Where in the world it opens first. A film that opens abroad a week or two earlier is
+      // news for a different audience, so the page shows it and can filter on it.
+      let first = null;
+      for (const c of d.release_dates?.results || []) {
+        for (const x of c.release_dates || []) {
+          if ((x.type === 2 || x.type === 3) && x.release_date) {
+            const dd = x.release_date.slice(0, 10);
+            if (!first || dd < first.date) first = { country: c.iso_3166_1, date: dd };
+          }
+        }
+      }
+      if (first) {
+        const daysEarlier = Math.max(0, daysBetween(first.date, dates[0]));
+        let countryName = first.country;
+        try { countryName = new Intl.DisplayNames(["en"], { type: "region" }).of(first.country) || first.country; } catch { /* keep the code */ }
+        item.firstRelease = { country: first.country, countryName, date: first.date, daysEarlier };
+        item.worldPremiere = daysEarlier <= 2;
+        if (daysEarlier > 2) {
+          item.warnings.push(`Βγαίνει πρώτα στη χώρα: ${countryName} (${first.date}, ${daysEarlier} μέρες νωρίτερα). Εδώ είναι νέα, όχι παγκόσμια πρεμιέρα.`);
+        }
+      } else {
+        item.worldPremiere = true;
+      }
+      return item;
     } catch (e) { console.error(`release-cards: skipped movie ${r.id}:`, e.message); return null; }
   });
   return items.filter((i) => i && LATIN_ONLY.test(i.title));
