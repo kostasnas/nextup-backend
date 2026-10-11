@@ -50,6 +50,7 @@ async function sendBroadcastNotification(supabase, { title, body, test_user_id, 
   const batches = chunk(tokens, MAX_TOKENS_PER_BATCH);
   let successCount = 0;
   let failureCount = 0;
+  const errorCodes = {}; // why sends failed, e.g. messaging/registration-token-not-registered
 
   for (const batch of batches) {
     try {
@@ -64,13 +65,21 @@ async function sendBroadcastNotification(supabase, { title, body, test_user_id, 
       });
       successCount += result.successCount;
       failureCount += result.failureCount;
+      for (const r of result.responses || []) {
+        if (!r.success) {
+          const code = r.error?.code || "unknown";
+          errorCodes[code] = (errorCodes[code] || 0) + 1;
+        }
+      }
     } catch (err) {
       console.error("Broadcast batch failed:", err.message);
       failureCount += batch.length;
+      errorCodes[err.code || "batch_error"] = (errorCodes[err.code || "batch_error"] || 0) + batch.length;
     }
   }
 
-  return { devicesTargeted: tokens.length, batches: batches.length, successCount, failureCount };
+  if (failureCount) console.error("Broadcast failures by reason:", JSON.stringify(errorCodes));
+  return { devicesTargeted: tokens.length, batches: batches.length, successCount, failureCount, ...(failureCount ? { errorCodes } : {}) };
 }
 
 module.exports = { sendBroadcastNotification };
