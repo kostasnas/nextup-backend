@@ -6,7 +6,7 @@
 // the other /admin endpoints.
 
 const admin = require("firebase-admin");
-const { ensureInitialized } = require("./pushNotifications");
+const { ensureInitialized, pruneDeadTokens } = require("./pushNotifications");
 const { getUsersCreatedSince } = require("./db");
 
 const MAX_TOKENS_PER_BATCH = 500; // same FCM limit broadcastNotification.js works around
@@ -50,6 +50,7 @@ async function sendWelcomeMessages(supabase, { days = 3 } = {}) {
       });
       successCount += result.successCount;
       failureCount += result.failureCount;
+      await pruneDeadTokens(supabase, batch, result);
     } catch (err) {
       console.error("Welcome push batch failed:", err.message);
       failureCount += batch.length;

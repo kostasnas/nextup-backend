@@ -6,7 +6,7 @@
 // not just for this one update.
 
 const admin = require("firebase-admin");
-const { ensureInitialized } = require("./pushNotifications");
+const { ensureInitialized, pruneDeadTokens } = require("./pushNotifications");
 
 // FCM's sendEachForMulticast accepts at most 500 tokens per call —
 // chunk defensively in case the user base ever grows past that.
@@ -65,6 +65,7 @@ async function sendBroadcastNotification(supabase, { title, body, test_user_id, 
       });
       successCount += result.successCount;
       failureCount += result.failureCount;
+      await pruneDeadTokens(supabase, batch, result);
       for (const r of result.responses || []) {
         if (!r.success) {
           const code = r.error?.code || "unknown";

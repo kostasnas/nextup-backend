@@ -26,6 +26,28 @@ function ensureInitialized() {
 // manifest default is only a fallback for messages that omit this.
 // "ic_stat_name" must match the drawable resource created via
 // Android Studio's Image Asset tool (Notification Icons / Image type).
+
+// FCM says "registration-token-not-registered" once the app is uninstalled (or its data cleared).
+// Those tokens can never receive anything again, so drop them: it keeps the counts honest and
+// stops every future send from trying them. Only that exact code is removed; any other failure
+// (network, quota, bad payload) is left alone because the token may be fine.
+async function pruneDeadTokens(supabase, tokens, result) {
+  try {
+    const dead = [];
+    (result?.responses || []).forEach((r, i) => {
+      if (!r.success && r.error?.code === "messaging/registration-token-not-registered" && tokens[i]) dead.push(tokens[i]);
+    });
+    if (dead.length) {
+      await supabase.from("push_tokens").delete().in("token", dead);
+      console.log(`Pruned ${dead.length} dead push token(s)`);
+    }
+    return dead.length;
+  } catch (e) {
+    console.error("Failed to prune dead push tokens:", e.message);
+    return 0;
+  }
+}
+
 const ANDROID_NOTIFICATION_STYLE = {
   notification: {
     icon: "ic_stat_name",
@@ -105,11 +127,12 @@ async function sendDailyUpcomingNotifications(supabase) {
     const image = posterPath ? `https://image.tmdb.org/t/p/w500${posterPath}` : undefined;
 
     try {
-      await admin.messaging().sendEachForMulticast({
+      const sent = await admin.messaging().sendEachForMulticast({
         tokens,
         notification: { title: "New episode ready to watch", body, imageUrl: image },
         android: ANDROID_NOTIFICATION_STYLE,
       });
+      await pruneDeadTokens(supabase, tokens, sent);
       notifiedUsers++;
     } catch (err) {
       console.error(`Push send failed for user ${userId}:`, err.message);
@@ -227,11 +250,12 @@ async function checkUpcomingPremieres(supabase) {
       const tokens = tokensByUser.get(userId);
       if (!tokens || tokens.length === 0) continue;
       try {
-        await admin.messaging().sendEachForMulticast({
+        const sent = await admin.messaging().sendEachForMulticast({
           tokens,
           notification: { title, body, imageUrl: image },
           android: ANDROID_NOTIFICATION_STYLE,
         });
+        await pruneDeadTokens(supabase, tokens, sent);
         usersNotified++;
       } catch (err) {
         console.error(`Premiere notification failed for user ${userId}:`, err.message);
@@ -288,6 +312,7 @@ async function sendDailyEngagementNudge(supabase) {
       notification: { title: message.title, body: message.body },
       android: ANDROID_NOTIFICATION_STYLE,
     });
+    await pruneDeadTokens(supabase, tokens, result);
     return { devicesTargeted: tokens.length, successCount: result.successCount, failureCount: result.failureCount };
   } catch (err) {
     console.error("Daily engagement nudge failed:", err.message);
@@ -315,6 +340,7 @@ async function sendPushToUser(supabase, userId, { title, body, imageUrl, data })
       data, // FCM requires string values only — callers must pass plain strings
       android: ANDROID_NOTIFICATION_STYLE,
     });
+    await pruneDeadTokens(supabase, tokens, result);
     return { devicesTargeted: tokens.length, successCount: result.successCount, failureCount: result.failureCount };
   } catch (err) {
     console.error(`Push send failed for user ${userId}:`, err.message);
@@ -322,4 +348,4 @@ async function sendPushToUser(supabase, userId, { title, body, imageUrl, data })
   }
 }
 
-module.exports = { sendDailyUpcomingNotifications, checkUpcomingPremieres, sendDailyEngagementNudge, sendPushToUser, ensureInitialized };
+module.exports = { sendDailyUpcomingNotifications, checkUpcomingPremieres, sendDailyEngagementNudge, sendPushToUser, ensureInitialized, pruneDeadTokens };
