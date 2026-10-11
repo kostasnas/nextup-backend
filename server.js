@@ -213,6 +213,51 @@ app.get("/movies/:id/watch-providers", asyncHandler(async (req, res) => {
 // theme/accent/language, see i18n.jsx), which this endpoint has no
 // reason to know about; the frontend already has it from the session
 // and does the matching client-side.
+// "Remaining: N episodes · ~X hours" for the shows the person is watching: aired (air_date up to
+// today), non-special, not yet watched. Shows whose episode list was never synced simply have
+// nothing here, so no number is shown rather than a wrong one. Uses the show's average runtime
+// (TMDB), with a typical 42 minutes when TMDB has none.
+app.get("/watchlist/remaining", requireAuth, asyncHandler(async (req, res) => {
+  const DEFAULT_EPISODE_MINUTES = 42;
+  const today = new Date().toISOString().slice(0, 10);
+
+  const { data: watching, error: wErr } = await supabase
+    .from("user_watchlist").select("shows(id, avg_episode_runtime)")
+    .eq("user_id", req.userId).eq("status", "watching");
+  if (wErr) throw wErr;
+  const runtimes = new Map();
+  for (const r of watching || []) if (r.shows?.id) runtimes.set(r.shows.id, r.shows.avg_episode_runtime || DEFAULT_EPISODE_MINUTES);
+  const showIds = [...runtimes.keys()];
+  if (showIds.length === 0) return res.json({});
+
+  // Supabase returns at most 1000 rows per request, so read page by page.
+  async function readAll(makeQuery) {
+    const rows = [];
+    for (let from = 0; ; from += 1000) {
+      const { data, error } = await makeQuery().range(from, from + 999);
+      if (error) throw error;
+      rows.push(...(data || []));
+      if (!data || data.length < 1000) break;
+    }
+    return rows;
+  }
+
+  const [aired, watchedRows] = await Promise.all([
+    readAll(() => supabase.from("episodes").select("id, show_id").in("show_id", showIds).gt("season_number", 0).lte("air_date", today).order("id")),
+    readAll(() => supabase.from("watched_episodes").select("episode_id").eq("user_id", req.userId).order("episode_id")),
+  ]);
+  const watchedIds = new Set(watchedRows.map((w) => w.episode_id));
+
+  const out = {};
+  for (const ep of aired) {
+    if (watchedIds.has(ep.id)) continue;
+    const o = out[ep.show_id] || (out[ep.show_id] = { remaining: 0, minutes: 0 });
+    o.remaining += 1;
+    o.minutes += runtimes.get(ep.show_id);
+  }
+  res.json(out);
+}));
+
 app.get("/watchlist/availability", requireAuth, asyncHandler(async (req, res) => {
   const region = (req.query.region || "US").toUpperCase();
 
