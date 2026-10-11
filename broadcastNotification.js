@@ -18,7 +18,7 @@ function chunk(array, size) {
   return out;
 }
 
-async function sendBroadcastNotification(supabase, { title, body, test_user_id, data }) {
+async function sendBroadcastNotification(supabase, { title, body, test_user_id, user_ids, data }) {
   ensureInitialized();
 
   if (!title || !body) {
@@ -31,6 +31,16 @@ async function sendBroadcastNotification(supabase, { title, body, test_user_id, 
   // use this to preview a broadcast before firing it at every tester.
   let query = supabase.from("push_tokens").select("token");
   if (test_user_id) query = query.eq("user_id", test_user_id);
+  // user_ids sends to a small chosen group in one call (e.g. a feedback request to 3 people).
+  // An empty list must not fall through to "everyone".
+  if (user_ids !== undefined) {
+    if (!Array.isArray(user_ids) || user_ids.length === 0 || user_ids.length > 200 || user_ids.some((u) => typeof u !== "string")) {
+      const err = new Error("user_ids must be a non-empty array of up to 200 user id strings");
+      err.status = 400;
+      throw err;
+    }
+    query = query.in("user_id", user_ids);
+  }
   const { data: tokenRows, error } = await query;
   if (error) throw error;
 
