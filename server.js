@@ -635,6 +635,15 @@ app.post("/feature-requests", requireAuth, asyncHandler(async (req, res) => {
   if (title.length > 140) return res.status(400).json({ error: "title must be 140 characters or fewer" });
   if (description.length > 1000) return res.status(400).json({ error: "description must be 1000 characters or fewer" });
   const created = await createFeatureRequest(supabase, req.userId, title, description);
+
+  // Tell the developer a new suggestion arrived (the board has no admin UI, so otherwise nobody
+  // would see it until they opened the table). Fire-and-forget: never block or fail the user's post.
+  const adminId = process.env.ADMIN_USER_ID || "47d65eeb-e49b-4854-a5e4-64b468541886";
+  sendPushToUser(supabase, adminId, {
+    title: "New feature request",
+    body: title.slice(0, 120),
+  }).catch((e) => console.error("Failed to notify admin of feature request:", e.message));
+
   res.json(created);
 }));
 
