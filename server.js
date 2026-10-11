@@ -2889,7 +2889,17 @@ app.post("/admin/backfill-movie-posters", backfillMoviePostersHandler);
 // reusable for announcements like "new version available", not tied
 // to any show/episode. Title and body are supplied in the request
 // body, e.g.: { "title": "Update available", "body": "..." }
-const { sendBroadcastNotification } = require("./broadcastNotification");
+const { sendBroadcastNotification, checkTokenHealth } = require("./broadcastNotification");
+// Counts how many users still have a working push token (a dry run, nothing is sent) and removes
+// the dead ones. Same secret as the other admin routes.
+app.post("/admin/push-health", asyncHandler(async (req, res) => {
+  const providedSecret = req.headers["x-cron-secret"];
+  if (!process.env.CRON_SECRET || providedSecret !== process.env.CRON_SECRET) {
+    return res.status(401).json({ error: "Unauthorized" });
+  }
+  res.json(await checkTokenHealth(supabase));
+}));
+
 app.post("/admin/broadcast", asyncHandler(async (req, res) => {
   const providedSecret = req.headers["x-cron-secret"];
   if (!process.env.CRON_SECRET || providedSecret !== process.env.CRON_SECRET) {

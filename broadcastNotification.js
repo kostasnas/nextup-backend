@@ -83,4 +83,37 @@ async function sendBroadcastNotification(supabase, { title, body, test_user_id, 
   return { devicesTargeted: tokens.length, batches: batches.length, successCount, failureCount, ...(failureCount ? { errorCodes } : {}) };
 }
 
-module.exports = { sendBroadcastNotification };
+
+// How many people still have the app? Validates every stored push token with an FCM dry run
+// (nothing is delivered). Uninstalled apps report "not registered" and are pruned as a side
+// effect. Undercounts people who never allowed notifications (they have no token at all).
+async function checkTokenHealth(supabase) {
+  ensureInitialized();
+  const rows = [];
+  for (let from = 0; ; from += 1000) {
+    const { data, error } = await supabase.from("push_tokens").select("user_id, token").range(from, from + 999);
+    if (error) throw error;
+    rows.push(...(data || []));
+    if (!data || data.length < 1000) break;
+  }
+  const byToken = new Map(); // token -> user_id
+  for (const r of rows) byToken.set(r.token, r.user_id);
+  const tokens = [...byToken.keys()];
+  const validUsers = new Set();
+  const allUsers = new Set(rows.map((r) => r.user_id));
+  let valid = 0;
+  let dead = 0;
+  let other = 0;
+  for (const batch of chunk(tokens, MAX_TOKENS_PER_BATCH)) {
+    const result = await admin.messaging().sendEachForMulticast({ tokens: batch, notification: { title: "check", body: "check" } }, true);
+    result.responses.forEach((r, i) => {
+      if (r.success) { valid++; validUsers.add(byToken.get(batch[i])); }
+      else if (r.error?.code === "messaging/registration-token-not-registered") dead++;
+      else other++;
+    });
+    await pruneDeadTokens(supabase, batch, result);
+  }
+  return { tokensChecked: tokens.length, usersWithAnyToken: allUsers.size, validTokens: valid, usersWithValidToken: validUsers.size, deadTokensRemoved: dead, otherErrors: other };
+}
+
+module.exports = { sendBroadcastNotification, checkTokenHealth };
