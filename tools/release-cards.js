@@ -22,7 +22,7 @@
   if (marketEl) marketEl.addEventListener("change", function () { searchItems = null; load(); });
   if (styleEl) styleEl.addEventListener("change", function () { if (data || searchItems !== null) render(); });
   var ui = null; // card text for the current language, sent by the server with the data
-  try { var savedLang = localStorage.getItem("rc_lang"); if (savedLang === "en" || savedLang === "pt") langEl.value = savedLang; } catch (e) { /* storage blocked: default stays */ }
+  try { var savedLang = localStorage.getItem("rc_lang"); if (savedLang === "en" || savedLang === "pt" || savedLang === "tr") langEl.value = savedLang; } catch (e) { /* storage blocked: default stays */ }
   var qEl = document.getElementById("q");
   var searchItems = null; // null = showing the release list; an array = showing title-search results
   langEl.addEventListener("change", function () {

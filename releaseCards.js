@@ -91,6 +91,40 @@ const LANGS = {
     labels: { kdrama: "K-drama", cdrama: "C-drama", dorama: "Asian drama", anime: "Anime", turca: "Turkish drama", variedades: "K-variety", trending: "Trending", movies: "Movies", other: "Series" },
     tags: { kdrama: ["kdrama"], cdrama: ["cdrama"], dorama: ["asiandrama"], anime: ["anime"], turca: ["turkishdrama", "dizi"], variedades: ["kvariety", "korea"], trending: ["tvshows"], movies: ["movies", "cinema"], other: [] },
   },
+  tr: {
+    code: "tr", tmdbLang: "tr-TR", region: "TR", tz: "Europe/Istanbul", intl: "tr-TR",
+    titleLangs: [["tr", "TR"], ["tr", null], ["en", null]],
+    googleWhere: "nerede izlenir", gl: "tr", hl: "tr",
+    kinds: {
+      premiere: { tag: "YENİ DİZİ", label: "Yeni dizi" },
+      season: { tag: "YENİ SEZON", label: "Yeni sezon" },
+      episode: { tag: "YENİ BÖLÜM", label: "Yeni bölüm" },
+      streaming: { tag: "YAYINDA", label: "Yayına girdi" },
+      movie: { tag: "VİZYONDA", label: "Vizyon tarihi" },
+    },
+    ui: {
+      whereLabel: "Nerede izlenir", whereTbc: "henüz belli değil", episodeLabel: "Bölüm", episodesLabel: "Bölümler",
+      seasonLabel: "Sezon", seasonOf: "sezon", noPoster: "afiş yok",
+      footer: "Dizilerini takip et · link biyografide", tagline: "Dizi ve film takip uygulaması", credit: "Veri: TMDB",
+    },
+    when: { today: "bugün", tomorrow: "yarın" },
+    dayMonth: (m, d) => `${d}.${String(m).padStart(2, "0")}`,
+    head: {
+      season: ({ title, season, when }) => `${title}: ${season}. sezon ${when} başlıyor.`,
+      episode: ({ title, season, episode, when }) => `${title}: yeni bölüm ${when} · ${season}. sezon, ${episode}. bölüm.`,
+      premiere: ({ title, when }) => `${title} ${when} yayına başlıyor.`,
+      streaming: ({ title }) => `${title} yayında.`,
+      movie: ({ title, when }) => `${title} ${when} vizyona giriyor.`,
+    },
+    theatersIn: (m) => `Sinemalarda · ${m}`,
+    whereCaption: " Nerede izlenir: ",
+    tail: "İzler misin? İzleyeceksen 🔥, sonra izleyeceksen ⏳ yaz. Link biyografide.",
+    tailTrending: "Sen de izliyor musun? Evet için 🔥, henüz değil için ⏳ yaz. Link biyografide.",
+    warnPlatform: "Η πλατφόρμα δεν είναι ακόμα επιβεβαιωμένη στο TMDB — έλεγξε πριν ποστάρεις.",
+    warnOverview: "Δεν υπάρχει περίληψη στα τουρκικά.",
+    labels: { kdrama: "K-drama", cdrama: "C-drama", dorama: "Asya dizisi", anime: "Anime", turca: "Türk dizisi", variedades: "Kore programı", trending: "Trend", movies: "Filmler", other: "Dizi" },
+    tags: { kdrama: ["kdrama", "koredizisi"], cdrama: ["cdrama"], dorama: ["asyadizisi"], anime: ["anime"], turca: ["dizi", "turkdizisi"], variedades: ["koreprogrami"], trending: ["dizi"], movies: ["film", "sinema"], other: [] },
+  },
 };
 const DEFAULT_LANG = "pt";
 
@@ -98,12 +132,13 @@ const DEFAULT_LANG = "pt";
 // Europe, a Portuguese one for Portugal. A market is one or more TMDB regions; for a group the
 // date is the earliest of its countries. "auto" = the language's own region.
 const MARKETS = {
-  eu: { countries: ["FR", "DE", "ES", "IT", "GB", "PT", "GR"], name: { pt: "Europa", en: "Europe" } },
-  us: { countries: ["US"], name: { pt: "EUA", en: "US" } },
-  br: { countries: ["BR"], name: { pt: "Brasil", en: "Brazil" } },
-  gb: { countries: ["GB"], name: { pt: "Reino Unido", en: "UK" } },
-  pt: { countries: ["PT"], name: { pt: "Portugal", en: "Portugal" } },
-  mx: { countries: ["MX"], name: { pt: "México", en: "Mexico" } },
+  eu: { countries: ["FR", "DE", "ES", "IT", "GB", "PT", "GR"], name: { pt: "Europa", en: "Europe", tr: "Avrupa" } },
+  us: { countries: ["US"], name: { pt: "EUA", en: "US", tr: "ABD" } },
+  br: { countries: ["BR"], name: { pt: "Brasil", en: "Brazil", tr: "Brezilya" } },
+  gb: { countries: ["GB"], name: { pt: "Reino Unido", en: "UK", tr: "Birleşik Krallık" } },
+  pt: { countries: ["PT"], name: { pt: "Portugal", en: "Portugal", tr: "Portekiz" } },
+  mx: { countries: ["MX"], name: { pt: "México", en: "Mexico", tr: "Meksika" } },
+  tr: { countries: ["TR"], name: { pt: "Turquia", en: "Turkey", tr: "Türkiye" } },
 };
 const getMarket = (code, L) => {
   const m = MARKETS[code] || MARKETS[L.region.toLowerCase()] || MARKETS.us;
@@ -156,7 +191,8 @@ function daysBetween(fromIso, toIso) {
 }
 
 function weekday(isoDate, L) {
-  return new Intl.DateTimeFormat(L.intl, { weekday: "long", timeZone: "UTC" }).format(new Date(`${isoDate}T12:00:00Z`));
+  // Turkish CLDR capitalises weekday names ("Cumartesi"); mid-sentence they must be lower case.
+  return new Intl.DateTimeFormat(L.intl, { weekday: "long", timeZone: "UTC" }).format(new Date(`${isoDate}T12:00:00Z`)).toLocaleLowerCase(L.intl);
 }
 
 function dayMonth(isoDate, L) {
@@ -598,7 +634,7 @@ function mountReleaseCards(app, asyncHandler) {
 
   app.get("/tools/release-cards-search.json", asyncHandler(async (req, res) => {
     try {
-      const data = await searchTitles(req.query.q, req.query.lang === "en" ? "en" : "pt");
+      const data = await searchTitles(req.query.q, (LANGS[req.query.lang] ? req.query.lang : "pt"));
       res.setHeader("Cache-Control", "no-store");
       res.json(data);
     } catch (e) {
@@ -610,7 +646,7 @@ function mountReleaseCards(app, asyncHandler) {
   app.get("/tools/release-cards.json", asyncHandler(async (req, res) => {
     const days = Math.min(30, Math.max(1, parseInt(req.query.days, 10) || 10));
     try {
-      const data = await getReleaseCards(days, req.query.lang === "en" ? "en" : "pt", String(req.query.market || "auto"));
+      const data = await getReleaseCards(days, (LANGS[req.query.lang] ? req.query.lang : "pt"), String(req.query.market || "auto"));
       res.setHeader("Cache-Control", "no-store");
       res.json(data);
     } catch (e) {
