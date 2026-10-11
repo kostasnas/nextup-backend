@@ -458,10 +458,25 @@
     ctx.fillStyle = "#1a1405";
     ctx.textBaseline = "middle"; ctx.textAlign = "left";
     ctx.fillText(label, 96, 95);
+    // brand block: name in the accent colour, with what the app is underneath, on a dark pill
+    // so it stays readable on any poster
+    var tag = (ui && ui.tagline) || "";
+    ctx.font = "800 46px " + FONT;
+    var bw = ctx.measureText("Scenera").width;
+    ctx.font = "700 26px " + FONT;
+    var tw = tag ? ctx.measureText(tag).width : 0;
+    var pw = Math.max(bw, tw) + 56, ph = tag ? 112 : 70;
+    ctx.fillStyle = "rgba(8,8,12,0.78)";
+    roundRect(ctx, W - 70 - pw, 52, pw, ph, 28); ctx.fill();
     ctx.textAlign = "right";
-    ctx.fillStyle = "#ffffff";
-    ctx.font = "800 40px " + FONT;
-    ctx.fillText("Scenera", W - 70, 95);
+    ctx.fillStyle = ACCENT;
+    ctx.font = "800 46px " + FONT;
+    ctx.fillText("Scenera", W - 70 - 28, tag ? 92 : 87);
+    if (tag) {
+      ctx.fillStyle = "rgba(255,255,255,0.92)";
+      ctx.font = "700 26px " + FONT;
+      ctx.fillText(tag, W - 70 - 28, 134);
+    }
     ctx.textAlign = "left";
     ctx.textBaseline = "alphabetic";
 

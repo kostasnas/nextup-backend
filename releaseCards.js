@@ -37,7 +37,7 @@ const LANGS = {
     ui: {
       whereLabel: "Onde assistir", whereTbc: "a confirmar", episodeLabel: "Episódio", episodesLabel: "Episódios",
       seasonLabel: "Temporada", seasonOf: "temporada", noPoster: "sem pôster",
-      footer: "Acompanhe suas séries · link na bio", credit: "Dados: TMDB",
+      footer: "Acompanhe suas séries · link na bio", tagline: "Tracker de séries e filmes", credit: "Dados: TMDB",
     },
     when: { today: "hoje", tomorrow: "amanhã" },
     dayMonth: (m, d) => `${d}/${m}`,
@@ -71,7 +71,7 @@ const LANGS = {
     ui: {
       whereLabel: "Where to watch", whereTbc: "to be confirmed", episodeLabel: "Episode", episodesLabel: "Episodes",
       seasonLabel: "Season", seasonOf: "season", noPoster: "no poster",
-      footer: "Track your shows · link in bio", credit: "Data: TMDB",
+      footer: "Track your shows · link in bio", tagline: "TV show & movie tracker", credit: "Data: TMDB",
     },
     when: { today: "today", tomorrow: "tomorrow" },
     dayMonth: (m, d) => `${["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"][m - 1]} ${d}`,
