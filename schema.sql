@@ -159,3 +159,13 @@ create table notifications (
 alter table notifications enable row level security;
 
 create policy "own notifications" on notifications for all using (auth.uid() = user_id);
+
+-- In-app "How's Scenera?" messages from users. Written only by the backend
+-- (service role); RLS on with no policies so clients cannot read others' messages.
+create table if not exists app_feedback (
+  id uuid primary key default gen_random_uuid(),
+  user_id uuid references auth.users(id) on delete cascade,
+  message text not null,
+  created_at timestamptz not null default now()
+);
+alter table app_feedback enable row level security;

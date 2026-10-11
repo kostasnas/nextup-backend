@@ -647,6 +647,19 @@ app.post("/feature-requests", requireAuth, asyncHandler(async (req, res) => {
   res.json(created);
 }));
 
+// In-app "How's Scenera?" message. Stored in app_feedback and pushed to the developer.
+app.post("/feedback", requireAuth, asyncHandler(async (req, res) => {
+  const message = String(req.body.message || "").trim();
+  if (!message) return res.status(400).json({ error: "message is required" });
+  if (message.length > 1000) return res.status(400).json({ error: "message must be 1000 characters or fewer" });
+  const { error } = await supabase.from("app_feedback").insert({ user_id: req.userId, message });
+  if (error) throw error;
+  const adminId = process.env.ADMIN_USER_ID || "47d65eeb-e49b-4854-a5e4-64b468541886";
+  sendPushToUser(supabase, adminId, { title: "New feedback", body: message.slice(0, 120) })
+    .catch((e) => console.error("Failed to notify admin of feedback:", e.message));
+  res.json({ ok: true });
+}));
+
 app.post("/feature-requests/:id/vote", requireAuth, asyncHandler(async (req, res) => {
   const result = await toggleVote(supabase, req.userId, req.params.id);
   res.json(result);
