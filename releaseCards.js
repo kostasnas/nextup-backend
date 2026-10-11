@@ -192,7 +192,8 @@ function daysBetween(fromIso, toIso) {
 
 function weekday(isoDate, L) {
   // Turkish CLDR capitalises weekday names ("Cumartesi"); mid-sentence they must be lower case.
-  return new Intl.DateTimeFormat(L.intl, { weekday: "long", timeZone: "UTC" }).format(new Date(`${isoDate}T12:00:00Z`)).toLocaleLowerCase(L.intl);
+  const name = new Intl.DateTimeFormat(L.intl, { weekday: "long", timeZone: "UTC" }).format(new Date(`${isoDate}T12:00:00Z`));
+  return L.code === "tr" ? name.toLocaleLowerCase("tr") : name;
 }
 
 function dayMonth(isoDate, L) {
