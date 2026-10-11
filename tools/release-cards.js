@@ -59,7 +59,8 @@
       .catch(function (e) { statusEl.textContent = "Δεν φορτώθηκε: " + e.message; });
   }
 
-  var KIND_CHIPS = [["all", "Όλα"], ["premiere", "Πρεμιέρες"], ["season", "Νέες σεζόν"], ["episode", "Νέα επεισόδια"], ["movie", "Ταινίες σε σινεμά"], ["movie_world", "Ταινίες: πρώτη προβολή εδώ"]];
+  function nextDay(iso) { var d = new Date(iso + "T12:00:00Z"); d.setUTCDate(d.getUTCDate() + 1); return d.toISOString().slice(0, 10); }
+  var KIND_CHIPS = [["all", "Όλα"], ["premiere", "Πρεμιέρες"], ["season", "Νέες σεζόν"], ["episode", "Νέα επεισόδια"], ["movie", "Ταινίες σε σινεμά"], ["movie_world", "Ταινίες: πρώτη προβολή εδώ"], ["today", "Σήμερα"], ["tomorrow", "Αύριο"]];
 
   function renderFilters() {
     var searching = searchItems !== null;
@@ -92,7 +93,7 @@
     grid.innerHTML = "";
     var searching = searchItems !== null;
     var items = (searching ? searchItems : data.items).filter(function (it) {
-      return searching || ((activeCategory === "all" || it.category === activeCategory) && (activeKind === "all" || it.kind === activeKind || (activeKind === "movie_world" && it.kind === "movie" && it.worldPremiere)));
+      return searching || ((activeCategory === "all" || it.category === activeCategory) && (activeKind === "all" || it.kind === activeKind || (activeKind === "movie_world" && it.kind === "movie" && it.worldPremiere) || (activeKind === "today" && it.kind !== "streaming" && it.date === data.today) || (activeKind === "tomorrow" && it.kind !== "streaming" && data.today && it.date === nextDay(data.today))));
     });
     if (!searching) items.sort(function (a, b) {
       if (sortKey === "rating") return (b.rating || 0) - (a.rating || 0) || b.popularity - a.popularity;
