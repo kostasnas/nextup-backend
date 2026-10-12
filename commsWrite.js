@@ -120,7 +120,8 @@ function mountCommsWrite(app, { requireAuth, asyncHandler }) {
     }
     const mod = await moderateComment(req.body?.text);
     if (!mod.ok) return fail(res, 422, mod.reason, "moderation");
-    const language = req.body?.language && LANG_RE.test(String(req.body.language)) ? String(req.body.language).toLowerCase() : undefined;
+    // One plain language tag: the client's if it sent one, else what moderation detected; otherwise omitted (stored as unknown).
+    const language = req.body?.language && LANG_RE.test(String(req.body.language)) ? String(req.body.language).toLowerCase() : (mod.language || undefined);
 
     const actorId = actorIdFor(req.userId);
     const ident = await syncIdentity(req.userId, actorId);

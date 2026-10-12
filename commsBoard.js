@@ -39,7 +39,8 @@ async function getSources() {
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const SORTS = new Set(["most_liked", "most_recent", "most_relevant"]);
 const SLUG_LIST_RE = /^[a-z0-9_-]+(,[a-z0-9_-]+){0,19}$/i;
-const LANG_LIST_RE = /^[a-z]{2,3}(-[a-z0-9]{2,8})?(,[a-z]{2,3}(-[a-z0-9]{2,8})?){0,7}$/i;
+const LANG_TAG = "(?:unknown|[a-z]{2,3}(?:-[a-z0-9]{2,8})?)";
+const LANG_LIST_RE = new RegExp(`^${LANG_TAG}(?:,${LANG_TAG}){0,11}$`, "i");
 const CURSOR_RE = /^[A-Za-z0-9_\-=.]{1,2000}$/;
 
 // Maps an upstream failure to something safe to show; the real message goes to the server log only.

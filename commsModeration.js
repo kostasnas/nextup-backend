@@ -28,7 +28,8 @@ async function modelCheck(text) {
     "Reject a comment only if it contains: hate speech or slurs aimed at people, harassment or threats, sexual content involving minors or explicit sexual content, " +
     "doxxing or personal data (phone numbers, addresses, emails), advertising/spam/scam links, or illegal piracy links. " +
     "Strong opinions, swearing used casually, criticism of shows or actors, and spoilers are ALLOWED. The comment may be in any language. " +
-    'Reply with JSON only: {"allow": true|false, "reason": "short category"}.';
+    'Also detect the main language of the comment as a plain ISO 639-1 code (en, it, pt, el...), or "unknown" if it is only emoji, names or too short to tell. ' +
+    'Reply with JSON only: {"allow": true|false, "reason": "short category", "language": "xx"}.';
   try {
     const res = await fetch("https://api.groq.com/openai/v1/chat/completions", {
       method: "POST",
@@ -46,7 +47,8 @@ async function modelCheck(text) {
     const data = await res.json();
     const parsed = JSON.parse(data.choices?.[0]?.message?.content || "{}");
     if (typeof parsed.allow !== "boolean") throw new Error("unexpected moderation reply");
-    return { ok: parsed.allow, reason: parsed.reason };
+    const lang = typeof parsed.language === "string" && /^[a-z]{2,3}$/i.test(parsed.language) && parsed.language.toLowerCase() !== "unknown" ? parsed.language.toLowerCase() : null;
+    return { ok: parsed.allow, reason: parsed.reason, language: lang };
   } catch (e) {
     console.error("Comment moderation model unavailable, using local rules only:", e.message);
     return { ok: true, skipped: true };
@@ -62,7 +64,7 @@ async function moderateComment(text) {
     console.warn("Comment blocked by moderation:", model.reason || "unspecified");
     return { ok: false, reason: "That comment can't be posted because it may break our community rules." };
   }
-  return { ok: true, text: local.text };
+  return { ok: true, text: local.text, language: model.language || null };
 }
 
 module.exports = { moderateComment, localCheck, MAX_LEN };
