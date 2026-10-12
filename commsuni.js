@@ -55,6 +55,7 @@ async function commsRequest(path, { method = "GET", body, actorId, idempotencyKe
         rateLimitRemaining: res.headers.get("ratelimit-remaining"),
         rateLimitMetric: res.headers.get("x-ratelimit-metric"),
         replayed: res.headers.get("idempotency-replayed"),
+        reportDuplicate: res.headers.get("report-duplicate"),
       },
     };
   } finally {

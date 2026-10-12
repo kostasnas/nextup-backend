@@ -6,6 +6,7 @@
 const { getPool } = require("./db");
 const { throttle } = require("./tmdbThrottle");
 const { isConfigured, actorIdFor, commsRequest } = require("./commsuni");
+const store = require("./commsStore");
 
 const TMDB_BASE = "https://api.themoviedb.org/3";
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -102,9 +103,17 @@ function mountComms(app, { requireAuth, asyncHandler }) {
     const r = await commsRequest(`/entities/episode/${ref}/comments?${params.toString()}`, { actorId: actorIdFor(req.userId) });
     if (r.status === 404) return res.json({ available: true, comments: [], nextCursor: null, empty: true });
     if (!r.ok) return sendUpstreamError(res, r, "episode comments");
+    // Our own per-user layer: hide authors this user blocked (rows and inline replies),
+    // and flag the user's own comments so the app can offer delete instead of report.
+    const [blocked, profile] = await Promise.all([store.blockedAuthorIds(req.userId), store.getProfile(req.userId).catch(() => null)]);
+    const myAuthorId = profile?.author_id || null;
+    const decorate = (c) => ({ ...c, mine: Boolean(myAuthorId) && c.userId === myAuthorId });
+    const comments = (r.data.comments || [])
+      .filter((c) => !blocked.has(c.userId))
+      .map((c) => ({ ...decorate(c), replies: (c.replies || []).filter((x) => !blocked.has(x.userId)).map(decorate) }));
     res.json({
       available: true,
-      comments: r.data.comments || [],
+      comments,
       nextCursor: r.data.nextCursor || null,
       sort: r.data.sort || sort,
       languageCounts: r.data.languageCounts || [],

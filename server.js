@@ -35,6 +35,7 @@ const { getShowCommunityRating } = require("./showRatings");
 const { createNotification, listNotifications, getUnreadCount, markAllRead, markRead } = require("./notifications");
 const { runSmokeTest: runCommsSmokeTest } = require("./commsuni");
 const { mountComms } = require("./commsBoard");
+const { mountCommsWrite } = require("./commsWrite");
 
 const app = express();
 
@@ -2424,6 +2425,7 @@ app.get("/account/export", requireAuth, asyncHandler(async (req, res) => {
 // cards (page at /tools/release-cards). Public TMDB data only, cached.
 mountReleaseCards(app, asyncHandler);
 mountComms(app, { requireAuth, asyncHandler });
+mountCommsWrite(app, { requireAuth, asyncHandler });
 
 // Real, in-app account deletion — required by Google Play policy
 // alongside the web-based deletion link already in delete-account.html
