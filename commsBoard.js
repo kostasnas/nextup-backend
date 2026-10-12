@@ -65,6 +65,26 @@ function mountComms(app, { requireAuth, asyncHandler }) {
     }
   }));
 
+  // Signed image URLs for archive comments. Each granted URL is charged against our
+  // media_grants meter, so the app only asks for images the user chose to open, and
+  // we never store the (short-lived) URLs.
+  const grantHits = new Map();
+  app.post("/comms/media-grants", requireAuth, asyncHandler(async (req, res) => {
+    if (!isConfigured() || !process.env.COMMS_ACTOR_SECRET) return res.status(503).json({ error: "Comments are not available." });
+    const ids = Array.isArray(req.body?.commentIds) ? [...new Set(req.body.commentIds.map(String))] : [];
+    if (ids.length < 1 || ids.length > 16 || !ids.every((i) => UUID_RE.test(i))) return res.status(400).json({ error: "invalid commentIds" });
+    const now = Date.now();
+    const recent = (grantHits.get(req.userId) || []).filter((t) => now - t < 60000);
+    if (recent.length >= 30) return res.status(429).json({ error: "Too many images requested. Try again in a moment." });
+    recent.push(now); grantHits.set(req.userId, recent);
+    const r = await commsRequest("/media-grants", { method: "POST", actorId: actorIdFor(req.userId), body: { commentIds: ids } });
+    if (!r.ok) return sendUpstreamError(res, r, "media grants");
+    res.set("Cache-Control", "private, no-store");
+    res.json({
+      grants: (r.data?.grants || []).map((g) => ({ commentId: g.commentId, status: g.status, url: g.url || null, contentType: g.contentType || null, width: g.width || null, height: g.height || null })),
+    });
+  }));
+
   // One episode's shared conversation. Query: sort, source, language, cursor, limit.
   app.get("/comms/episodes/:episodeId/comments", requireAuth, asyncHandler(async (req, res) => {
     if (!isConfigured() || !process.env.COMMS_ACTOR_SECRET) return res.status(503).json({ error: "Comments are not available." });
