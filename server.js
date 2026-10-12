@@ -33,6 +33,7 @@ const { syncAllTraktUsers } = require("./traktSync");
 const { findUserByEmail, findUserByUsername } = require("./db");
 const { getShowCommunityRating } = require("./showRatings");
 const { createNotification, listNotifications, getUnreadCount, markAllRead, markRead } = require("./notifications");
+const { runSmokeTest: runCommsSmokeTest } = require("./commsuni");
 
 const app = express();
 
@@ -2811,6 +2812,17 @@ const dailyMaintenanceHandler = asyncHandler(async (req, res) => {
   const premiereResult = await checkUpcomingPremieres(supabase);
   res.json({ reconciliation, dailyEpisodes: dailyResult, upcomingPremieres: premiereResult });
 });
+// CommsUni connectivity check (admin only, same shared-secret pattern as the cron
+// endpoints). Reads the synthetic mock show; add ?write=1 to also post one test comment
+// on it. Reports status codes only — the API key is never returned.
+app.get("/admin/comms-smoke", asyncHandler(async (req, res) => {
+  const providedSecret = req.headers["x-cron-secret"];
+  if (!process.env.CRON_SECRET || providedSecret !== process.env.CRON_SECRET) {
+    return res.status(401).json({ error: "Unauthorized" });
+  }
+  res.json(await runCommsSmokeTest({ write: req.query.write === "1" }));
+}));
+
 app.get("/notifications/send-daily-upcoming", dailyMaintenanceHandler);
 app.post("/notifications/send-daily-upcoming", dailyMaintenanceHandler);
 
