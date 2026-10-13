@@ -112,6 +112,21 @@ function mountCommsWrite(app, { requireAuth, asyncHandler }) {
     res.json({ shareIdentity: req.body.share });
   }));
 
+  // Called by the app after the user edits their name or picture, so the change
+  // reaches CommsUni (and the other apps) right away instead of at the next post.
+  // Does nothing for people who haven't chosen to share their identity.
+  app.post("/comms/me/sync", requireAuth, ready, asyncHandler(async (req, res) => {
+    if (rateLimited(`sync:${req.userId}`, 10, 60 * 60 * 1000)) return res.json({ synced: false });
+    const profile = await store.getProfile(req.userId);
+    if (!profile || !profile.share_identity) return res.json({ synced: false });
+    const r = await syncIdentity(req.userId, actorIdFor(req.userId));
+    if (!r.ok) {
+      if (r.upstream) console.error("CommsUni profile sync failed:", r.upstream.status, r.upstream.error?.code);
+      return res.json({ synced: false });
+    }
+    res.json({ synced: true });
+  }));
+
   // ---- posting --------------------------------------------------------
   async function post(req, res, { kind, path, extra }) {
     const key = idemKey(req, res); if (!key) return;
