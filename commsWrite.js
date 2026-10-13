@@ -29,6 +29,18 @@ function checkImageUrl(userId, raw) {
   } catch { return null; }
 }
 
+// GIFs come from Giphy (picked through our own /gifs routes). Only Giphy's own
+// CDN hosts are accepted; the query string is dropped so the URL stays stable.
+// Needs the Giphy hosts to be allowlisted for our source in CommsUni.
+function checkGifUrl(raw) {
+  try {
+    const u = new URL(String(raw));
+    if (u.protocol !== "https:" || !/^(media\d*|i)\.giphy\.com$/.test(u.host)) return null;
+    if (!u.pathname.toLowerCase().endsWith(".gif")) return null;
+    return { url: `https://${u.host}${u.pathname}`, contentType: "image/gif", provider: "giphy" };
+  } catch { return null; }
+}
+
 // Small in-memory limiter — also protects our CommsUni write_units meter.
 const hits = new Map();
 function rateLimited(key, max, windowMs) {
@@ -149,12 +161,16 @@ function mountCommsWrite(app, { requireAuth, asyncHandler }) {
       return fail(res, 429, "You're posting too fast. Take a breath and try again in a minute.", "slow_down");
     }
     let image = null;
-    if (req.body?.imageUrl) {
+    let gif = null;
+    if (req.body?.gifUrl) {
+      gif = checkGifUrl(req.body.gifUrl);
+      if (!gif) return fail(res, 400, "That GIF can't be posted.", "bad_image");
+    } else if (req.body?.imageUrl) {
       image = checkImageUrl(req.userId, req.body.imageUrl);
       if (!image) return fail(res, 400, "That image can't be posted.", "bad_image");
     }
     const hasText = typeof req.body?.text === "string" && req.body.text.trim().length > 0;
-    if (!hasText && !image) return fail(res, 422, "Write something first.", "moderation");
+    if (!hasText && !image && !gif) return fail(res, 422, "Write something first.", "moderation");
     let mod = { ok: true, text: "", language: null };
     if (hasText) {
       mod = await moderateComment(req.body.text);
@@ -178,7 +194,7 @@ function mountCommsWrite(app, { requireAuth, asyncHandler }) {
       return upstreamFail(res, ident.upstream, "profile sync");
     }
 
-    const body = { ...(mod.text ? { text: mod.text } : {}), ...(image ? { attachments: [{ url: image.url, contentType: image.contentType, provider: "scenera" }] } : {}), isSpoiler: req.body?.isSpoiler === true, ...(language ? { language } : {}), ...(extra?.entity ? { entity: extra.entity } : {}) };
+    const body = { ...(mod.text ? { text: mod.text } : {}), ...(image ? { attachments: [{ url: image.url, contentType: image.contentType, provider: "scenera" }] } : gif ? { attachments: [{ url: gif.url, contentType: gif.contentType, provider: gif.provider }] } : {}), isSpoiler: req.body?.isSpoiler === true, ...(language ? { language } : {}), ...(extra?.entity ? { entity: extra.entity } : {}) };
     const r = await commsRequest(path, { method: "POST", actorId, idempotencyKey: key, body });
     if (!r.ok) return upstreamFail(res, r, kind);
     const comment = r.data?.comment;
