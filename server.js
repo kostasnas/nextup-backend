@@ -245,8 +245,9 @@ app.get("/watchlist/remaining", requireAuth, asyncHandler(async (req, res) => {
     return rows;
   }
 
-  const [aired, watchedRows] = await Promise.all([
+  const [aired, upcoming, watchedRows] = await Promise.all([
     readAll(() => supabase.from("episodes").select("id, show_id").in("show_id", showIds).gt("season_number", 0).lte("air_date", today).order("id")),
+    readAll(() => supabase.from("episodes").select("id, show_id").in("show_id", showIds).gt("season_number", 0).gt("air_date", today).order("id")),
     readAll(() => supabase.from("watched_episodes").select("episode_id").eq("user_id", req.userId).order("episode_id")),
   ]);
   const watchedIds = new Set(watchedRows.map((w) => w.episode_id));
@@ -257,6 +258,12 @@ app.get("/watchlist/remaining", requireAuth, asyncHandler(async (req, res) => {
     const o = out[ep.show_id] || (out[ep.show_id] = { remaining: 0, minutes: 0 });
     o.remaining += 1;
     o.minutes += runtimes.get(ep.show_id);
+  }
+  // Episodes with a future air date, counted separately.
+  for (const ep of upcoming) {
+    if (watchedIds.has(ep.id)) continue;
+    const o = out[ep.show_id] || (out[ep.show_id] = { remaining: 0, minutes: 0 });
+    o.upcoming = (o.upcoming || 0) + 1;
   }
   res.json(out);
 }));
