@@ -57,7 +57,7 @@ async function modelCheck(text) {
 
 // Image check for the shared board. Unlike text, an image we can't check is NOT
 // let through: the board is public and CommsUni does not filter partner writes.
-const VISION_MODEL = process.env.GROQ_VISION_MODEL || "meta-llama/llama-4-scout-17b-16e-instruct";
+const VISION_MODEL = process.env.GROQ_VISION_MODEL || "qwen/qwen3.8-27b";
 async function moderateImage(url) {
   if (!process.env.GROQ_API_KEY) return { ok: false, unavailable: true };
   const system =
@@ -76,7 +76,7 @@ async function moderateImage(url) {
           { role: "user", content: [{ type: "text", text: "Moderate this image." }, { type: "image_url", image_url: { url } }] },
         ],
         temperature: 0,
-        max_tokens: 200,
+        max_tokens: 800, // reasoning models spend part of the budget thinking before the JSON
         response_format: { type: "json_object" },
       }),
       signal: AbortSignal.timeout(12000),
