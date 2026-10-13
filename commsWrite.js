@@ -7,12 +7,27 @@ const { getPool } = require("./db");
 const { getUserDisplayInfo } = require("./db");
 const { isConfigured, actorIdFor, commsRequest } = require("./commsuni");
 const { tvdbIdForShow } = require("./commsBoard");
-const { moderateComment } = require("./commsModeration");
+const { moderateComment, moderateImage } = require("./commsModeration");
 const store = require("./commsStore");
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const LANG_RE = /^[a-z]{2,3}(-[a-z0-9]{2,8})?$/i;
 const REPORT_REASONS = new Set(["spam", "abuse", "spoiler", "sexual", "illegal", "other", "mine_hide", "mine_claim"]);
+
+// Images are uploaded by the app to our own Supabase bucket (host allowlisted by CommsUni).
+// Only a URL inside the sender's own folder of that bucket is accepted.
+const IMAGE_TYPES = { jpg: "image/jpeg", jpeg: "image/jpeg", png: "image/png", webp: "image/webp", gif: "image/gif" };
+function checkImageUrl(userId, raw) {
+  try {
+    const u = new URL(String(raw));
+    const base = new URL(process.env.SUPABASE_URL);
+    const prefix = `/storage/v1/object/public/comment-images/${userId}/`;
+    if (u.protocol !== "https:" || u.host !== base.host || !u.pathname.startsWith(prefix)) return null;
+    const ext = u.pathname.split(".").pop().toLowerCase();
+    if (!IMAGE_TYPES[ext]) return null;
+    return { url: u.toString(), contentType: IMAGE_TYPES[ext] };
+  } catch { return null; }
+}
 
 // Small in-memory limiter — also protects our CommsUni write_units meter.
 const hits = new Map();
@@ -133,8 +148,26 @@ function mountCommsWrite(app, { requireAuth, asyncHandler }) {
     if (rateLimited(`post:${req.userId}`, 5, 60 * 1000) || rateLimited(`postday:${req.userId}`, 60, 24 * 60 * 60 * 1000)) {
       return fail(res, 429, "You're posting too fast. Take a breath and try again in a minute.", "slow_down");
     }
-    const mod = await moderateComment(req.body?.text);
-    if (!mod.ok) return fail(res, 422, mod.reason, "moderation");
+    let image = null;
+    if (req.body?.imageUrl) {
+      image = checkImageUrl(req.userId, req.body.imageUrl);
+      if (!image) return fail(res, 400, "That image can't be posted.", "bad_image");
+    }
+    const hasText = typeof req.body?.text === "string" && req.body.text.trim().length > 0;
+    if (!hasText && !image) return fail(res, 422, "Write something first.", "moderation");
+    let mod = { ok: true, text: "", language: null };
+    if (hasText) {
+      mod = await moderateComment(req.body.text);
+      if (!mod.ok) return fail(res, 422, mod.reason, "moderation");
+    }
+    if (image) {
+      const im = await moderateImage(image.url);
+      if (!im.ok) {
+        if (im.unavailable) return fail(res, 503, "Images are unavailable right now. Try again later.", "image_unavailable");
+        console.warn("Image blocked by moderation:", im.reason || "unspecified");
+        return fail(res, 422, "That image can't be posted because it may break our community rules.", "moderation");
+      }
+    }
     // One plain language tag: the client's if it sent one, else what moderation detected; otherwise omitted (stored as unknown).
     const language = req.body?.language && LANG_RE.test(String(req.body.language)) ? String(req.body.language).toLowerCase() : (mod.language || undefined);
 
@@ -145,7 +178,7 @@ function mountCommsWrite(app, { requireAuth, asyncHandler }) {
       return upstreamFail(res, ident.upstream, "profile sync");
     }
 
-    const body = { text: mod.text, isSpoiler: req.body?.isSpoiler === true, ...(language ? { language } : {}), ...(extra?.entity ? { entity: extra.entity } : {}) };
+    const body = { ...(mod.text ? { text: mod.text } : {}), ...(image ? { attachments: [{ url: image.url, contentType: image.contentType, provider: "scenera" }] } : {}), isSpoiler: req.body?.isSpoiler === true, ...(language ? { language } : {}), ...(extra?.entity ? { entity: extra.entity } : {}) };
     const r = await commsRequest(path, { method: "POST", actorId, idempotencyKey: key, body });
     if (!r.ok) return upstreamFail(res, r, kind);
     const comment = r.data?.comment;
@@ -153,7 +186,7 @@ function mountCommsWrite(app, { requireAuth, asyncHandler }) {
       const p = await store.getProfile(req.userId);
       if (p && p.author_id !== comment.userId) await store.setProfile(req.userId, { author_id: comment.userId });
     }
-    await store.logWrite(req.userId, kind, comment?.id, mod.text);
+    await store.logWrite(req.userId, kind, comment?.id, mod.text || (image ? `[image] ${image.url}` : ""));
     res.status(201).json({ comment: comment ? { ...comment, mine: true } : null });
   }
 
@@ -232,4 +265,4 @@ function mountCommsWrite(app, { requireAuth, asyncHandler }) {
   }));
 }
 
-module.exports = { mountCommsWrite };
+module.exports = { checkImageUrl, mountCommsWrite };

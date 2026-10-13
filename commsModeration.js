@@ -55,6 +55,43 @@ async function modelCheck(text) {
   }
 }
 
+// Image check for the shared board. Unlike text, an image we can't check is NOT
+// let through: the board is public and CommsUni does not filter partner writes.
+const VISION_MODEL = process.env.GROQ_VISION_MODEL || "meta-llama/llama-4-scout-17b-16e-instruct";
+async function moderateImage(url) {
+  if (!process.env.GROQ_API_KEY) return { ok: false, unavailable: true };
+  const system =
+    "You moderate images attached to comments about TV shows and movies on a public board that includes teenagers. " +
+    "Reject an image only if it shows: nudity or sexual content, graphic gore or real violence, anything involving minors in a sexual context, hate symbols, " +
+    "or readable personal data (IDs, cards, addresses, phone numbers). Screenshots and stills from shows and films, memes, reaction images, fan art and ordinary photos are ALLOWED, including fictional violence. " +
+    'Reply with JSON only: {"allow": true|false, "reason": "short category"}.';
+  try {
+    const res = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${process.env.GROQ_API_KEY}` },
+      body: JSON.stringify({
+        model: VISION_MODEL,
+        messages: [
+          { role: "system", content: system },
+          { role: "user", content: [{ type: "text", text: "Moderate this image." }, { type: "image_url", image_url: { url } }] },
+        ],
+        temperature: 0,
+        max_tokens: 200,
+        response_format: { type: "json_object" },
+      }),
+      signal: AbortSignal.timeout(12000),
+    });
+    if (!res.ok) throw new Error(`Groq ${res.status}`);
+    const data = await res.json();
+    const parsed = JSON.parse(data.choices?.[0]?.message?.content || "{}");
+    if (typeof parsed.allow !== "boolean") throw new Error("unexpected moderation reply");
+    return { ok: parsed.allow, reason: parsed.reason };
+  } catch (e) {
+    console.error("Image moderation unavailable, refusing the image:", e.message);
+    return { ok: false, unavailable: true };
+  }
+}
+
 /** Returns { ok: true, text } or { ok: false, reason } (reason is safe to show the user). */
 async function moderateComment(text) {
   const local = localCheck(text);
@@ -67,4 +104,4 @@ async function moderateComment(text) {
   return { ok: true, text: local.text, language: model.language || null };
 }
 
-module.exports = { moderateComment, localCheck, MAX_LEN };
+module.exports = { moderateComment, moderateImage, localCheck, MAX_LEN };
