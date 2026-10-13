@@ -27,6 +27,9 @@ async function modelCheck(text) {
     "You moderate comments about TV shows and movies for a public board that includes teenagers and adults. " +
     "Reject a comment only if it contains: hate speech or slurs aimed at people, harassment or threats, sexual content involving minors or explicit sexual content, " +
     "doxxing or personal data (phone numbers, addresses, emails), advertising/spam/scam links, or illegal piracy links. " +
+    "Also reject self-promotion and recruiting, even with no link: inviting or urging other people to use, join, follow or switch to an app, website, service, account, channel or community " +
+    '(for example "come to Trakt", "join my Discord", "follow me", "use this app instead", "check out my channel"). ' +
+    'Merely naming an app or service in passing is ALLOWED (for example "I used to track this on TV Time"). ' +
     "Strong opinions, swearing used casually, criticism of shows or actors, and spoilers are ALLOWED. The comment may be in any language. " +
     'Also detect the main language of the comment as a plain ISO 639-1 code (en, it, pt, el...), or "unknown" if it is only emoji, names or too short to tell. ' +
     'Reply with JSON only: {"allow": true|false, "reason": "short category", "language": "xx"}.';
