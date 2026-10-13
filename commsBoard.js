@@ -129,9 +129,13 @@ function mountComms(app, { requireAuth, asyncHandler }) {
     const [blocked, profile] = await Promise.all([store.blockedAuthorIds(req.userId), store.getProfile(req.userId).catch(() => null)]);
     const myAuthorId = profile?.author_id || null;
     const decorate = (c) => ({ ...c, mine: Boolean(myAuthorId) && c.userId === myAuthorId });
+    // Deleted comments can come back as tombstones (deleted: true, text: null). The API says to hide
+    // them completely: no text, no placeholder card.
+    const isLive = (c) => c && c.deleted !== true && !c.deletedAt;
     const comments = (r.data.comments || [])
-      .filter((c) => !blocked.has(c.userId))
-      .map((c) => ({ ...decorate(c), replies: (c.replies || []).filter((x) => !blocked.has(x.userId)).map(decorate) }));
+      .filter((c) => isLive(c) && !blocked.has(c.userId))
+      .map((c) => ({ ...decorate(c), replies: (c.replies || []).filter((x) => isLive(x) && !blocked.has(x.userId)).map(decorate) }));
+    res.set("Cache-Control", "private, no-store");
     res.json({
       available: true,
       comments,
