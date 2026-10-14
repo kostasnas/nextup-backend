@@ -32,19 +32,31 @@ async function addFavoriteCharacter(supabase, userId, character) {
     characterImageUrl = await getAnimeCharacterImage(character.showTitle || character.sourceTitle, character.characterName);
   }
 
-  const { error } = await supabase
-    .from("favorite_characters")
-    .upsert({
-      user_id: userId,
-      tmdb_person_id: character.tmdbPersonId,
-      person_name: character.personName,
-      profile_path: character.profilePath || null,
-      source_type: character.sourceType,
-      source_tmdb_id: character.sourceTmdbId,
-      source_title: character.sourceTitle,
-      character_name: character.characterName || null,
-      character_image_url: characterImageUrl,
-    }, { onConflict: "user_id,tmdb_person_id,source_type,source_tmdb_id" });
+  const row = {
+    user_id: userId,
+    tmdb_person_id: character.tmdbPersonId,
+    person_name: character.personName,
+    profile_path: character.profilePath || null,
+    source_type: character.sourceType,
+    source_tmdb_id: character.sourceTmdbId,
+    source_title: character.sourceTitle,
+    character_name: character.characterName || null,
+    character_image_url: characterImageUrl,
+  };
+  // show_tmdb_id ties an EPISODE favorite back to its show so the
+  // share card can find it. Needs the column to exist (see the SQL
+  // migration); if it doesn't yet, retry without it so favoriting
+  // never breaks.
+  const showTmdbId = Number(character.showTmdbId);
+  if (character.sourceType === "episode" && Number.isFinite(showTmdbId) && showTmdbId > 0) {
+    row.show_tmdb_id = showTmdbId;
+  }
+  const conflict = { onConflict: "user_id,tmdb_person_id,source_type,source_tmdb_id" };
+  let { error } = await supabase.from("favorite_characters").upsert(row, conflict);
+  if (error && "show_tmdb_id" in row && /show_tmdb_id/i.test(error.message || "")) {
+    delete row.show_tmdb_id;
+    ({ error } = await supabase.from("favorite_characters").upsert(row, conflict));
+  }
   if (error) throw error;
   return { ok: true };
 }
