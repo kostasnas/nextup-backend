@@ -3022,6 +3022,22 @@ app.post("/admin/send-welcome", asyncHandler(async (req, res) => {
   res.json(result);
 }));
 
+// READ-ONLY experiment (see animePilot.js): shows one anime's TMDB season
+// layout next to AniList's, to judge whether AniList numbering would help.
+// Writes nothing. Body: { "tmdbId": 37854, "search": "One Piece" (optional) }
+const { runAnimePilot } = require("./animePilot");
+app.post("/admin/anime-pilot", asyncHandler(async (req, res) => {
+  const providedSecret = req.headers["x-cron-secret"];
+  if (!process.env.CRON_SECRET || providedSecret !== process.env.CRON_SECRET) {
+    return res.status(401).json({ error: "Unauthorized" });
+  }
+  try {
+    res.json(await runAnimePilot({ tmdbId: req.body?.tmdbId, search: req.body?.search }));
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+}));
+
 Sentry.setupExpressErrorHandler(app);
 
 app.use((err, req, res, next) => {
