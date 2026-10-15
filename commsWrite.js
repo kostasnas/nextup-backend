@@ -7,6 +7,8 @@ const { getPool } = require("./db");
 const { getUserDisplayInfo } = require("./db");
 const { isConfigured, actorIdFor, commsRequest } = require("./commsuni");
 const { tvdbIdForShow } = require("./commsBoard");
+const { tvdbIdForMovie } = require("./tvdbMovie");
+const { throttle } = require("./tmdbThrottle");
 const { moderateComment, moderateImage } = require("./commsModeration");
 const store = require("./commsStore");
 
@@ -104,6 +106,23 @@ async function episodeContext(episodeId) {
     `select s.tmdb_id as show_tmdb_id, s.title as show_title, e.title as episode_title, e.season_number, e.episode_number
      from episodes e join shows s on s.id = e.show_id where e.id = $1`, [episodeId]);
   return rows[0] || null;
+}
+
+// Movie title for the archive's "first write needs entity.title" rule: our own table if the
+// movie is already known, otherwise TMDB.
+async function movieTitle(tmdbId) {
+  try {
+    const { rows } = await getPool().query("select title from movies where tmdb_id = $1 limit 1", [tmdbId]);
+    if (rows[0]?.title) return String(rows[0].title).slice(0, 200);
+  } catch { /* fall through to TMDB */ }
+  try {
+    const data = await throttle(async () => {
+      const r = await fetch(`https://api.themoviedb.org/3/movie/${tmdbId}?api_key=${process.env.TMDB_API_KEY}`);
+      if (!r.ok) throw new Error(`TMDB ${r.status}`);
+      return r.json();
+    });
+    return data.title ? String(data.title).slice(0, 200) : null;
+  } catch { return null; }
 }
 
 function mountCommsWrite(app, { requireAuth, asyncHandler }) {
@@ -217,6 +236,21 @@ function mountCommsWrite(app, { requireAuth, asyncHandler }) {
       kind: "comment",
       path: `/entities/episode/${ref}/comments`,
       extra: { entity: { title: ctx.episode_title || `S${ctx.season_number}E${ctx.episode_number}`, showTitle: ctx.show_title } },
+    });
+  }));
+
+  // A comment on a movie. The movie is addressed by TMDB id; the archive wants its TVDB movie id
+  // (see tvdbMovie.js), and a first comment on a new reference must carry the movie's title.
+  app.post("/comms/movies/:tmdbId/comments", requireAuth, ready, notSuspended, asyncHandler(async (req, res) => {
+    if (!/^\d{1,9}$/.test(req.params.tmdbId)) return fail(res, 400, "invalid movie id");
+    const tmdbId = Number(req.params.tmdbId);
+    const tvdbId = await tvdbIdForMovie(tmdbId);
+    if (!tvdbId) return fail(res, 409, "Shared comments aren't available for this movie.", "no_tvdb");
+    const title = await movieTitle(tmdbId);
+    await post(req, res, {
+      kind: "comment",
+      path: `/entities/movie/tvdb-${tvdbId}/comments`,
+      extra: { entity: { title: title || `Movie ${tmdbId}` } },
     });
   }));
 

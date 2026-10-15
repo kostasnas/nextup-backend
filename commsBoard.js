@@ -7,6 +7,7 @@ const { getPool } = require("./db");
 const { throttle } = require("./tmdbThrottle");
 const { isConfigured, actorIdFor, commsRequest } = require("./commsuni");
 const store = require("./commsStore");
+const { tvdbIdForMovie } = require("./tvdbMovie");
 
 const TMDB_BASE = "https://api.themoviedb.org/3";
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -85,11 +86,12 @@ function mountComms(app, { requireAuth, asyncHandler }) {
     });
   }));
 
-  // One episode's shared conversation. Query: sort, source, language, cursor, limit.
-  app.get("/comms/episodes/:episodeId/comments", requireAuth, asyncHandler(async (req, res) => {
+  // Shared by the episode and movie routes: validates the query, asks CommsUni for one
+  // entity's conversation and applies our per-user layer (blocked authors, "mine").
+  // `getEntityPath` runs after the query is validated and returns "episode/tvdb-..." or
+  // "movie/tvdb-...", or null when the shared board can't address this title.
+  async function serveBoard(req, res, label, getEntityPath) {
     if (!isConfigured() || !process.env.COMMS_ACTOR_SECRET) return res.status(503).json({ error: "Comments are not available." });
-    const { episodeId } = req.params;
-    if (!UUID_RE.test(episodeId)) return res.status(400).json({ error: "invalid episode id" });
 
     const sort = req.query.sort ? String(req.query.sort) : "most_liked";
     if (!SORTS.has(sort)) return res.status(400).json({ error: "invalid sort" });
@@ -108,22 +110,14 @@ function mountComms(app, { requireAuth, asyncHandler }) {
       params.set("cursor", String(req.query.cursor));
     }
 
-    const { rows } = await getPool().query(
-      `select s.tmdb_id as show_tmdb_id, e.season_number, e.episode_number
-       from episodes e join shows s on s.id = e.show_id where e.id = $1`,
-      [episodeId]
-    );
-    if (!rows[0]) return res.status(404).json({ error: "episode not found" });
-    const { show_tmdb_id, season_number, episode_number } = rows[0];
+    const entityPath = await getEntityPath();
+    if (entityPath === undefined) return; // getEntityPath already sent its own error
+    // No TVDB id: the shared board can't address this title. Tell the app so it can show a plain note.
+    if (!entityPath) return res.json({ available: false, comments: [], nextCursor: null });
 
-    const tvdbId = await tvdbIdForShow(show_tmdb_id);
-    // No TVDB id: the shared board can't address this show. Tell the app so it can show a plain note.
-    if (!tvdbId) return res.json({ available: false, comments: [], nextCursor: null });
-
-    const ref = `tvdb-${tvdbId}-s${season_number}e${episode_number}`;
-    const r = await commsRequest(`/entities/episode/${ref}/comments?${params.toString()}`, { actorId: actorIdFor(req.userId) });
+    const r = await commsRequest(`/entities/${entityPath}/comments?${params.toString()}`, { actorId: actorIdFor(req.userId) });
     if (r.status === 404) return res.json({ available: true, comments: [], nextCursor: null, empty: true });
-    if (!r.ok) return sendUpstreamError(res, r, "episode comments");
+    if (!r.ok) return sendUpstreamError(res, r, label);
     // Our own per-user layer: hide authors this user blocked (rows and inline replies),
     // and flag the user's own comments so the app can offer delete instead of report.
     const [blocked, profile] = await Promise.all([store.blockedAuthorIds(req.userId), store.getProfile(req.userId).catch(() => null)]);
@@ -143,6 +137,34 @@ function mountComms(app, { requireAuth, asyncHandler }) {
       sort: r.data.sort || sort,
       languageCounts: r.data.languageCounts || [],
       sourceCounts: r.data.sourceCounts || [],
+    });
+  }
+
+  // One episode's shared conversation. Query: sort, source, language, cursor, limit.
+  app.get("/comms/episodes/:episodeId/comments", requireAuth, asyncHandler(async (req, res) => {
+    const { episodeId } = req.params;
+    if (!UUID_RE.test(episodeId)) return res.status(400).json({ error: "invalid episode id" });
+    await serveBoard(req, res, "episode comments", async () => {
+      const { rows } = await getPool().query(
+        `select s.tmdb_id as show_tmdb_id, e.season_number, e.episode_number
+         from episodes e join shows s on s.id = e.show_id where e.id = $1`,
+        [episodeId]
+      );
+      if (!rows[0]) { res.status(404).json({ error: "episode not found" }); return undefined; }
+      const { show_tmdb_id, season_number, episode_number } = rows[0];
+      const tvdbId = await tvdbIdForShow(show_tmdb_id);
+      return tvdbId ? `episode/tvdb-${tvdbId}-s${season_number}e${episode_number}` : null;
+    });
+  }));
+
+  // One movie's shared conversation (same query as episodes). The movie is addressed by its
+  // TMDB id; we map it to the TVDB movie id the archive uses (see tvdbMovie.js).
+  app.get("/comms/movies/:tmdbId/comments", requireAuth, asyncHandler(async (req, res) => {
+    if (!/^\d{1,9}$/.test(req.params.tmdbId)) return res.status(400).json({ error: "invalid movie id" });
+    const tmdbId = Number(req.params.tmdbId);
+    await serveBoard(req, res, "movie comments", async () => {
+      const tvdbId = await tvdbIdForMovie(tmdbId);
+      return tvdbId ? `movie/tvdb-${tvdbId}` : null;
     });
   }));
 }

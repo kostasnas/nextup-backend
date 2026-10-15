@@ -3022,6 +3022,26 @@ app.post("/admin/send-welcome", asyncHandler(async (req, res) => {
   res.json(result);
 }));
 
+// READ-ONLY check of the TMDB -> TVDB movie id mapping used for shared movie
+// comments (see tvdbMovie.js). Shows, per TMDB movie id, whether a TVDB id was
+// found and if not why — to judge Wikidata's coverage on real titles.
+// Body: { "tmdbIds": [550, 603, 27205] } (max 20)
+const { lookupMovieTvdb } = require("./tvdbMovie");
+app.post("/admin/movie-tvdb-check", asyncHandler(async (req, res) => {
+  const providedSecret = req.headers["x-cron-secret"];
+  if (!process.env.CRON_SECRET || providedSecret !== process.env.CRON_SECRET) {
+    return res.status(401).json({ error: "Unauthorized" });
+  }
+  const ids = (Array.isArray(req.body?.tmdbIds) ? req.body.tmdbIds : []).map(Number).filter((n) => Number.isInteger(n) && n > 0).slice(0, 20);
+  if (ids.length === 0) return res.status(400).json({ error: "tmdbIds (array of TMDB movie ids) is required" });
+  const results = [];
+  for (const id of ids) {
+    try { results.push({ tmdbId: id, ...(await lookupMovieTvdb(id)) }); }
+    catch (e) { results.push({ tmdbId: id, tvdbId: null, reason: `error: ${e.message}` }); }
+  }
+  res.json({ found: results.filter((r) => r.tvdbId).length, total: results.length, results });
+}));
+
 // READ-ONLY experiment (see animePilot.js): shows one anime's TMDB season
 // layout next to AniList's, to judge whether AniList numbering would help.
 // Writes nothing. Body: { "tmdbId": 37854, "search": "One Piece" (optional) }
