@@ -49,6 +49,49 @@ function alternativeTitleVariants(title) {
 }
 
 /**
+ * Search-friendly version of a title: punctuation that TV Time keeps
+ * ("Jessi's Show!Terview", "P.S.NOTE") can make TMDB's search return
+ * nothing, so turn it into spaces. Apostrophes stay (TMDB indexes
+ * "Jessi's"). Only used as an extra fallback when the normal queries
+ * came back empty, so titles that already match are untouched.
+ */
+function cleanQuery(title) {
+  return stripDisambiguator(title)
+    .replace(/[^\p{L}\p{N}\s']/gu, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+const LEADING_ARTICLE = /^(the|a|an|el|la|los|las|lo|o|os|as|um|uma|le|les|l'|der|die|das|il)\s+/i;
+
+/**
+ * "Loose" variants for titles that still found nothing confident.
+ * TV Time often shows an English-style title for a show TMDB lists
+ * under its original-language name ("The Serrano" -> "Los Serrano",
+ * "The Secret of Puente Viejo" -> "El secreto de Puente Viejo"), so
+ * dropping a leading article or the punctuation can surface it.
+ * These are guesses: matchShow caps their score below the confidence
+ * threshold, so they only ever fill the review list with candidates
+ * and never auto-attach a show.
+ */
+function looseTitleVariants(title) {
+  const base = stripDisambiguator(title);
+  const variants = new Set();
+
+  const noArticle = base.replace(LEADING_ARTICLE, "").trim();
+  if (noArticle && noArticle !== base) variants.add(noArticle);
+
+  const punct = cleanQuery(title);
+  if (punct && punct !== base) variants.add(punct);
+
+  const punctNoArticle = punct.replace(LEADING_ARTICLE, "").trim();
+  if (punctNoArticle && punctNoArticle !== punct) variants.add(punctNoArticle);
+
+  variants.delete(title);
+  return Array.from(variants).filter((v) => v.length >= 3).slice(0, 3);
+}
+
+/**
  * Searches TMDB for a show title and returns ranked candidates.
  * Goes through the shared global throttle (tmdbThrottle.js) so that
  * many concurrent imports from different users never collectively
@@ -78,7 +121,22 @@ async function searchShow(title) {
       if (!res.ok) return { results: [] };
       return res.json();
     });
-    return fallbackData.results || [];
+    if ((fallbackData.results || []).length > 0) return fallbackData.results;
+  }
+
+  // Last resort for titles with punctuation inside words ("Show!Terview",
+  // "P.S.NOTE"): retry once with the punctuation turned into spaces.
+  if ((data.results || []).length === 0) {
+    const punctClean = cleanQuery(title);
+    if (punctClean && punctClean !== cleanedTitle && punctClean !== title) {
+      const punctUrl = `${TMDB_BASE}/search/tv?api_key=${apiKey}&query=${encodeURIComponent(punctClean)}&include_adult=false`;
+      const punctData = await throttle(async () => {
+        const res = await fetch(punctUrl);
+        if (!res.ok) return { results: [] };
+        return res.json();
+      });
+      return punctData.results || [];
+    }
   }
 
   return data.results || [];
@@ -218,8 +276,12 @@ const CONFIDENCE_THRESHOLD = 0.85;
  */
 async function matchShow(tvTimeTitle) {
   const candidates = await searchShow(tvTimeTitle);
+  // Score against the original-language name too: TV Time sometimes
+  // carries the show's original title while TMDB's English name differs.
+  const titleScore = (text, c) =>
+    Math.max(similarity(text, c.name), c.original_name ? similarity(text, c.original_name) : 0);
   let scored = dedupeByBestScore(
-    candidates.map((c) => ({ ...c, score: similarity(tvTimeTitle, c.name) }))
+    candidates.map((c) => ({ ...c, score: titleScore(tvTimeTitle, c) }))
   );
 
   // Only spend extra requests chasing alternative titles when the
@@ -235,9 +297,26 @@ async function matchShow(tvTimeTitle) {
         // to "Hinterland" is what we want when the raw title is
         // "Hinterland – Y Gwyll"; scoring against the full messy
         // original would drag a correct match's score down for no reason.
-        ...variantCandidates.map((c) => ({ ...c, score: similarity(variant, c.name) })),
+        ...variantCandidates.map((c) => ({ ...c, score: titleScore(variant, c) })),
       ]);
       if (scored[0]?.score >= CONFIDENCE_THRESHOLD) break; // good enough, stop trying more variants
+    }
+  }
+
+  // Still nothing confident: try the loose variants (leading article /
+  // punctuation removed). Their scores are capped just below the
+  // threshold, so a wrong guess can never be attached silently — they
+  // only make sure the user gets candidates to pick from instead of none.
+  if (!scored.length || scored[0].score < CONFIDENCE_THRESHOLD) {
+    for (const variant of looseTitleVariants(tvTimeTitle)) {
+      const variantCandidates = await searchShow(variant);
+      scored = dedupeByBestScore([
+        ...scored,
+        ...variantCandidates.map((c) => ({
+          ...c,
+          score: Math.min(titleScore(variant, c), CONFIDENCE_THRESHOLD - 0.01),
+        })),
+      ]);
     }
   }
 
@@ -306,4 +385,4 @@ async function matchShows(tvTimeShows, { concurrency = 5 } = {}) {
   return results;
 }
 
-module.exports = { searchShow, searchMovie, getShowDetails, matchShow, matchShows, matchMovie, findByImdbId, similarity, normalizeTitle, alternativeTitleVariants };
+module.exports = { searchShow, searchMovie, getShowDetails, matchShow, matchShows, matchMovie, findByImdbId, similarity, normalizeTitle, alternativeTitleVariants, looseTitleVariants, cleanQuery };
