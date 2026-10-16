@@ -200,6 +200,33 @@ async function findByImdbId(imdbId) {
 }
 
 /**
+ * Resolves a TheTVDB series id straight to a TMDB show. TV Time's
+ * `tv_show_id` is the TheTVDB series id (checked against known ids in
+ * real exports: Breaking Bad 81189, Game of Thrones 121361, The Sopranos
+ * 75299 ...), so this needs no fuzzy title matching — which is what lost
+ * shows whose name differs between languages ("Answer Me 1988" vs
+ * "Reply 1988", "Drag Race Spain" vs "Drag Race España").
+ * Returns null when TMDB has no show linked to that TVDB id, or when the
+ * request fails — the caller then falls back to title matching.
+ */
+async function findShowByTvdbId(tvdbId) {
+  const apiKey = process.env.TMDB_API_KEY;
+  if (!apiKey || !tvdbId) return null;
+  try {
+    const url = `${TMDB_BASE}/find/${encodeURIComponent(tvdbId)}?api_key=${apiKey}&external_source=tvdb_id`;
+    const data = await throttle(async () => {
+      const res = await fetch(url);
+      if (!res.ok) throw new Error(`TMDB find failed: ${res.status}`);
+      return res.json();
+    });
+    return (data.tv_results || [])[0] || null;
+  } catch (e) {
+    console.error(`TVDB id lookup failed for ${tvdbId}: ${e.message}`);
+    return null;
+  }
+}
+
+/**
  * Fetches full season/episode structure for a matched show, needed
  * to translate "episodesSeenCount" into a season/episode marker.
  */
@@ -274,7 +301,28 @@ const CONFIDENCE_THRESHOLD = 0.85;
  * real import runs. Prefer under-matching (send to manual review)
  * over silently attaching the wrong show to someone's history.
  */
-async function matchShow(tvTimeTitle) {
+async function matchShow(tvTimeTitle, tvdbId = null) {
+  // The id is authoritative, so try it first; titles are only the fallback.
+  if (tvdbId) {
+    const byId = await findShowByTvdbId(tvdbId);
+    if (byId) {
+      const nameScore = Math.max(similarity(tvTimeTitle, byId.name || ""), byId.original_name ? similarity(tvTimeTitle, byId.original_name) : 0);
+      if (nameScore < 0.3) {
+        // Not an error (names legitimately differ across languages), but
+        // worth seeing in the logs if the id mapping ever turns out wrong.
+        console.warn(`TVDB id ${tvdbId} -> TMDB ${byId.id} "${byId.name}" for TV Time title "${tvTimeTitle}" (name similarity ${nameScore.toFixed(2)})`);
+      }
+      return {
+        status: "matched",
+        tmdbId: byId.id,
+        posterPath: byId.poster_path || null,
+        confidence: 1,
+        via: "tvdb_id",
+        candidates: [{ ...byId, score: 1 }],
+      };
+    }
+  }
+
   const candidates = await searchShow(tvTimeTitle);
   // Score against the original-language name too: TV Time sometimes
   // carries the show's original title while TMDB's English name differs.
@@ -378,11 +426,11 @@ async function matchShows(tvTimeShows, { concurrency = 5 } = {}) {
   for (let i = 0; i < tvTimeShows.length; i += concurrency) {
     const batch = tvTimeShows.slice(i, i + concurrency);
     const batchResults = await Promise.all(
-      batch.map(async (show) => ({ ...show, match: await matchShow(show.title) }))
+      batch.map(async (show) => ({ ...show, match: await matchShow(show.title, show.tvTimeShowId) }))
     );
     results.push(...batchResults);
   }
   return results;
 }
 
-module.exports = { searchShow, searchMovie, getShowDetails, matchShow, matchShows, matchMovie, findByImdbId, similarity, normalizeTitle, alternativeTitleVariants, looseTitleVariants, cleanQuery };
+module.exports = { searchShow, searchMovie, getShowDetails, findShowByTvdbId, matchShow, matchShows, matchMovie, findByImdbId, similarity, normalizeTitle, alternativeTitleVariants, looseTitleVariants, cleanQuery };
