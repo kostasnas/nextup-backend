@@ -6,7 +6,14 @@
 const AdmZip = require("adm-zip");
 
 function parseSceneraZip(buffer) {
-  const zip = new AdmZip(buffer);
+  let zip;
+  try {
+    zip = new AdmZip(buffer);
+  } catch {
+    const err = new Error("This does not look like a zip file.");
+    err.status = 400;
+    throw err;
+  }
   const entry = zip.getEntries().find((e) => e.entryName.toLowerCase().endsWith("scenera-export.json"));
   if (!entry) {
     const err = new Error("Could not find scenera-export.json inside the zip. Upload the zip you got from Scenera's \"Export my data\".");
