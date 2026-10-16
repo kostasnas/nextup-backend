@@ -230,4 +230,56 @@ async function buildAccountExport(supabase, userId, email) {
   };
 }
 
-module.exports = { buildAccountExport };
+// ---- ZIP packaging -------------------------------------------------------
+// One zip like every other app's export: the complete JSON, one CSV per list
+// (opens in Excel / Sheets), and a README. Nested values go into a CSV cell as JSON.
+const AdmZip = require("adm-zip");
+
+function csvCell(v) {
+  if (v === null || v === undefined) return "";
+  const str = typeof v === "object" ? JSON.stringify(v) : String(v);
+  return /[",\r\n]/.test(str) ? `"${str.replace(/"/g, '""')}"` : str;
+}
+
+function toCsv(rows) {
+  const cols = [];
+  for (const r of rows) for (const k of Object.keys(r)) if (!cols.includes(k)) cols.push(k);
+  if (cols.length === 0) return "";
+  const lines = [cols.map(csvCell).join(",")];
+  for (const r of rows) lines.push(cols.map((c) => csvCell(r[c])).join(","));
+  // BOM so Excel reads UTF-8 (Greek, Korean, ...) correctly.
+  return "﻿" + lines.join("\r\n") + "\r\n";
+}
+
+const CSV_SECTIONS = [
+  "watchlist", "watched_episodes", "episode_rewatches", "movies", "comments", "comment_likes",
+  "favorite_characters", "friends", "messages_sent", "feature_requests", "notifications", "import_history",
+];
+
+function buildExportZip(payload) {
+  const zip = new AdmZip();
+  zip.addFile("scenera-export.json", Buffer.from(JSON.stringify(payload, null, 2), "utf8"));
+  const included = [];
+  for (const name of CSV_SECTIONS) {
+    const rows = payload[name];
+    if (Array.isArray(rows) && rows.length > 0) {
+      zip.addFile(`${name}.csv`, Buffer.from(toCsv(rows), "utf8"));
+      included.push(`${name}.csv (${rows.length} rows)`);
+    }
+  }
+  const readme = [
+    "Scenera data export",
+    `Exported: ${payload.exported_at}`,
+    "",
+    "scenera-export.json  - everything in one file (complete, machine-readable).",
+    ...included.map((f) => `${f}`),
+    "",
+    "CSV files open in Excel, Google Sheets or Numbers. Nested values appear as JSON text in a cell.",
+    "Not included: device push tokens, AI usage counters, sign-in tokens, and other people's data.",
+    "",
+  ].join("\r\n");
+  zip.addFile("README.txt", Buffer.from(readme, "utf8"));
+  return zip.toBuffer();
+}
+
+module.exports = { buildAccountExport, buildExportZip };

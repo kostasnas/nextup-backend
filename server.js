@@ -23,7 +23,7 @@ const { sendMessage, getMessages, deleteMessage } = require("./messages");
 const { getComments, getCommentCountsForShow, addComment, deleteComment, toggleCommentLike, getEpisodeContext, getMovieComments, addMovieComment, getMovieContext, getMovieCommentCount } = require("./episodeComments");
 const { getMovieWatchlist, setMovieStatus, updateMovieEntry, removeMovie } = require("./movies");
 const { getFavoriteCharacters, addFavoriteCharacter, removeFavoriteCharacter, getCharacterVoteCounts } = require("./favoriteCharacters");
-const { buildAccountExport } = require("./accountExport");
+const { buildAccountExport, buildExportZip } = require("./accountExport");
 const { mountReleaseCards } = require("./releaseCards");
 const { listFeatureRequests, createFeatureRequest, toggleVote } = require("./featureRequests");
 const { logRewatch, removeRewatch, getRewatchCountsForShow } = require("./episodeRewatches");
@@ -2426,6 +2426,14 @@ app.get("/account/export", requireAuth, asyncHandler(async (req, res) => {
   const payload = await buildAccountExport(supabase, req.userId, req.userEmail);
   res.setHeader("Cache-Control", "no-store");
   res.json(payload);
+}));
+
+// Same export as a zip (JSON + one CSV per list + README) — what the app downloads.
+app.get("/account/export.zip", requireAuth, asyncHandler(async (req, res) => {
+  const payload = await buildAccountExport(supabase, req.userId, req.userEmail);
+  res.setHeader("Cache-Control", "no-store");
+  res.setHeader("Content-Type", "application/zip");
+  res.send(buildExportZip(payload));
 }));
 
 // Marketing helper: upcoming doramas/anime/Turkish series as ready-to-post
