@@ -1030,6 +1030,100 @@ app.post("/import/tvtime-zip", requireAuth, uploadZip.single("export_zip"), asyn
   res.json(result);
 }));
 
+// Scenera import — re-imports a zip made by Scenera's own "Export my data"
+// (new account, or restoring after a reset). Every row already has a TMDB id,
+// so there is no title matching. Reuses the same two-step pipeline as the other
+// importers: upsertShowProgress here, then the client calls /sync-episodes,
+// which marks the episodes (with their original dates and reactions).
+const { parseSceneraZip } = require("./sceneraParser");
+async function processSceneraImport(userId, buffer) {
+  const { shows, movies, stats } = parseSceneraZip(buffer);
+  const { data: job, error: jobError } = await supabase
+    .from("import_jobs")
+    .insert({ user_id: userId, source: "scenera", status: "matching", total_records: stats.totalShows })
+    .select()
+    .single();
+  if (jobError) throw jobError;
+
+  let matchedCount = 0;
+  for (const show of shows) {
+    try {
+      await upsertShowProgress(
+        userId,
+        { title: show.title, match: { tmdbId: show.tmdbId }, episodesSeenCount: 0, isArchived: false },
+        job.id,
+        {
+          episodeLog: show.episodeLog.length > 0 ? show.episodeLog : null,
+          emotionLog: show.emotionLog.length > 0 ? show.emotionLog : null,
+        }
+      );
+      // upsertShowProgress guesses watching/planned; put back the exact status,
+      // rating and favorite the person had.
+      const { data: row } = await supabase.from("shows").select("id").eq("tmdb_id", show.tmdbId).single();
+      if (row) {
+        const restore = { status: show.status };
+        if (show.rating != null) restore.rating = show.rating;
+        if (show.isFavorite) restore.is_favorite = true;
+        await supabase.from("user_watchlist").update(restore).eq("user_id", userId).eq("show_id", row.id);
+      }
+      matchedCount++;
+    } catch (e) {
+      console.error(`Scenera import: show "${show.title}" (tmdb_id ${show.tmdbId}) failed:`, e.message);
+    }
+  }
+
+  let movieMatchedCount = 0;
+  for (const movie of movies) {
+    try {
+      const details = await getMovieDetails(movie.tmdbId);
+      const { movieId } = await setMovieStatus(
+        supabase,
+        userId,
+        {
+          tmdb_id: movie.tmdbId,
+          title: details.title || movie.title,
+          poster_path: details.posterPath,
+          release_date: details.releaseDate,
+          runtime: details.runtime,
+          overview: details.overview,
+        },
+        movie.status,
+        movie.watchedAt
+      );
+      if (movie.rating != null) await updateMovieEntry(supabase, userId, movieId, { rating: movie.rating });
+      movieMatchedCount++;
+    } catch (e) {
+      console.error(`Scenera import: movie "${movie.title}" (tmdb_id ${movie.tmdbId}) failed:`, e.message);
+    }
+  }
+
+  await supabase
+    .from("import_jobs")
+    .update({
+      status: "completed",
+      matched_records: matchedCount,
+      unmatched_records: stats.totalShows - matchedCount,
+      completed_at: new Date().toISOString(),
+    })
+    .eq("id", job.id);
+
+  return {
+    jobId: job.id,
+    matchedCount,
+    unmatchedCount: stats.totalShows - matchedCount,
+    totalShows: stats.totalShows,
+    warning: null,
+    movieMatchedCount,
+    movieUnmatchedCount: stats.totalMovies - movieMatchedCount,
+    totalMovies: stats.totalMovies,
+  };
+}
+
+app.post("/import/scenera-zip", requireAuth, uploadZip.single("export_zip"), asyncHandler(async (req, res) => {
+  if (!req.file) return res.status(400).json({ error: "export_zip file is required" });
+  res.json(await processSceneraImport(req.userId, req.file.buffer));
+}));
+
 // Bingers import — unlike TV Time, every row in a Bingers export
 // already carries a real tmdb_id, so bingersParser.js hands us shows
 // that are pre-matched (show.match.status === "matched" for every
