@@ -1124,6 +1124,109 @@ app.post("/import/scenera-zip", requireAuth, uploadZip.single("export_zip"), asy
   res.json(await processSceneraImport(req.userId, req.file.buffer));
 }));
 
+// Second phase of a Scenera import — call AFTER /sync-episodes, with the same zip.
+// Restores what needs episodes to exist: "Watched again" taps, your own comments
+// and replies (original dates kept), and favorite characters. Safe to run twice:
+// rewatches are topped up to the exported count, comments are skipped when the same
+// text/date already exists on that episode or movie, characters are upserted.
+app.post("/import/scenera-extras", requireAuth, uploadZip.single("export_zip"), asyncHandler(async (req, res) => {
+  if (!req.file) return res.status(400).json({ error: "export_zip file is required" });
+  const userId = req.userId;
+  const { extras } = parseSceneraZip(req.file.buffer);
+
+  // (tmdb show id, season, episode) -> episodes.id, from what sync already cached.
+  const tmdbIds = [...new Set([...extras.rewatches.map((r) => r.tmdbId), ...extras.comments.filter((c) => c.tmdbId).map((c) => c.tmdbId)])];
+  const epMap = new Map();
+  if (tmdbIds.length > 0) {
+    const { data: showRows } = await supabase.from("shows").select("id, tmdb_id").in("tmdb_id", tmdbIds);
+    const byShowId = new Map((showRows || []).map((r) => [r.id, r.tmdb_id]));
+    const showIds = [...byShowId.keys()];
+    for (let i = 0; i < showIds.length; i += 50) {
+      const { data: eps } = await supabase.from("episodes").select("id, show_id, season_number, episode_number").in("show_id", showIds.slice(i, i + 50)).limit(20000);
+      for (const e of eps || []) epMap.set(`${byShowId.get(e.show_id)}-${e.season_number}-${e.episode_number}`, e.id);
+    }
+  }
+  const epId = (tmdbId, season, episode) => epMap.get(`${tmdbId}-${season}-${episode}`);
+
+  // Rewatches: top up to the exported count per episode.
+  let rewatchesRestored = 0;
+  const wantRewatch = new Map();
+  for (const r of extras.rewatches) {
+    const id = epId(r.tmdbId, r.season, r.episode);
+    if (id) wantRewatch.set(id, (wantRewatch.get(id) || 0) + 1);
+  }
+  if (wantRewatch.size > 0) {
+    const ids = [...wantRewatch.keys()];
+    const have = new Map();
+    for (let i = 0; i < ids.length; i += 100) {
+      const { data } = await supabase.from("episode_rewatches").select("episode_id").eq("user_id", userId).in("episode_id", ids.slice(i, i + 100));
+      for (const row of data || []) have.set(row.episode_id, (have.get(row.episode_id) || 0) + 1);
+    }
+    const rows = [];
+    for (const [id, want] of wantRewatch) {
+      for (let k = have.get(id) || 0; k < want; k++) rows.push({ user_id: userId, episode_id: id });
+    }
+    for (let i = 0; i < rows.length; i += 500) {
+      const { error } = await supabase.from("episode_rewatches").insert(rows.slice(i, i + 500));
+      if (error) console.error("Scenera extras: rewatch insert failed:", error.message);
+      else rewatchesRestored += rows.slice(i, i + 500).length;
+    }
+  }
+
+  // Favorite characters.
+  let charactersRestored = 0;
+  for (const c of extras.characters) {
+    const { id, user_id, ...row } = c;
+    const { error } = await supabase
+      .from("favorite_characters")
+      .upsert({ ...row, user_id: userId }, { onConflict: "user_id,tmdb_person_id,source_type,source_tmdb_id" });
+    if (error) console.error("Scenera extras: favorite character failed:", error.message);
+    else charactersRestored++;
+  }
+
+  // Comments: parents before replies, skipping any that already exist.
+  const resolved = extras.comments
+    .map((c) => ({ ...c, episodeId: c.movieTmdbId ? null : epId(c.tmdbId, c.season, c.episode) }))
+    .filter((c) => c.movieTmdbId || c.episodeId);
+  const targetKey = (c) => (c.movieTmdbId ? `m${c.movieTmdbId}` : `e${c.episodeId}`);
+  const existing = new Set();
+  const { data: mine } = await supabase.from("episode_comments").select("episode_id, movie_tmdb_id, content, created_at").eq("user_id", userId).limit(20000);
+  for (const r of mine || []) {
+    existing.add(`${r.movie_tmdb_id ? `m${r.movie_tmdb_id}` : `e${r.episode_id}`}|${new Date(r.created_at).getTime()}|${r.content}`);
+  }
+  const idMap = new Map(); // exported comment id -> id of the restored comment
+  let commentsRestored = 0;
+  const ordered = [...resolved.filter((c) => !c.parentOldId), ...resolved.filter((c) => c.parentOldId)];
+  for (const c of ordered) {
+    const dupKey = `${targetKey(c)}|${c.createdAt ? new Date(c.createdAt).getTime() : "now"}|${c.content}`;
+    if (existing.has(dupKey)) continue;
+    let parentId = null;
+    if (c.parentOldId) {
+      parentId = idMap.get(c.parentOldId) || null;
+      if (!parentId) {
+        // The parent is someone else's comment: keep the reply only if it still exists.
+        const { data: p } = await supabase.from("episode_comments").select("id").eq("id", c.parentOldId).maybeSingle();
+        parentId = p?.id || null;
+      }
+    }
+    const row = {
+      user_id: userId,
+      content: c.content,
+      image_url: c.imageUrl,
+      parent_id: parentId,
+      ...(c.movieTmdbId ? { movie_tmdb_id: c.movieTmdbId } : { episode_id: c.episodeId }),
+      ...(c.createdAt ? { created_at: c.createdAt } : {}),
+    };
+    const { data: inserted, error } = await supabase.from("episode_comments").insert(row).select("id").single();
+    if (error) { console.error("Scenera extras: comment insert failed:", error.message); continue; }
+    existing.add(dupKey);
+    if (c.oldId) idMap.set(c.oldId, inserted.id);
+    commentsRestored++;
+  }
+
+  res.json({ rewatchesRestored, charactersRestored, commentsRestored, commentsSkipped: extras.comments.length - commentsRestored });
+}));
+
 // Bingers import — unlike TV Time, every row in a Bingers export
 // already carries a real tmdb_id, so bingersParser.js hands us shows
 // that are pre-matched (show.match.status === "matched" for every

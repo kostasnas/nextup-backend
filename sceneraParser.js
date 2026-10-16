@@ -68,8 +68,32 @@ function parseSceneraZip(buffer) {
     });
   }
 
+  // Second-phase data (needs the episodes cached first — see /import/scenera-extras).
+  const rewatches = (data.episode_rewatches || [])
+    .filter((r) => r.tmdb_id && r.season != null && r.episode != null)
+    .map((r) => ({ tmdbId: Number(r.tmdb_id), season: r.season, episode: r.episode }));
+  const comments = (data.comments || [])
+    .filter((c) => c.content && (c.movie_tmdb_id || (c.tmdb_id && c.season != null && c.episode != null)))
+    .map((c) => ({
+      oldId: c.id || null,
+      parentOldId: c.parent_id || null,
+      content: c.content,
+      imageUrl: c.image_url || null,
+      createdAt: c.created_at || null,
+      movieTmdbId: c.movie_tmdb_id ? Number(c.movie_tmdb_id) : null,
+      tmdbId: c.tmdb_id ? Number(c.tmdb_id) : null,
+      season: c.season ?? null,
+      episode: c.episode ?? null,
+    }));
+  const characters = (data.favorite_characters || []).filter((c) => c.tmdb_person_id && c.source_type && c.source_tmdb_id);
+
   const shows = [...showsByTmdb.values()];
-  return { shows, movies, stats: { totalShows: shows.length, totalMovies: movies.length } };
+  return {
+    shows,
+    movies,
+    extras: { rewatches, comments, characters },
+    stats: { totalShows: shows.length, totalMovies: movies.length },
+  };
 }
 
 module.exports = { parseSceneraZip };
