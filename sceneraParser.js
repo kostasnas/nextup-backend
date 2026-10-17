@@ -85,13 +85,16 @@ function parseSceneraZip(buffer) {
       season: c.season ?? null,
       episode: c.episode ?? null,
     }));
+  const notes = (data.title_notes || [])
+    .filter((n) => n.tmdb_id && n.note && (n.media_type === "show" || n.media_type === "movie"))
+    .map((n) => ({ mediaType: n.media_type, tmdbId: Number(n.tmdb_id), note: String(n.note).slice(0, 2000), updatedAt: n.updated_at || null }));
   const characters = (data.favorite_characters || []).filter((c) => c.tmdb_person_id && c.source_type && c.source_tmdb_id);
 
   const shows = [...showsByTmdb.values()];
   return {
     shows,
     movies,
-    extras: { rewatches, comments, characters },
+    extras: { rewatches, comments, characters, notes },
     stats: { totalShows: shows.length, totalMovies: movies.length },
   };
 }

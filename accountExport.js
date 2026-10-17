@@ -197,6 +197,10 @@ async function buildAccountExport(supabase, userId, email) {
       .then((rows) => rows.map(({ user_id, ...r }) => r))
   );
 
+  const titleNotes = await section("title_notes", () =>
+    fetchAll(() => supabase.from("user_title_notes").select("media_type, tmdb_id, note, updated_at").eq("user_id", userId))
+  );
+
   const importHistory = await section("import_history", () =>
     fetchAll(() => supabase.from("import_jobs").select("id, source, status, total_records, matched_records, unmatched_records, created_at, completed_at").eq("user_id", userId))
       .then((rows) => rows.map(({ id, ...r }) => r))
@@ -225,6 +229,7 @@ async function buildAccountExport(supabase, userId, email) {
     messages_sent: messagesSent,
     feature_requests: featureRequests,
     notifications,
+    title_notes: titleNotes,
     import_history: importHistory,
     ...(notes.length ? { notes } : {}),
   };
@@ -253,7 +258,7 @@ function toCsv(rows) {
 
 const CSV_SECTIONS = [
   "watchlist", "watched_episodes", "episode_rewatches", "movies", "comments", "comment_likes",
-  "favorite_characters", "friends", "messages_sent", "feature_requests", "notifications", "import_history",
+  "favorite_characters", "title_notes", "friends", "messages_sent", "feature_requests", "notifications", "import_history",
 ];
 
 function buildExportZip(payload) {

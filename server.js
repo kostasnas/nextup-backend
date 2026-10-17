@@ -1173,6 +1173,16 @@ app.post("/import/scenera-extras", requireAuth, uploadZip.single("export_zip"), 
     }
   }
 
+  // Private notes (keyed by TMDB id, no episodes needed).
+  let notesRestored = 0;
+  for (const n of extras.notes) {
+    const { error } = await supabase
+      .from("user_title_notes")
+      .upsert({ user_id: userId, media_type: n.mediaType, tmdb_id: n.tmdbId, note: n.note, updated_at: n.updatedAt || new Date().toISOString() }, { onConflict: "user_id,media_type,tmdb_id" });
+    if (error) console.error("Scenera extras: note failed:", error.message);
+    else notesRestored++;
+  }
+
   // Favorite characters.
   let charactersRestored = 0;
   for (const c of extras.characters) {
@@ -1224,7 +1234,7 @@ app.post("/import/scenera-extras", requireAuth, uploadZip.single("export_zip"), 
     commentsRestored++;
   }
 
-  res.json({ rewatchesRestored, charactersRestored, commentsRestored, commentsSkipped: extras.comments.length - commentsRestored });
+  res.json({ rewatchesRestored, charactersRestored, notesRestored, commentsRestored, commentsSkipped: extras.comments.length - commentsRestored });
 }));
 
 // Bingers import — unlike TV Time, every row in a Bingers export
@@ -2653,6 +2663,7 @@ app.delete("/account", requireAuth, asyncHandler(async (req, res) => {
   await supabase.from("user_watchlist").delete().eq("user_id", userId);
   await supabase.from("ai_usage_daily").delete().eq("user_id", userId);
   await supabase.from("push_tokens").delete().eq("user_id", userId);
+  await supabase.from("user_title_notes").delete().eq("user_id", userId);
   await supabase.from("friend_connections").delete().or(`requester_id.eq.${userId},recipient_id.eq.${userId}`);
 
   // Best-effort — import history and the avatar file aren't core
