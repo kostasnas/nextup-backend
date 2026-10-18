@@ -21,6 +21,8 @@ const { syncShowProgress, fetchAllEpisodes, cacheEpisodes } = require("./episode
 const { sendFriendRequest, listFriends, acceptFriendRequest, declineFriendRequest, removeFriend, getFriendFavorites, getFriendWatching } = require("./friends");
 const { sendMessage, getMessages, deleteMessage } = require("./messages");
 const { getComments, getCommentCountsForShow, addComment, deleteComment, toggleCommentLike, getEpisodeContext, getMovieComments, addMovieComment, getMovieContext, getMovieCommentCount } = require("./episodeComments");
+const { forEachConcurrent } = require("./concurrency");
+const MOVIE_IMPORT_CONCURRENCY = 12;
 const { getMovieWatchlist, setMovieStatus, updateMovieEntry, removeMovie } = require("./movies");
 const { getFavoriteCharacters, addFavoriteCharacter, removeFavoriteCharacter, getCharacterVoteCounts } = require("./favoriteCharacters");
 const { buildAccountExport, buildExportZip } = require("./accountExport");
@@ -941,10 +943,10 @@ async function processImport(userId, files) {
 
   let movieMatchedCount = 0;
   let movieUnmatchedCount = 0;
-  for (const movie of movies) {
+  await forEachConcurrent(movies, MOVIE_IMPORT_CONCURRENCY, async (movie) => {
     try {
       const results = await searchMovie(movie.title);
-      if (!results || results.length === 0) { movieUnmatchedCount++; continue; }
+      if (!results || results.length === 0) { movieUnmatchedCount++; return; }
       const best = results[0];
       await setMovieStatus(supabase, userId, {
         tmdb_id: best.id,
@@ -959,7 +961,7 @@ async function processImport(userId, files) {
       console.error(`Movie import: failed to match/insert "${movie.title}":`, e.message);
       movieUnmatchedCount++;
     }
-  }
+  });
 
   await supabase
     .from("import_jobs")
@@ -1073,7 +1075,7 @@ async function processSceneraImport(userId, buffer) {
   }
 
   let movieMatchedCount = 0;
-  for (const movie of movies) {
+  await forEachConcurrent(movies, MOVIE_IMPORT_CONCURRENCY, async (movie) => {
     try {
       const details = await getMovieDetails(movie.tmdbId);
       const { movieId } = await setMovieStatus(
@@ -1095,7 +1097,7 @@ async function processSceneraImport(userId, buffer) {
     } catch (e) {
       console.error(`Scenera import: movie "${movie.title}" (tmdb_id ${movie.tmdbId}) failed:`, e.message);
     }
-  }
+  });
 
   await supabase
     .from("import_jobs")
@@ -1274,7 +1276,7 @@ async function processBingersImport(userId, files) {
 
   let movieMatchedCount = 0;
   let movieUnmatchedCount = 0;
-  for (const movie of movies) {
+  await forEachConcurrent(movies, MOVIE_IMPORT_CONCURRENCY, async (movie) => {
     try {
       const details = await getMovieDetails(movie.tmdbId);
       await setMovieStatus(
@@ -1296,7 +1298,7 @@ async function processBingersImport(userId, files) {
       console.error(`Bingers import: failed to import movie "${movie.title}" (tmdb_id ${movie.tmdbId}):`, e.message);
       movieUnmatchedCount++;
     }
-  }
+  });
 
   await supabase
     .from("import_jobs")
@@ -1382,7 +1384,7 @@ async function processMovieParadiseImport(userId, files) {
 
   let movieMatchedCount = 0;
   let movieUnmatchedCount = 0;
-  for (const movie of movies) {
+  await forEachConcurrent(movies, MOVIE_IMPORT_CONCURRENCY, async (movie) => {
     try {
       const details = await getMovieDetails(movie.tmdbId);
       await setMovieStatus(
@@ -1404,7 +1406,7 @@ async function processMovieParadiseImport(userId, files) {
       console.error(`Movie Paradise import: failed to import movie "${movie.title}" (tmdb_id ${movie.tmdbId}):`, e.message);
       movieUnmatchedCount++;
     }
-  }
+  });
 
   await supabase
     .from("import_jobs")
@@ -1483,7 +1485,7 @@ async function processSimklImport(userId, files) {
 
   let movieMatchedCount = 0;
   let movieUnmatchedCount = 0;
-  for (const movie of movies) {
+  await forEachConcurrent(movies, MOVIE_IMPORT_CONCURRENCY, async (movie) => {
     try {
       const details = await getMovieDetails(movie.tmdbId);
       await setMovieStatus(
@@ -1505,7 +1507,7 @@ async function processSimklImport(userId, files) {
       console.error(`Simkl import: failed to import movie "${movie.title}" (tmdb_id ${movie.tmdbId}):`, e.message);
       movieUnmatchedCount++;
     }
-  }
+  });
 
   await supabase
     .from("import_jobs")
@@ -1589,7 +1591,7 @@ async function processSofaTimeImport(userId, files) {
 
   let movieMatchedCount = 0;
   let movieUnmatchedCount = 0;
-  for (const movie of movies) {
+  await forEachConcurrent(movies, MOVIE_IMPORT_CONCURRENCY, async (movie) => {
     try {
       const details = await getMovieDetails(movie.tmdbId);
       await setMovieStatus(
@@ -1611,7 +1613,7 @@ async function processSofaTimeImport(userId, files) {
       console.error(`Sofa Time import: failed to import movie "${movie.title}" (tmdb_id ${movie.tmdbId}):`, e.message);
       movieUnmatchedCount++;
     }
-  }
+  });
 
   await supabase
     .from("import_jobs")
@@ -1699,7 +1701,7 @@ async function processTraktImport(userId, files) {
 
   let movieMatchedCount = 0;
   let movieUnmatchedCount = 0;
-  for (const movie of movies) {
+  await forEachConcurrent(movies, MOVIE_IMPORT_CONCURRENCY, async (movie) => {
     try {
       const details = await getMovieDetails(movie.tmdbId);
       await setMovieStatus(
@@ -1721,7 +1723,7 @@ async function processTraktImport(userId, files) {
       console.error(`Trakt import: failed to import movie "${movie.title}" (tmdb_id ${movie.tmdbId}):`, e.message);
       movieUnmatchedCount++;
     }
-  }
+  });
 
   await supabase
     .from("import_jobs")
@@ -1793,10 +1795,10 @@ async function processLetterboxdImport(userId, files) {
 
   let movieMatchedCount = 0;
   let movieUnmatchedCount = 0;
-  for (const movie of movies) {
+  await forEachConcurrent(movies, MOVIE_IMPORT_CONCURRENCY, async (movie) => {
     try {
       const match = await matchMovie(movie.title, movie.year);
-      if (match.status !== "matched") { movieUnmatchedCount++; continue; }
+      if (match.status !== "matched") { movieUnmatchedCount++; return; }
       const details = await getMovieDetails(match.tmdbId);
       await setMovieStatus(
         supabase,
@@ -1810,7 +1812,7 @@ async function processLetterboxdImport(userId, files) {
       console.error(`Letterboxd import: failed to match/import "${movie.title}" (${movie.year}):`, e.message);
       movieUnmatchedCount++;
     }
-  }
+  });
 
   await supabase
     .from("import_jobs")
@@ -1899,10 +1901,10 @@ async function processImdbImport(userId, fileContent) {
 
   let movieMatchedCount = 0;
   let movieUnmatchedCount = 0;
-  for (const movie of movies) {
+  await forEachConcurrent(movies, MOVIE_IMPORT_CONCURRENCY, async (movie) => {
     try {
       const { movie: tmdbMovie } = await findByImdbId(movie.imdbId);
-      if (!tmdbMovie) { movieUnmatchedCount++; continue; }
+      if (!tmdbMovie) { movieUnmatchedCount++; return; }
       const details = await getMovieDetails(tmdbMovie.id);
       await setMovieStatus(
         supabase,
@@ -1923,7 +1925,7 @@ async function processImdbImport(userId, fileContent) {
       console.error(`IMDb import: failed to match/import movie "${movie.title}" (${movie.imdbId}):`, e.message);
       movieUnmatchedCount++;
     }
-  }
+  });
 
   await supabase
     .from("import_jobs")
@@ -2030,43 +2032,59 @@ app.post("/import/:jobId/sync-episodes", requireAuth, asyncHandler(async (req, r
   const { jobId } = req.params;
   await getOwnedJob(jobId, req.userId);
 
-  const { data: jobShows, error } = await supabase
+  // The app calls this repeatedly with a small `limit` so every request is short and it can
+  // show real progress ("120/615"). With no limit it still does everything in one call.
+  // `skipTmdbIds` lists shows that already failed this run, so a failing show can't block
+  // the loop by being picked again and again.
+  const limit = Number.isInteger(req.body?.limit) && req.body.limit > 0 ? Math.min(req.body.limit, 100) : null;
+  const skip = Array.isArray(req.body?.skipTmdbIds) ? req.body.skipTmdbIds.filter(Number.isInteger) : [];
+
+  let query = supabase
     .from("import_job_shows")
     .select("*")
     .eq("import_job_id", jobId)
     .eq("synced", false);
+  if (skip.length > 0) query = query.not("tmdb_id", "in", `(${skip.join(",")})`);
+  if (limit) query = query.limit(limit);
+  const { data: jobShows, error } = await query;
   if (error) throw error;
 
   let syncedCount = 0;
   let failedCount = 0;
   const failures = [];
 
-  const CONCURRENCY = 5;
-  for (let i = 0; i < jobShows.length; i += CONCURRENCY) {
-    const batch = jobShows.slice(i, i + CONCURRENCY);
-    await Promise.all(
-      batch.map(async (jobShow) => {
-        try {
-          await syncShowProgress(supabase, {
-            userId: req.userId,
-            showRowId: jobShow.show_id,
-            tmdbId: jobShow.tmdb_id,
-            episodesSeenCount: jobShow.episodes_seen_count,
-            episodeLog: jobShow.episode_log,
-            emotionLog: jobShow.emotion_log,
-          });
-          await supabase.from("import_job_shows").update({ synced: true }).eq("id", jobShow.id);
-          syncedCount++;
-        } catch (err) {
-          failedCount++;
-          failures.push({ tmdbId: jobShow.tmdb_id, error: err.message });
-          console.error(`Episode sync failed for tmdb_id ${jobShow.tmdb_id}:`, err.message);
-        }
-      })
-    );
-  }
+  await forEachConcurrent(jobShows, 8, async (jobShow) => {
+    try {
+      await syncShowProgress(supabase, {
+        userId: req.userId,
+        showRowId: jobShow.show_id,
+        tmdbId: jobShow.tmdb_id,
+        episodesSeenCount: jobShow.episodes_seen_count,
+        episodeLog: jobShow.episode_log,
+        emotionLog: jobShow.emotion_log,
+      });
+      await supabase.from("import_job_shows").update({ synced: true }).eq("id", jobShow.id);
+      syncedCount++;
+    } catch (err) {
+      failedCount++;
+      failures.push({ tmdbId: jobShow.tmdb_id, error: err.message });
+      console.error(`Episode sync failed for tmdb_id ${jobShow.tmdb_id}:`, err.message);
+    }
+  });
 
-  res.json({ totalShows: jobShows.length, syncedCount, failedCount, failures: failures.slice(0, 10) });
+  const { count: totalCount } = await supabase
+    .from("import_job_shows").select("id", { count: "exact", head: true }).eq("import_job_id", jobId);
+  const { count: pendingCount } = await supabase
+    .from("import_job_shows").select("id", { count: "exact", head: true }).eq("import_job_id", jobId).eq("synced", false);
+
+  res.json({
+    totalShows: totalCount ?? jobShows.length,
+    remaining: pendingCount ?? 0,
+    syncedCount,
+    failedCount,
+    failures: failures.slice(0, 10),
+    failedTmdbIds: failures.map((f) => f.tmdbId),
+  });
 }));
 
 app.get("/import/:jobId/unmatched", requireAuth, asyncHandler(async (req, res) => {

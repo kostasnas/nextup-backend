@@ -37,7 +37,13 @@ async function upsertMovie(supabase, tmdbMovie) {
     })
     .select("id")
     .single();
-  if (error) throw error;
+  if (error) {
+    // Imports now insert movies concurrently: if another worker (or another user's import)
+    // created the same tmdb_id first, use that row instead of failing.
+    const { data: again } = await supabase.from("movies").select("id").eq("tmdb_id", tmdbMovie.tmdb_id).maybeSingle();
+    if (again) return again.id;
+    throw error;
+  }
   return inserted.id;
 }
 
