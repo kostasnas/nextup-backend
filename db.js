@@ -20,6 +20,15 @@ function getPool() {
   return pool;
 }
 
+// Signup order (1 = first account) among accounts that exist today, by auth.users.created_at.
+async function getSignupRank(userId) {
+  const { rows } = await getPool().query(
+    "select (select count(*) from auth.users u where u.created_at <= me.created_at)::int as rank, me.created_at from auth.users me where me.id = $1",
+    [userId]
+  );
+  return rows[0] || null;
+}
+
 async function findUserByEmail(email) {
   const { rows } = await getPool().query(
     "select id, email from auth.users where lower(email) = lower($1) limit 1",
@@ -66,4 +75,5 @@ async function getUsersCreatedSince(days) {
   return rows;
 }
 
-module.exports = { getPool, findUserByEmail, findUserByUsername, getUserDisplayInfo, getUsersCreatedSince };
+module.exports = {
+  getSignupRank, getPool, findUserByEmail, findUserByUsername, getUserDisplayInfo, getUsersCreatedSince };

@@ -32,7 +32,7 @@ const { logRewatch, removeRewatch, getRewatchCountsForShow } = require("./episod
 const { getEmotionCountsForShow } = require("./episodeEmotions");
 const { createConnectUrl, handleCallback, disconnectTrakt, getTraktStatus } = require("./traktAuth");
 const { syncAllTraktUsers } = require("./traktSync");
-const { findUserByEmail, findUserByUsername } = require("./db");
+const { findUserByEmail, findUserByUsername, getSignupRank } = require("./db");
 const { getShowCommunityRating } = require("./showRatings");
 const { createNotification, listNotifications, getUnreadCount, markAllRead, markRead } = require("./notifications");
 const { runSmokeTest: runCommsSmokeTest } = require("./commsuni");
@@ -2643,6 +2643,15 @@ app.post("/profile/username", requireAuth, asyncHandler(async (req, res) => {
 app.get("/profile/username", requireAuth, asyncHandler(async (req, res) => {
   const { data } = await supabase.from("user_profiles").select("username").eq("user_id", req.userId).maybeSingle();
   res.json({ username: data?.username || null });
+}));
+
+// Early-account "ticket": number = signup order (created_at), tier by range.
+// Only the first 1,000 accounts get one; everyone else gets { ticket: null }.
+app.get("/profile/pioneer", requireAuth, asyncHandler(async (req, res) => {
+  const row = await getSignupRank(req.userId);
+  if (!row || row.rank > 1000) return res.json({ ticket: null });
+  const tier = row.rank <= 100 ? "premiere" : row.rank <= 500 ? "matinee" : "early";
+  res.json({ ticket: { number: row.rank, tier, joined: row.created_at } });
 }));
 
 // "Export my data" — the account's full data as JSON (see accountExport.js).
