@@ -29,6 +29,29 @@ async function getSignupRank(userId) {
   return rows[0] || null;
 }
 
+// Everything the Stats screen needs about a user's watching, in one pass.
+// Imported rows (source starting "import") whose watched_at is at/after the
+// user's first import job are treated as UNDATED: importers stamp "now" on
+// episodes that had no date in the source file, so those timestamps are the
+// import day, not the day it was watched.
+async function getStatsRows(userId) {
+  const pool = getPool();
+  const [{ rows: eps }, { rows: movies }, { rows: jobs }] = await Promise.all([
+    pool.query(
+      `select we.watched_at, we.source, e.show_id, s.title, s.poster_path, s.network,
+              coalesce(s.avg_episode_runtime, 42) as rt
+         from watched_episodes we
+         join episodes e on e.id = we.episode_id
+         join shows s on s.id = e.show_id
+        where we.user_id = $1`, [userId]),
+    pool.query(
+      `select coalesce(m.runtime, 0) as runtime from user_movie_watchlist w
+         join movies m on m.id = w.movie_id where w.user_id = $1 and w.status = 'watched'`, [userId]),
+    pool.query(`select min(created_at) as first_import from import_jobs where user_id = $1`, [userId]),
+  ]);
+  return { eps, movies, firstImport: jobs[0]?.first_import || null };
+}
+
 async function findUserByEmail(email) {
   const { rows } = await getPool().query(
     "select id, email from auth.users where lower(email) = lower($1) limit 1",
@@ -76,4 +99,5 @@ async function getUsersCreatedSince(days) {
 }
 
 module.exports = {
+  getStatsRows,
   getSignupRank, getPool, findUserByEmail, findUserByUsername, getUserDisplayInfo, getUsersCreatedSince };

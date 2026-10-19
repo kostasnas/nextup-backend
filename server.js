@@ -32,7 +32,8 @@ const { logRewatch, removeRewatch, getRewatchCountsForShow } = require("./episod
 const { getEmotionCountsForShow } = require("./episodeEmotions");
 const { createConnectUrl, handleCallback, disconnectTrakt, getTraktStatus } = require("./traktAuth");
 const { syncAllTraktUsers } = require("./traktSync");
-const { findUserByEmail, findUserByUsername, getSignupRank } = require("./db");
+const { findUserByEmail, findUserByUsername, getSignupRank, getStatsRows } = require("./db");
+const { buildOverview } = require("./statsOverview");
 const { getShowCommunityRating } = require("./showRatings");
 const { createNotification, listNotifications, getUnreadCount, markAllRead, markRead } = require("./notifications");
 const { runSmokeTest: runCommsSmokeTest } = require("./commsuni");
@@ -598,6 +599,13 @@ app.get("/stats/summary", requireAuth, asyncHandler(async (req, res) => {
   const totalHours = Math.round((episodeMinutes + movieMinutes) / 60);
 
   res.json({ showsCount: showIds.size, moviesCount: (movieRows || []).length, totalHours });
+}));
+
+// Rich Stats screen data. Date-based figures only use episodes with a real
+// watch date (see statsOverview.isDated); totals use everything.
+app.get("/stats/overview", requireAuth, asyncHandler(async (req, res) => {
+  res.setHeader("Cache-Control", "no-store");
+  res.json(buildOverview(await getStatsRows(req.userId)));
 }));
 
 // "Surprise Me" — picks one random title off the person's own watchlist
