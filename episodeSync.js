@@ -27,6 +27,14 @@ function showMeta(show) {
   return { genres, firstAirYear: Number.isFinite(year) ? year : null };
 }
 
+// Season list as TMDB currently reports it: [{season_number, episode_count}], seasons > 0 only.
+async function fetchSeasonList(tmdbId) {
+  const show = await tmdbFetch(`/tv/${tmdbId}`);
+  return (show.seasons || [])
+    .filter((x) => x.season_number > 0)
+    .map((x) => ({ season_number: x.season_number, episode_count: x.episode_count }));
+}
+
 // Light fetch (one TMDB call) used by the Stats backfill.
 async function fetchShowMeta(tmdbId) {
   return showMeta(await tmdbFetch(`/tv/${tmdbId}`));
@@ -208,4 +216,4 @@ async function syncShowProgress(supabase, { userId, showRowId, tmdbId, episodesS
   return { totalEpisodes: cached.length, markedCount, showStatus };
 }
 
-module.exports = { fetchShowMeta, fetchAllEpisodes, cacheEpisodes, markProgress, syncShowProgress };
+module.exports = { fetchSeasonList, fetchShowMeta, fetchAllEpisodes, cacheEpisodes, markProgress, syncShowProgress };

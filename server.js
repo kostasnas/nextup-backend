@@ -17,7 +17,7 @@ const { parseTraktExport } = require("./traktParser");
 const { parseLetterboxdExport } = require("./letterboxdParser");
 const { parseImdbRatingsExport } = require("./imdbParser");
 const { matchShows, searchShow, searchMovie, matchMovie, findByImdbId } = require("./tmdbMatcher");
-const { syncShowProgress, fetchAllEpisodes, cacheEpisodes, fetchShowMeta } = require("./episodeSync");
+const { syncShowProgress, fetchAllEpisodes, cacheEpisodes, fetchShowMeta, fetchSeasonList } = require("./episodeSync");
 const { sendFriendRequest, listFriends, acceptFriendRequest, declineFriendRequest, removeFriend, getFriendFavorites, getFriendWatching } = require("./friends");
 const { sendMessage, getMessages, deleteMessage } = require("./messages");
 const { getComments, getCommentCountsForShow, addComment, deleteComment, toggleCommentLike, getEpisodeContext, getMovieComments, addMovieComment, getMovieContext, getMovieCommentCount } = require("./episodeComments");
@@ -3198,6 +3198,53 @@ const backfillShowMetaHandler = asyncHandler(async (req, res) => {
   const { count } = await supabase.from("shows").select("id", { count: "exact", head: true }).is("genres", null);
   res.json({ checked: (rows || []).length, updated, failed, remaining: count ?? null });
 });
+// READ-ONLY report: shows whose season/episode list in our DB no longer matches what TMDB
+// reports now (e.g. The Girl from Oslo: DB has season 2, TMDB lists only season 1). Changes
+// nothing. Paged: ?offset=0&limit=40, repeat with the returned nextOffset until it is null.
+// Secret via x-cron-secret header or ?secret=.
+app.get("/admin/season-diff", asyncHandler(async (req, res) => {
+  const providedSecret = req.headers["x-cron-secret"] || req.query.secret;
+  if (!process.env.CRON_SECRET || providedSecret !== process.env.CRON_SECRET) {
+    return res.status(401).json({ error: "Unauthorized" });
+  }
+  const offset = Math.max(0, parseInt(req.query.offset, 10) || 0);
+  const limit = Math.min(60, Math.max(1, parseInt(req.query.limit, 10) || 40));
+  const pool = getPool();
+  const { rows: shows } = await pool.query(
+    `select s.id, s.tmdb_id, s.title from shows s
+      where exists (select 1 from episodes e where e.show_id = s.id)
+      order by s.tmdb_id offset $1 limit $2`, [offset, limit]);
+  const { rows: total } = await pool.query(
+    `select count(*)::int n from shows s where exists (select 1 from episodes e where e.show_id = s.id)`);
+  const diffs = [];
+  let failed = 0;
+  for (const sh of shows) {
+    try {
+      const tmdb = await fetchSeasonList(sh.tmdb_id);
+      const { rows: db } = await pool.query(
+        `select e.season_number, count(*)::int as episodes, count(w.id)::int as watched
+           from episodes e left join watched_episodes w on w.episode_id = e.id
+          where e.show_id = $1 and e.season_number > 0 group by e.season_number`, [sh.id]);
+      const tmdbMap = new Map(tmdb.map((x) => [x.season_number, x.episode_count]));
+      const dbMap = new Map(db.map((x) => [x.season_number, x]));
+      const onlyInDb = db.filter((x) => !tmdbMap.has(x.season_number));
+      const onlyInTmdb = tmdb.filter((x) => !dbMap.has(x.season_number)).map((x) => x.season_number);
+      const countDiff = db.filter((x) => tmdbMap.has(x.season_number) && tmdbMap.get(x.season_number) !== x.episodes)
+        .map((x) => ({ season: x.season_number, db: x.episodes, tmdb: tmdbMap.get(x.season_number) }));
+      if (onlyInDb.length || onlyInTmdb.length || countDiff.length) {
+        diffs.push({ tmdb_id: sh.tmdb_id, title: sh.title,
+          only_in_db: onlyInDb.map((x) => ({ season: x.season_number, episodes: x.episodes, watched: x.watched })),
+          only_in_tmdb: onlyInTmdb, episode_count_differs: countDiff });
+      }
+    } catch (err) {
+      failed++;
+      console.error(`season-diff failed for tmdb_id=${sh.tmdb_id}:`, err.message);
+    }
+  }
+  const next = offset + shows.length;
+  res.json({ checked: shows.length, failed, totalShows: total[0].n, nextOffset: next < total[0].n ? next : null, diffs });
+}));
+
 app.get("/admin/backfill-show-meta", backfillShowMetaHandler);
 app.post("/admin/backfill-show-meta", backfillShowMetaHandler);
 
