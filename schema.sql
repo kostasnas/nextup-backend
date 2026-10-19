@@ -169,3 +169,8 @@ create table if not exists app_feedback (
   created_at timestamptz not null default now()
 );
 alter table app_feedback enable row level security;
+
+-- Stats screen (19 Oct 2026): genres + first-air year per show.
+-- Run in the Supabase SQL editor, then open /admin/backfill-show-meta?secret=... until remaining is 0.
+alter table shows add column if not exists genres text[];
+alter table shows add column if not exists first_air_year integer;

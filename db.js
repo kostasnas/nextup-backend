@@ -36,16 +36,19 @@ async function getSignupRank(userId) {
 // import day, not the day it was watched.
 async function getStatsRows(userId) {
   const pool = getPool();
-  const [{ rows: eps }, { rows: movies }, { rows: jobs }] = await Promise.all([
-    pool.query(
-      `select we.watched_at, we.source, e.show_id, s.title, s.poster_path, s.network,
+  const epSql = (cols) => `select we.watched_at, we.source, e.show_id, s.title, s.poster_path, s.network, ${cols}
               coalesce(s.avg_episode_runtime, 42) as rt
          from watched_episodes we
          join episodes e on e.id = we.episode_id
          join shows s on s.id = e.show_id
-        where we.user_id = $1`, [userId]),
+        where we.user_id = $1`;
+  // Before the genres migration has run, fall back to the plain query.
+  const epsP = pool.query(epSql("s.genres, s.first_air_year,"), [userId])
+    .catch((e) => { if (e.code === "42703") return pool.query(epSql(""), [userId]); throw e; });
+  const [{ rows: eps }, { rows: movies }, { rows: jobs }] = await Promise.all([
+    epsP,
     pool.query(
-      `select coalesce(m.runtime, 0) as runtime from user_movie_watchlist w
+      `select coalesce(m.runtime, 0) as runtime, nullif(left(m.release_date::text, 4), '')::int as year from user_movie_watchlist w
          join movies m on m.id = w.movie_id where w.user_id = $1 and w.status = 'watched'`, [userId]),
     pool.query(`select min(created_at) as first_import from import_jobs where user_id = $1`, [userId]),
   ]);

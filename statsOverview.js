@@ -22,7 +22,7 @@ function buildOverview({ eps, movies, firstImport }, now = new Date()) {
   // Top shows by time watched
   const byShow = new Map();
   for (const r of eps) {
-    const s = byShow.get(r.show_id) || { title: r.title, posterPath: r.poster_path, network: r.network, episodes: 0, minutes: 0 };
+    const s = byShow.get(r.show_id) || { genres: r.genres, year: r.first_air_year, title: r.title, posterPath: r.poster_path, network: r.network, episodes: 0, minutes: 0 };
     s.episodes += 1; s.minutes += Number(r.rt);
     byShow.set(r.show_id, s);
   }
@@ -33,6 +33,16 @@ function buildOverview({ eps, movies, firstImport }, now = new Date()) {
   const net = new Map();
   for (const s of byShow.values()) if (s.network) net.set(s.network, (net.get(s.network) || 0) + 1);
   const networks = [...net.entries()].sort((a, b) => b[1] - a[1]).slice(0, 6).map(([name, shows]) => ({ name, shows }));
+
+  // Genres (distinct shows per genre) and decades (shows + movies)
+  const gc = new Map();
+  for (const s of byShow.values()) for (const g of s.genres || []) gc.set(g, (gc.get(g) || 0) + 1);
+  const genres = [...gc.entries()].sort((a, b) => b[1] - a[1]).slice(0, 6).map(([name, count]) => ({ name, count }));
+  const dc = new Map();
+  const bump = (y) => { if (y) { const d = Math.floor(y / 10) * 10; dc.set(d, (dc.get(d) || 0) + 1); } };
+  for (const s of byShow.values()) bump(s.year);
+  for (const m of movies) bump(m.year);
+  const decades = [...dc.entries()].sort((a, b) => a[0] - b[0]).map(([decade, count]) => ({ decade, count }));
 
   // Dated activity only
   const dated = eps.filter((r) => isDated(r, firstImport)).map((r) => ({ t: new Date(r.watched_at), show: r.show_id, title: r.title, rt: Number(r.rt) }));
@@ -85,7 +95,7 @@ function buildOverview({ eps, movies, firstImport }, now = new Date()) {
     episodes: eps.length,
     movies: movies.length,
     seriesShare: totalMinutes > 0 ? Math.round((episodeMinutes / totalMinutes) * 100) : null,
-    topShows, networks, showsCount: byShow.size,
+    topShows, networks, genres, decades, showsCount: byShow.size,
     datedEpisodes: dated.length,
     last7: { minutes: Math.round(sum(last7)), plays: last7.length },
     last30: { minutes: Math.round(sum(last30)), plays: last30.length },

@@ -17,7 +17,7 @@ const { parseTraktExport } = require("./traktParser");
 const { parseLetterboxdExport } = require("./letterboxdParser");
 const { parseImdbRatingsExport } = require("./imdbParser");
 const { matchShows, searchShow, searchMovie, matchMovie, findByImdbId } = require("./tmdbMatcher");
-const { syncShowProgress, fetchAllEpisodes, cacheEpisodes } = require("./episodeSync");
+const { syncShowProgress, fetchAllEpisodes, cacheEpisodes, fetchShowMeta } = require("./episodeSync");
 const { sendFriendRequest, listFriends, acceptFriendRequest, declineFriendRequest, removeFriend, getFriendFavorites, getFriendWatching } = require("./friends");
 const { sendMessage, getMessages, deleteMessage } = require("./messages");
 const { getComments, getCommentCountsForShow, addComment, deleteComment, toggleCommentLike, getEpisodeContext, getMovieComments, addMovieComment, getMovieContext, getMovieCommentCount } = require("./episodeComments");
@@ -2563,6 +2563,8 @@ app.get("/shows/:tmdbId/full-progress", requireAuth, asyncHandler(async (req, re
       .from("shows")
       .update({ status: showStatus, episodes_synced_at: new Date().toISOString(), avg_episode_runtime: fetched.episodeRunTime })
       .eq("id", showRow.id);
+    // Separate update so a missing genres column (migration not run yet) can never break the sync above.
+    await supabase.from("shows").update({ genres: fetched.genres, first_air_year: fetched.firstAirYear }).eq("id", showRow.id);
   } else {
     // We have SOMETHING cached — serve it immediately even if stale,
     // so the person never waits on TMDB for a show that's already
@@ -2587,6 +2589,7 @@ app.get("/shows/:tmdbId/full-progress", requireAuth, asyncHandler(async (req, re
             .from("shows")
             .update({ status: fetched.showStatus, episodes_synced_at: new Date().toISOString(), avg_episode_runtime: fetched.episodeRunTime })
             .eq("id", showRow.id);
+          await supabase.from("shows").update({ genres: fetched.genres, first_air_year: fetched.firstAirYear }).eq("id", showRow.id);
         })
         .catch((err) => console.error(`Background episode sync failed for tmdbId=${tmdbId}:`, err.message));
     }
@@ -3172,6 +3175,36 @@ const backfillRuntimesHandler = asyncHandler(async (req, res) => {
 });
 app.get("/admin/backfill-episode-runtimes", backfillRuntimesHandler);
 app.post("/admin/backfill-episode-runtimes", backfillRuntimesHandler);
+
+// Backfill genres + first-air year for shows tracked before those columns
+// existed (Stats screen). Batches of 60 per call so it stays inside the
+// request timeout; just repeat the URL until "remaining" is 0. Secret via
+// x-cron-secret header or ?secret= so it can be run from a browser.
+const backfillShowMetaHandler = asyncHandler(async (req, res) => {
+  const providedSecret = req.headers["x-cron-secret"] || req.query.secret;
+  if (!process.env.CRON_SECRET || providedSecret !== process.env.CRON_SECRET) {
+    return res.status(401).json({ error: "Unauthorized" });
+  }
+  const { data: rows, error } = await supabase
+    .from("shows").select("id, tmdb_id").is("genres", null).limit(60);
+  if (error) throw error;
+  let updated = 0, failed = 0;
+  for (const show of rows || []) {
+    try {
+      const meta = await fetchShowMeta(show.tmdb_id);
+      // empty array (not null) when TMDB has no genres, so it is not retried forever
+      await supabase.from("shows").update({ genres: meta.genres || [], first_air_year: meta.firstAirYear }).eq("id", show.id);
+      updated++;
+    } catch (err) {
+      failed++;
+      console.error(`Show meta backfill failed for tmdb_id=${show.tmdb_id}:`, err.message);
+    }
+  }
+  const { count } = await supabase.from("shows").select("id", { count: "exact", head: true }).is("genres", null);
+  res.json({ checked: (rows || []).length, updated, failed, remaining: count ?? null });
+});
+app.get("/admin/backfill-show-meta", backfillShowMetaHandler);
+app.post("/admin/backfill-show-meta", backfillShowMetaHandler);
 
 // One-off backfill for movies with a null poster_path — mainly ones
 // created by the Trakt sync bug fixed 4 Οκτ 2026 (traktSync.js used to

@@ -20,6 +20,18 @@ async function tmdbFetch(path) {
   });
 }
 
+// Genres + first-air year from a TMDB /tv/{id} payload, for the Stats screen.
+function showMeta(show) {
+  const genres = Array.isArray(show.genres) ? show.genres.map((g) => g.name).filter(Boolean) : null;
+  const year = show.first_air_date ? parseInt(String(show.first_air_date).slice(0, 4), 10) : null;
+  return { genres, firstAirYear: Number.isFinite(year) ? year : null };
+}
+
+// Light fetch (one TMDB call) used by the Stats backfill.
+async function fetchShowMeta(tmdbId) {
+  return showMeta(await tmdbFetch(`/tv/${tmdbId}`));
+}
+
 async function fetchAllEpisodes(tmdbId) {
   const show = await tmdbFetch(`/tv/${tmdbId}`);
   const seasonNumbers = (show.seasons || [])
@@ -67,7 +79,7 @@ async function fetchAllEpisodes(tmdbId) {
     episodeRunTime = Math.round(episodeRuntimes.reduce((sum, r) => sum + r, 0) / episodeRuntimes.length);
   }
 
-  return { episodes, showStatus: show.status, episodeRunTime };
+  return { episodes, showStatus: show.status, episodeRunTime, ...showMeta(show) };
 }
 
 async function cacheEpisodes(supabase, showRowId, episodes) {
@@ -196,4 +208,4 @@ async function syncShowProgress(supabase, { userId, showRowId, tmdbId, episodesS
   return { totalEpisodes: cached.length, markedCount, showStatus };
 }
 
-module.exports = { fetchAllEpisodes, cacheEpisodes, markProgress, syncShowProgress };
+module.exports = { fetchShowMeta, fetchAllEpisodes, cacheEpisodes, markProgress, syncShowProgress };
