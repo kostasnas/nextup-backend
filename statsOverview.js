@@ -14,7 +14,9 @@ function isDated(row, firstImport) {
 
 const dayKey = (d) => d.toISOString().slice(0, 10);
 
-function buildOverview({ eps, movies, firstImport }, now = new Date()) {
+const EMOTIONS = new Set(["loved", "funny", "shocked", "sad", "mad", "mindblown"]);
+
+function buildOverview({ eps, movies, reactions = [], firstImport }, now = new Date()) {
   const episodeMinutes = eps.reduce((n, r) => n + Number(r.rt), 0);
   const movieMinutes = movies.reduce((n, m) => n + Number(m.runtime || 0), 0);
   const totalMinutes = episodeMinutes + movieMinutes;
@@ -77,12 +79,14 @@ function buildOverview({ eps, movies, firstImport }, now = new Date()) {
   }
 
   // Last 52 weeks (Mon-start) of plays, last ~22 weeks of daily cells
-  const weeks = [];
+  const weeks = [], weekMinutes = [];
   const monday = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
   monday.setUTCDate(monday.getUTCDate() - ((monday.getUTCDay() + 6) % 7));
   for (let w = 51; w >= 0; w--) {
     const from = monday.getTime() - w * 7 * DAY;
-    weeks.push(win(from, from + 7 * DAY).length);
+    const inWeek = win(from, from + 7 * DAY);
+    weeks.push(inWeek.length);
+    weekMinutes.push(Math.round(sum(inWeek)));
   }
   const heat = [];
   for (let i = 153; i >= 0; i--) heat.push(days.get(dayKey(new Date(now.getTime() - i * DAY))) || 0);
@@ -101,7 +105,8 @@ function buildOverview({ eps, movies, firstImport }, now = new Date()) {
     last30: { minutes: Math.round(sum(last30)), plays: last30.length },
     prev30Minutes: Math.round(sum(prev30)),
     paceMinutesPerDay: Math.round(pace30Minutes),
-    weeks, heat,
+    weeks, weekMinutes, heat,
+    emotions: reactions.filter((r) => EMOTIONS.has(r.reaction)).map((r) => ({ key: r.reaction, count: r.count })).sort((a, b) => b.count - a.count),
     hallOfFame: {
       biggestBinge: biggestBinge && biggestBinge.n >= 2 ? { episodes: biggestBinge.n, day: biggestBinge.day, title: biggestBinge.title } : null,
       bestMonth: bestMonthE ? { month: bestMonthE[0], minutes: Math.round(bestMonthE[1]) } : null,
