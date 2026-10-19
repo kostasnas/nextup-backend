@@ -3222,7 +3222,7 @@ app.get("/admin/season-diff", asyncHandler(async (req, res) => {
     try {
       const tmdb = await fetchSeasonList(sh.tmdb_id);
       const { rows: db } = await pool.query(
-        `select e.season_number, count(*)::int as episodes, count(w.id)::int as watched
+        `select e.season_number, count(distinct e.id)::int as episodes, count(distinct e.id) filter (where w.id is not null)::int as watched
            from episodes e left join watched_episodes w on w.episode_id = e.id
           where e.show_id = $1 and e.season_number > 0 group by e.season_number`, [sh.id]);
       const tmdbMap = new Map(tmdb.map((x) => [x.season_number, x.episode_count]));
