@@ -3245,6 +3245,44 @@ app.get("/admin/season-diff", asyncHandler(async (req, res) => {
   res.json({ checked: shows.length, failed, totalShows: total[0].n, nextOffset: next < total[0].n ? next : null, diffs });
 }));
 
+// One-click version of season-diff: /admin/season-diff-start kicks off a background scan of ALL
+// shows (read-only), /admin/season-diff-result shows progress and, once done, only the shows where
+// our DB has seasons TMDB no longer lists (the "Girl from Oslo" case). Held in memory only.
+let seasonScan = { running: false, done: 0, total: 0, failed: 0, startedAt: null, finishedAt: null, onlyInDb: [] };
+const adminSecretOk = (req) => process.env.CRON_SECRET && (req.headers["x-cron-secret"] || req.query.secret) === process.env.CRON_SECRET;
+app.get("/admin/season-diff-start", asyncHandler(async (req, res) => {
+  if (!adminSecretOk(req)) return res.status(401).json({ error: "Unauthorized" });
+  if (seasonScan.running) return res.json({ started: false, message: "already running", done: seasonScan.done, total: seasonScan.total });
+  const pool = getPool();
+  const { rows: shows } = await pool.query(
+    `select s.id, s.tmdb_id, s.title from shows s where exists (select 1 from episodes e where e.show_id = s.id) order by s.tmdb_id`);
+  seasonScan = { running: true, done: 0, total: shows.length, failed: 0, startedAt: new Date().toISOString(), finishedAt: null, onlyInDb: [] };
+  const scan = seasonScan;
+  (async () => {
+    for (const sh of shows) {
+      try {
+        const tmdb = await fetchSeasonList(sh.tmdb_id);
+        const tmdbSet = new Set(tmdb.map((x) => x.season_number));
+        const { rows: db } = await pool.query(
+          `select e.season_number, count(distinct e.id)::int as episodes, count(distinct e.id) filter (where w.id is not null)::int as watched
+             from episodes e left join watched_episodes w on w.episode_id = e.id
+            where e.show_id = $1 and e.season_number > 0 group by e.season_number`, [sh.id]);
+        const extra = db.filter((x) => !tmdbSet.has(x.season_number));
+        if (extra.length) scan.onlyInDb.push({ tmdb_id: sh.tmdb_id, title: sh.title,
+          seasons: extra.map((x) => ({ season: x.season_number, episodes: x.episodes, watched_by_anyone: x.watched })) });
+      } catch (err) { scan.failed++; console.error(`season-diff-all failed tmdb_id=${sh.tmdb_id}:`, err.message); }
+      scan.done++;
+    }
+    scan.running = false; scan.finishedAt = new Date().toISOString();
+  })();
+  res.json({ started: true, total: shows.length, next: "open /admin/season-diff-result in a few minutes" });
+}));
+app.get("/admin/season-diff-result", asyncHandler(async (req, res) => {
+  if (!adminSecretOk(req)) return res.status(401).json({ error: "Unauthorized" });
+  res.json({ running: seasonScan.running, progress: `${seasonScan.done}/${seasonScan.total}`, failed: seasonScan.failed,
+    finishedAt: seasonScan.finishedAt, count: seasonScan.onlyInDb.length, onlyInDb: seasonScan.onlyInDb });
+}));
+
 app.get("/admin/backfill-show-meta", backfillShowMetaHandler);
 app.post("/admin/backfill-show-meta", backfillShowMetaHandler);
 
