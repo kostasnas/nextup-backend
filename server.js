@@ -32,7 +32,7 @@ const { logRewatch, removeRewatch, getRewatchCountsForShow } = require("./episod
 const { getEmotionCountsForShow } = require("./episodeEmotions");
 const { createConnectUrl, handleCallback, disconnectTrakt, getTraktStatus } = require("./traktAuth");
 const { syncAllTraktUsers } = require("./traktSync");
-const { findUserByEmail, findUserByUsername, getSignupRank, getStatsRows } = require("./db");
+const { findUserByEmail, findUserByUsername, getSignupRank, getStatsRows, getPool } = require("./db");
 const { buildOverview } = require("./statsOverview");
 const { getShowCommunityRating } = require("./showRatings");
 const { createNotification, listNotifications, getUnreadCount, markAllRead, markRead } = require("./notifications");
@@ -573,32 +573,27 @@ app.get("/stats/summary", requireAuth, asyncHandler(async (req, res) => {
   // length than to silently under-count that show's hours as zero.
   const DEFAULT_EPISODE_MINUTES = 42;
 
-  const { data: watchedRows, error: watchedErr } = await supabase
-    .from("watched_episodes")
-    .select("episodes(show_id, shows(avg_episode_runtime))")
-    .eq("user_id", req.userId);
-  if (watchedErr) throw watchedErr;
+  // Plain SQL (not supabase-js): the REST client caps a response at 1,000 rows, which
+  // silently under-counted anyone with more than 1,000 watched episodes (7,814 episodes
+  // showed as 791 hours instead of ~6,100).
+  const pool = getPool();
+  const [{ rows: epRows }, { rows: movieRows }] = await Promise.all([
+    pool.query(
+      `select count(distinct e.show_id)::int as shows,
+              coalesce(sum(coalesce(s.avg_episode_runtime, $2)), 0)::float as minutes
+         from watched_episodes we
+         join episodes e on e.id = we.episode_id
+         join shows s on s.id = e.show_id
+        where we.user_id = $1`, [req.userId, DEFAULT_EPISODE_MINUTES]),
+    pool.query(
+      `select count(*)::int as count, coalesce(sum(coalesce(m.runtime, 0)), 0)::float as minutes
+         from user_movie_watchlist w
+         left join movies m on m.id = w.movie_id
+        where w.user_id = $1 and w.status = 'watched'`, [req.userId]),
+  ]);
 
-  const showIds = new Set();
-  let episodeMinutes = 0;
-  for (const row of watchedRows || []) {
-    const ep = row.episodes;
-    if (!ep) continue; // orphaned row (episode/show deleted) — ignore rather than crash
-    if (ep.show_id) showIds.add(ep.show_id);
-    episodeMinutes += ep.shows?.avg_episode_runtime || DEFAULT_EPISODE_MINUTES;
-  }
-
-  const { data: movieRows, error: movieErr } = await supabase
-    .from("user_movie_watchlist")
-    .select("movies(runtime)")
-    .eq("user_id", req.userId)
-    .eq("status", "watched");
-  if (movieErr) throw movieErr;
-
-  const movieMinutes = (movieRows || []).reduce((sum, m) => sum + (m.movies?.runtime || 0), 0);
-  const totalHours = Math.round((episodeMinutes + movieMinutes) / 60);
-
-  res.json({ showsCount: showIds.size, moviesCount: (movieRows || []).length, totalHours });
+  const totalHours = Math.round((epRows[0].minutes + movieRows[0].minutes) / 60);
+  res.json({ showsCount: epRows[0].shows, moviesCount: movieRows[0].count, totalHours });
 }));
 
 // Rich Stats screen data. Date-based figures only use episodes with a real
