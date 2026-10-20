@@ -712,10 +712,15 @@ app.post("/feedback", requireAuth, asyncHandler(async (req, res) => {
   const message = String(req.body.message || "").trim();
   if (!message) return res.status(400).json({ error: "message is required" });
   if (message.length > 1000) return res.status(400).json({ error: "message must be 1000 characters or fewer" });
-  const { error } = await supabase.from("app_feedback").insert({ user_id: req.userId, message });
+  // Optional machine-written context from the app (e.g. "Import: Letterboxd, 0 of 396 matched" after a
+  // failed import): stored with the message and put first in the push, so the exact numbers reach the
+  // developer even if the person rewrote the text.
+  const context = String(req.body.context || "").trim().slice(0, 200);
+  const stored = context ? `${message}\n\n[${context}]` : message;
+  const { error } = await supabase.from("app_feedback").insert({ user_id: req.userId, message: stored });
   if (error) throw error;
   const adminId = process.env.ADMIN_USER_ID || "47d65eeb-e49b-4854-a5e4-64b468541886";
-  sendPushToUser(supabase, adminId, { title: "New feedback", body: message.slice(0, 120) })
+  sendPushToUser(supabase, adminId, { title: "New feedback", body: (context ? `${context}. ${message}` : message).slice(0, 120) })
     .catch((e) => console.error("Failed to notify admin of feedback:", e.message));
   res.json({ ok: true });
 }));
