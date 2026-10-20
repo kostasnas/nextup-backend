@@ -2893,7 +2893,7 @@ app.post("/ai/chat", requireAuth, aiChatRateLimiter, asyncHandler(async (req, re
   // it to interpret a raw locale code like "id" or "hi" itself.
   const LOCALE_NAMES = {
     en: "English", es: "Spanish", pt: "Portuguese", de: "German", fr: "French",
-    ar: "Arabic", tr: "Turkish", it: "Italian", id: "Indonesian", hi: "Hindi", ru: "Russian",
+    ar: "Arabic", tr: "Turkish", it: "Italian", id: "Indonesian", hi: "Hindi", ru: "Russian", pl: "Polish",
   };
   const languageName = LOCALE_NAMES[locale] || "English";
   const languageInstruction = languageName === "English" ? "" : ` Respond in ${languageName} — the user's app language is set to ${languageName}, regardless of what language they write their message in.`;
