@@ -32,7 +32,7 @@ const { logRewatch, removeRewatch, getRewatchCountsForShow } = require("./episod
 const { getEmotionCountsForShow } = require("./episodeEmotions");
 const { createConnectUrl, handleCallback, disconnectTrakt, getTraktStatus } = require("./traktAuth");
 const { syncAllTraktUsers } = require("./traktSync");
-const { findUserByEmail, findUserByUsername, getSignupRank, getStatsRows, getPool } = require("./db");
+const { findUserByEmail, findUserByUsername, getSignupRank, getPioneerNumber, getStatsRows, getPool } = require("./db");
 const { buildOverview } = require("./statsOverview");
 const { getShowCommunityRating } = require("./showRatings");
 const { createNotification, listNotifications, getUnreadCount, markAllRead, markRead } = require("./notifications");
@@ -2654,10 +2654,20 @@ app.get("/profile/username", requireAuth, asyncHandler(async (req, res) => {
 // Early-account "ticket": number = signup order (created_at), tier by range.
 // Only the first 1,000 accounts get one; everyone else gets { ticket: null }.
 app.get("/profile/pioneer", requireAuth, asyncHandler(async (req, res) => {
-  const row = await getSignupRank(req.userId);
-  if (!row || row.rank > 1000) return res.json({ ticket: null });
-  const tier = row.rank <= 100 ? "premiere" : row.rank <= 500 ? "matinee" : "early";
-  res.json({ ticket: { number: row.rank, tier, joined: row.created_at } });
+  // The stored number never moves (see getPioneerNumber). If it can't be read or written
+  // (e.g. no permission on auth.users), fall back to the live signup rank, as before.
+  let number = null, joined = null;
+  try {
+    const row = await getPioneerNumber(req.userId);
+    if (row) { number = row.number; joined = row.created_at; }
+  } catch (e) {
+    console.error("pioneer number lookup failed, using live rank:", e.message);
+    const row = await getSignupRank(req.userId);
+    if (row) { number = row.rank; joined = row.created_at; }
+  }
+  if (!number || number > 1000) return res.json({ ticket: null });
+  const tier = number <= 100 ? "premiere" : number <= 500 ? "matinee" : "early";
+  res.json({ ticket: { number, tier, joined } });
 }));
 
 // "Export my data" — the account's full data as JSON (see accountExport.js).

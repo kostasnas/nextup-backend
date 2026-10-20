@@ -29,6 +29,49 @@ async function getSignupRank(userId) {
   return rows[0] || null;
 }
 
+// Early-account ticket number that stays put. getSignupRank() counts accounts that exist
+// TODAY, so deleting an earlier account used to shift everyone after it down by one.
+// The number is now written once, to auth.users.raw_user_meta_data.pioneer_number.
+// The first time anyone asks, every account that has no number yet (up to the 1,000
+// ticket cap) gets the next free one in signup order, under a lock so two requests can't
+// hand out the same number. Returns { number, created_at }, or { number: null } when the
+// account is past the cap.
+async function getPioneerNumber(userId) {
+  const pool = getPool();
+  const read = async (q) => (await q.query(
+    "select (raw_user_meta_data->>'pioneer_number')::int as number, created_at from auth.users where id = $1",
+    [userId]
+  )).rows[0] || null;
+  let me = await read(pool);
+  if (!me || me.number != null) return me;
+  const client = await pool.connect();
+  try {
+    await client.query("begin");
+    await client.query("select pg_advisory_xact_lock(7340211)");
+    me = await read(client); // another request may have assigned it meanwhile
+    if (me && me.number == null) {
+      await client.query(
+        `with base as (select coalesce(max((raw_user_meta_data->>'pioneer_number')::int), 0) as b from auth.users),
+              todo as (select id, row_number() over (order by created_at, id) as rn
+                         from auth.users where raw_user_meta_data->>'pioneer_number' is null)
+         update auth.users u
+            set raw_user_meta_data = coalesce(u.raw_user_meta_data, '{}'::jsonb)
+                                     || jsonb_build_object('pioneer_number', base.b + todo.rn)
+           from todo, base
+          where u.id = todo.id and base.b + todo.rn <= 1000`
+      );
+      me = await read(client);
+    }
+    await client.query("commit");
+  } catch (e) {
+    await client.query("rollback").catch(() => {});
+    throw e;
+  } finally {
+    client.release();
+  }
+  return me;
+}
+
 // Everything the Stats screen needs about a user's watching, in one pass.
 // Imported rows (source starting "import") whose watched_at is at/after the
 // user's first import job are treated as UNDATED: importers stamp "now" on
@@ -104,4 +147,4 @@ async function getUsersCreatedSince(days) {
 
 module.exports = {
   getStatsRows,
-  getSignupRank, getPool, findUserByEmail, findUserByUsername, getUserDisplayInfo, getUsersCreatedSince };
+  getSignupRank, getPioneerNumber, getPool, findUserByEmail, findUserByUsername, getUserDisplayInfo, getUsersCreatedSince };
