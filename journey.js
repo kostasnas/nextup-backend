@@ -13,6 +13,9 @@ const { getPool } = require("./db");
 const EPISODES = 5;
 const WINDOW_DAYS = 7;
 const REWARD_ENTITLEMENT = "scenera_pro";
+// Accounts created before this moment don't take part ("first season" is for new people).
+// Override with SEASON_START (ISO timestamp) in the environment if ever needed.
+const SEASON_START = process.env.SEASON_START || "2026-10-20T00:00:00Z";
 const BADGES = [
   { ep: 1, key: "pilot", title: "Pilot", body: "S01E01. Your first episode is in the books." },
   { ep: 2, key: "to_be_continued", title: "To Be Continued", body: "S01E02. You came back. Two down, three to go." },
@@ -48,12 +51,13 @@ async function readActivity(userId) {
        union all select created_at from episode_comments where user_id = $1
        ${withComms ? "union all select created_at from comms_write_log where user_id = $1 and kind in ('comment','reply')" : ""}
      )
-     select s.start_day::text as start_day, s.today::text as today, s.tz, s.reward_at,
+     select (s.created_at >= $2::timestamptz) as is_new,
+            s.start_day::text as start_day, s.today::text as today, s.tz, s.reward_at,
             (select coalesce(array_agg(distinct d order by d), '{}')
                from (select (a.ts at time zone s.tz)::date::text as d from acts a where a.ts is not null) x
               where x.d between s.start_day::text and (s.start_day + ${WINDOW_DAYS - 1})::text) as days
        from s`,
-    [userId]
+    [userId, SEASON_START]
   );
   return rows[0] || null;
 }
@@ -62,7 +66,8 @@ const dayDiff = (a, b) => Math.round((Date.parse(b + "T00:00:00Z") - Date.parse(
 
 async function getSeason(userId) {
   const r = await readActivity(userId);
-  if (!r) return null;
+  // Only for accounts created since the feature launched (no retroactive badges/reward).
+  if (!r || !r.is_new) return null;
   const days = r.days || [];
   const earned = Math.min(EPISODES, days.length);
   const windowEnd = new Date(Date.parse(r.start_day + "T00:00:00Z") + (WINDOW_DAYS - 1) * 86400000).toISOString().slice(0, 10);
