@@ -952,10 +952,11 @@ async function processImport(userId, files) {
 
   let movieMatchedCount = 0;
   let movieUnmatchedCount = 0;
+  const unmatchedMovies = []; // titles that didn't come over (kept for the developer, see importAlert.js)
   await forEachConcurrent(movies, MOVIE_IMPORT_CONCURRENCY, async (movie) => {
     try {
       const results = await searchMovie(movie.title);
-      if (!results || results.length === 0) { movieUnmatchedCount++; return; }
+      if (!results || results.length === 0) { movieUnmatchedCount++, unmatchedMovies.push({ title: movie.title, year: movie.year ?? null }); return; }
       const best = results[0];
       await setMovieStatus(supabase, userId, {
         tmdb_id: best.id,
@@ -968,7 +969,7 @@ async function processImport(userId, files) {
       movieMatchedCount++;
     } catch (e) {
       console.error(`Movie import: failed to match/insert "${movie.title}":`, e.message);
-      movieUnmatchedCount++;
+      movieUnmatchedCount++, unmatchedMovies.push({ title: movie.title, year: movie.year ?? null });
     }
   });
 
@@ -984,7 +985,7 @@ async function processImport(userId, files) {
 
   return {
     jobId: job.id, matchedCount, unmatchedCount, totalShows: stats.totalShows, watchingCandidates, warning: stats.warning,
-    movieMatchedCount, movieUnmatchedCount, totalMovies: stats.totalMovies,
+    movieMatchedCount, movieUnmatchedCount, totalMovies: stats.totalMovies, unmatchedMovies,
   };
 }
 
@@ -1287,6 +1288,7 @@ async function processBingersImport(userId, files) {
 
   let movieMatchedCount = 0;
   let movieUnmatchedCount = 0;
+  const unmatchedMovies = []; // titles that didn't come over (kept for the developer, see importAlert.js)
   await forEachConcurrent(movies, MOVIE_IMPORT_CONCURRENCY, async (movie) => {
     try {
       const details = await getMovieDetails(movie.tmdbId);
@@ -1307,7 +1309,7 @@ async function processBingersImport(userId, files) {
       movieMatchedCount++;
     } catch (e) {
       console.error(`Bingers import: failed to import movie "${movie.title}" (tmdb_id ${movie.tmdbId}):`, e.message);
-      movieUnmatchedCount++;
+      movieUnmatchedCount++, unmatchedMovies.push({ title: movie.title, year: movie.year ?? null });
     }
   });
 
@@ -1330,6 +1332,7 @@ async function processBingersImport(userId, files) {
     warning: null,
     movieMatchedCount,
     movieUnmatchedCount,
+    unmatchedMovies,
     totalMovies: stats.totalMovies,
   };
 }
@@ -1396,6 +1399,7 @@ async function processMovieParadiseImport(userId, files) {
 
   let movieMatchedCount = 0;
   let movieUnmatchedCount = 0;
+  const unmatchedMovies = []; // titles that didn't come over (kept for the developer, see importAlert.js)
   await forEachConcurrent(movies, MOVIE_IMPORT_CONCURRENCY, async (movie) => {
     try {
       const details = await getMovieDetails(movie.tmdbId);
@@ -1416,7 +1420,7 @@ async function processMovieParadiseImport(userId, files) {
       movieMatchedCount++;
     } catch (e) {
       console.error(`Movie Paradise import: failed to import movie "${movie.title}" (tmdb_id ${movie.tmdbId}):`, e.message);
-      movieUnmatchedCount++;
+      movieUnmatchedCount++, unmatchedMovies.push({ title: movie.title, year: movie.year ?? null });
     }
   });
 
@@ -1439,6 +1443,7 @@ async function processMovieParadiseImport(userId, files) {
     warning: null,
     movieMatchedCount,
     movieUnmatchedCount,
+    unmatchedMovies,
     totalMovies: stats.totalMovies,
     commentsNote: stats.totalComments > 0
       ? `${stats.totalComments} comment(s) found in your export but not imported yet — comment/GIF import is still being built.`
@@ -1498,6 +1503,7 @@ async function processSimklImport(userId, files) {
 
   let movieMatchedCount = 0;
   let movieUnmatchedCount = 0;
+  const unmatchedMovies = []; // titles that didn't come over (kept for the developer, see importAlert.js)
   await forEachConcurrent(movies, MOVIE_IMPORT_CONCURRENCY, async (movie) => {
     try {
       const details = await getMovieDetails(movie.tmdbId);
@@ -1518,7 +1524,7 @@ async function processSimklImport(userId, files) {
       movieMatchedCount++;
     } catch (e) {
       console.error(`Simkl import: failed to import movie "${movie.title}" (tmdb_id ${movie.tmdbId}):`, e.message);
-      movieUnmatchedCount++;
+      movieUnmatchedCount++, unmatchedMovies.push({ title: movie.title, year: movie.year ?? null });
     }
   });
 
@@ -1541,6 +1547,7 @@ async function processSimklImport(userId, files) {
     warning: null,
     movieMatchedCount,
     movieUnmatchedCount,
+    unmatchedMovies,
     totalMovies: stats.totalMovies,
   };
 }
@@ -1605,6 +1612,7 @@ async function processSofaTimeImport(userId, files) {
 
   let movieMatchedCount = 0;
   let movieUnmatchedCount = 0;
+  const unmatchedMovies = []; // titles that didn't come over (kept for the developer, see importAlert.js)
   await forEachConcurrent(movies, MOVIE_IMPORT_CONCURRENCY, async (movie) => {
     try {
       const details = await getMovieDetails(movie.tmdbId);
@@ -1625,7 +1633,7 @@ async function processSofaTimeImport(userId, files) {
       movieMatchedCount++;
     } catch (e) {
       console.error(`Sofa Time import: failed to import movie "${movie.title}" (tmdb_id ${movie.tmdbId}):`, e.message);
-      movieUnmatchedCount++;
+      movieUnmatchedCount++, unmatchedMovies.push({ title: movie.title, year: movie.year ?? null });
     }
   });
 
@@ -1648,6 +1656,7 @@ async function processSofaTimeImport(userId, files) {
     warning: null,
     movieMatchedCount,
     movieUnmatchedCount,
+    unmatchedMovies,
     totalMovies: stats.totalMovies,
   };
 }
@@ -1716,6 +1725,7 @@ async function processTraktImport(userId, files) {
 
   let movieMatchedCount = 0;
   let movieUnmatchedCount = 0;
+  const unmatchedMovies = []; // titles that didn't come over (kept for the developer, see importAlert.js)
   await forEachConcurrent(movies, MOVIE_IMPORT_CONCURRENCY, async (movie) => {
     try {
       const details = await getMovieDetails(movie.tmdbId);
@@ -1736,7 +1746,7 @@ async function processTraktImport(userId, files) {
       movieMatchedCount++;
     } catch (e) {
       console.error(`Trakt import: failed to import movie "${movie.title}" (tmdb_id ${movie.tmdbId}):`, e.message);
-      movieUnmatchedCount++;
+      movieUnmatchedCount++, unmatchedMovies.push({ title: movie.title, year: movie.year ?? null });
     }
   });
 
@@ -1759,6 +1769,7 @@ async function processTraktImport(userId, files) {
     warning: null,
     movieMatchedCount,
     movieUnmatchedCount,
+    unmatchedMovies,
     totalMovies: stats.totalMovies,
   };
 }
@@ -1811,10 +1822,11 @@ async function processLetterboxdImport(userId, files) {
 
   let movieMatchedCount = 0;
   let movieUnmatchedCount = 0;
+  const unmatchedMovies = []; // titles that didn't come over (kept for the developer, see importAlert.js)
   await forEachConcurrent(movies, MOVIE_IMPORT_CONCURRENCY, async (movie) => {
     try {
       const match = await matchMovie(movie.title, movie.year);
-      if (match.status !== "matched") { movieUnmatchedCount++; return; }
+      if (match.status !== "matched") { movieUnmatchedCount++, unmatchedMovies.push({ title: movie.title, year: movie.year ?? null }); return; }
       const details = await getMovieDetails(match.tmdbId);
       await setMovieStatus(
         supabase,
@@ -1829,7 +1841,7 @@ async function processLetterboxdImport(userId, files) {
       movieMatchedCount++;
     } catch (e) {
       console.error(`Letterboxd import: failed to match/import "${movie.title}" (${movie.year}):`, e.message);
-      movieUnmatchedCount++;
+      movieUnmatchedCount++, unmatchedMovies.push({ title: movie.title, year: movie.year ?? null });
     }
   });
 
@@ -1857,6 +1869,7 @@ async function processLetterboxdImport(userId, files) {
       : null,
     movieMatchedCount,
     movieUnmatchedCount,
+    unmatchedMovies,
     totalMovies: stats.totalMovies,
   };
 }
@@ -1921,10 +1934,11 @@ async function processImdbImport(userId, fileContent) {
 
   let movieMatchedCount = 0;
   let movieUnmatchedCount = 0;
+  const unmatchedMovies = []; // titles that didn't come over (kept for the developer, see importAlert.js)
   await forEachConcurrent(movies, MOVIE_IMPORT_CONCURRENCY, async (movie) => {
     try {
       const { movie: tmdbMovie } = await findByImdbId(movie.imdbId);
-      if (!tmdbMovie) { movieUnmatchedCount++; return; }
+      if (!tmdbMovie) { movieUnmatchedCount++, unmatchedMovies.push({ title: movie.title, year: movie.year ?? null }); return; }
       const details = await getMovieDetails(tmdbMovie.id);
       await setMovieStatus(
         supabase,
@@ -1943,7 +1957,7 @@ async function processImdbImport(userId, fileContent) {
       movieMatchedCount++;
     } catch (e) {
       console.error(`IMDb import: failed to match/import movie "${movie.title}" (${movie.imdbId}):`, e.message);
-      movieUnmatchedCount++;
+      movieUnmatchedCount++, unmatchedMovies.push({ title: movie.title, year: movie.year ?? null });
     }
   });
 
@@ -1968,6 +1982,7 @@ async function processImdbImport(userId, fileContent) {
       : null,
     movieMatchedCount,
     movieUnmatchedCount,
+    unmatchedMovies,
     totalMovies: stats.totalMovies,
   };
 }

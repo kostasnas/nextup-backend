@@ -25,8 +25,19 @@ function shouldAlert({ total, matched, unmatched }) {
   return total > 0 && (matched === 0 || unmatched >= MIN_UNMATCHED);
 }
 
+// Keeps the titles of movies that didn't come over (the import itself only counts them), so the
+// cause can be looked at later. Needs the table from migrations/import_unmatched_movies.sql; until
+// it exists the insert just fails quietly.
+async function saveUnmatchedMovies(supabase, jobId, list) {
+  if (!jobId || !Array.isArray(list) || !list.length) return;
+  const rows = list.slice(0, 1000).map((m) => ({ import_job_id: jobId, raw_title: String(m.title || "").slice(0, 300), raw_year: Number.isInteger(m.year) ? m.year : null }));
+  const { error } = await supabase.from("import_unmatched_movies").insert(rows);
+  if (error) console.error("Saving unmatched movies failed (is the import_unmatched_movies table created?):", error.message);
+}
+
 function reportImportIssue(supabase, sendPushToUser, userId, source, result) {
   try {
+    saveUnmatchedMovies(supabase, result?.jobId, result?.unmatchedMovies).catch((e) => console.error("Saving unmatched movies failed:", e.message));
     const s = summarize(result);
     if (!shouldAlert(s)) return;
     const adminId = process.env.ADMIN_USER_ID || "47d65eeb-e49b-4854-a5e4-64b468541886";
