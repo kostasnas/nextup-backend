@@ -1806,7 +1806,10 @@ async function processLetterboxdImport(userId, files) {
       await setMovieStatus(
         supabase,
         userId,
-        { tmdb_id: details.id, title: details.title, poster_path: details.poster_path, release_date: details.release_date, runtime: details.runtime, overview: details.overview },
+        // getMovieDetails returns { title, posterPath, releaseDate, runtime, overview } (no id):
+        // the TMDB id is the one we matched on. Reading details.id / .poster_path / .release_date
+        // here left tmdb_id undefined, so every film failed and the whole import came back 0 matched.
+        { tmdb_id: match.tmdbId, title: details.title || movie.title, poster_path: details.posterPath, release_date: details.releaseDate, runtime: details.runtime, overview: details.overview },
         movie.isWatched ? "watched" : "planned",
         movie.watchedAt
       );
