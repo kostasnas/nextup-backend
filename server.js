@@ -15,6 +15,7 @@ const { parseSimklExport } = require("./simklParser");
 const { parseSofaTimeExport } = require("./sofaTimeParser");
 const { parseTraktExport } = require("./traktParser");
 const { parseLetterboxdExport } = require("./letterboxdParser");
+const { reportImportIssue } = require("./importAlert");
 const { parseImdbRatingsExport } = require("./imdbParser");
 const { matchShows, searchShow, searchMovie, matchMovie, findByImdbId } = require("./tmdbMatcher");
 const { syncShowProgress, fetchAllEpisodes, cacheEpisodes, fetchShowMeta, fetchSeasonList } = require("./episodeSync");
@@ -1005,6 +1006,7 @@ app.post(
       files[`${field}.csv`] = arr[0].buffer.toString("utf8");
     }
     const result = await processImport(req.userId, files);
+    reportImportIssue(supabase, sendPushToUser, req.userId, "TV Time", result);
     res.json(result);
   })
 );
@@ -1037,6 +1039,7 @@ app.post("/import/tvtime-zip", requireAuth, uploadZip.single("export_zip"), asyn
   }
 
   const result = await processImport(req.userId, files);
+  reportImportIssue(supabase, sendPushToUser, req.userId, "TV Time", result);
   res.json(result);
 }));
 
@@ -1349,6 +1352,7 @@ app.post(
       files[`${field}.csv`] = arr[0].buffer.toString("utf8");
     }
     const result = await processBingersImport(req.userId, files);
+    reportImportIssue(supabase, sendPushToUser, req.userId, "Bingers", result);
     res.json(result);
   })
 );
@@ -1454,6 +1458,7 @@ app.post("/import/movie-paradise-zip", requireAuth, uploadZip.single("export_zip
 
   const files = { "data.json": dataEntry.getData().toString("utf8") };
   const result = await processMovieParadiseImport(req.userId, files);
+  reportImportIssue(supabase, sendPushToUser, req.userId, "Movie Paradise", result);
   res.json(result);
 }));
 
@@ -1552,6 +1557,7 @@ app.post("/import/simkl-zip", requireAuth, uploadZip.single("export_zip"), async
 
   const files = { "SimklBackup.json": dataEntry.getData().toString("utf8") };
   const result = await processSimklImport(req.userId, files);
+  reportImportIssue(supabase, sendPushToUser, req.userId, "Simkl", result);
   res.json(result);
 }));
 
@@ -1670,6 +1676,7 @@ app.post("/import/sofatime-zip", requireAuth, uploadZip.single("export_zip"), as
   }
 
   const result = await processSofaTimeImport(req.userId, files);
+  reportImportIssue(supabase, sendPushToUser, req.userId, "Sofa Time", result);
   res.json(result);
 }));
 
@@ -1778,6 +1785,7 @@ app.post("/import/trakt-zip", requireAuth, uploadZip.single("export_zip"), async
   }
 
   const result = await processTraktImport(req.userId, files);
+  reportImportIssue(supabase, sendPushToUser, req.userId, "Trakt", result);
   res.json(result);
 }));
 
@@ -1869,6 +1877,7 @@ app.post("/import/letterboxd-zip", requireAuth, uploadZip.single("export_zip"), 
   }
 
   const result = await processLetterboxdImport(req.userId, files);
+  reportImportIssue(supabase, sendPushToUser, req.userId, "Letterboxd", result);
   res.json(result);
 }));
 
@@ -1968,6 +1977,7 @@ app.post("/import/imdb-csv", requireAuth, uploadCsv.single("ratings_csv"), async
 
   const fileContent = req.file.buffer.toString("utf8");
   const result = await processImdbImport(req.userId, fileContent);
+  reportImportIssue(supabase, sendPushToUser, req.userId, "IMDb", result);
   res.json(result);
 }));
 
