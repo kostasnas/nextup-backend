@@ -2725,6 +2725,7 @@ mountReleaseCards(app, asyncHandler);
 mountComms(app, { requireAuth, asyncHandler });
 mountCommsWrite(app, { requireAuth, asyncHandler });
 require("./journey").mountJourney(app, { requireAuth, asyncHandler });
+require("./friendProfile").mountFriendProfile(app, { supabase, requireAuth, asyncHandler });
 
 // Real, in-app account deletion — required by Google Play policy
 // alongside the web-based deletion link already in delete-account.html
