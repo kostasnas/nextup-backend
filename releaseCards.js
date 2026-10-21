@@ -77,15 +77,16 @@ const LANGS = {
     dayMonth: (m, d) => `${["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"][m - 1]} ${d}`,
     head: {
       season: ({ title, season, when }) => `Season ${season} of ${title} premieres ${when}.`,
-      episode: ({ title, season, episode, when }) => `New episode of ${title} ${when}: season ${season}, episode ${episode}.`,
+      episode: ({ title, season, episode, when }) => `Next episode of ${title} ${/^(today|tomorrow)/.test(when) ? when : `on ${when}`}: season ${season}, episode ${episode}.`,
       premiere: ({ title, when }) => `${title} premieres ${when}.`,
       streaming: ({ title }) => `${title} is out now.`,
       movie: ({ title, when }) => `${title} hits theaters ${when}.`,
     },
     theatersIn: (m) => `In theaters · ${m}`,
     whereCaption: " Where to watch: ",
-    tail: "Will you watch? Reply 🔥 if you are in or ⏳ if you will wait. Link in bio.",
-    tailTrending: "Are you watching? Reply 🔥 yes or ⏳ not yet. Link in bio.",
+    // A function (not a fixed string like pt/tr): names the app and the kind of show the card is about.
+    tail: ({ category }) => `Organize your ${({ kdrama: "K-dramas", cdrama: "C-dramas", dorama: "Asian dramas", anime: "anime", turca: "Turkish dramas", variedades: "K-variety shows", movies: "movies" })[category] || "shows"} on Scenera, the TV show & movie tracker.`,
+    tailTrending: ({ category }) => `Organize your ${({ kdrama: "K-dramas", cdrama: "C-dramas", dorama: "Asian dramas", anime: "anime", turca: "Turkish dramas", variedades: "K-variety shows", movies: "movies" })[category] || "shows"} on Scenera, the TV show & movie tracker.`,
     warnPlatform: "Η πλατφόρμα δεν είναι ακόμα επιβεβαιωμένη στο TMDB — έλεγξε πριν ποστάρεις.",
     warnOverview: "Δεν υπάρχει αγγλική περίληψη.",
     labels: { kdrama: "K-drama", cdrama: "C-drama", dorama: "Asian drama", anime: "Anime", turca: "Turkish drama", variedades: "K-variety", trending: "Trending", movies: "Movies", other: "Series" },
@@ -242,10 +243,11 @@ function captionHead({ title, when, kind = "premiere", season, episode, L = LANG
 }
 
 // The caption in three pieces, so the page can offer the synopsis as an option.
-function captionParts({ title, when, platforms, overview, tags, kind = "premiere", season, episode, L = LANGS.pt, trending = false }) {
+function captionParts({ title, when, platforms, overview, tags, kind = "premiere", season, episode, L = LANGS.pt, trending = false, category }) {
   const where = platforms.length ? `${L.whereCaption}${platforms.join(", ")}.` : "";
   const head = `${captionHead({ title, when, kind, season, episode, L })}${where}`;
-  const tail = `\n\n${trending ? L.tailTrending : L.tail}\n${tags.map((t) => `#${t}`).join(" ")}`;
+  const tailText = trending ? L.tailTrending : L.tail;
+  const tail = `\n\n${typeof tailText === "function" ? tailText({ category }) : tailText}\n${tags.map((t) => `#${t}`).join(" ")}`;
 
   let synopsis = firstSentence(overview);
   // TMDB overviews often start with the title itself ("X is a remake…"): the caption
@@ -318,7 +320,7 @@ function toItem(detail, category, today, ev, L = LANGS.pt) {
   if (!detail.overview) warnings.push(L.warnOverview);
 
   const args = { title, when, kind: ev.kind, season: ev.season, episode: ev.episode, L };
-  const cp = captionParts({ ...args, platforms, overview: detail.overview, tags, trending: category.key === "trending" });
+  const cp = captionParts({ ...args, platforms, overview: detail.overview, tags, trending: category.key === "trending", category: category.key });
   return {
     id: detail.id,
     title,
