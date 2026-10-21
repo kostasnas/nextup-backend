@@ -2593,6 +2593,8 @@ app.get("/shows/:tmdbId/full-progress", requireAuth, asyncHandler(async (req, re
       .eq("id", showRow.id);
     // Separate update so a missing genres column (migration not run yet) can never break the sync above.
     await supabase.from("shows").update({ genres: fetched.genres, first_air_year: fetched.firstAirYear }).eq("id", showRow.id);
+    // Own update again: origin_country needs migrations/shows_origin_country.sql; before that it just fails quietly.
+    await supabase.from("shows").update({ origin_country: fetched.originCountry }).eq("id", showRow.id).then(() => {}, () => {});
   } else {
     // We have SOMETHING cached — serve it immediately even if stale,
     // so the person never waits on TMDB for a show that's already
@@ -2618,6 +2620,7 @@ app.get("/shows/:tmdbId/full-progress", requireAuth, asyncHandler(async (req, re
             .update({ status: fetched.showStatus, episodes_synced_at: new Date().toISOString(), avg_episode_runtime: fetched.episodeRunTime })
             .eq("id", showRow.id);
           await supabase.from("shows").update({ genres: fetched.genres, first_air_year: fetched.firstAirYear }).eq("id", showRow.id);
+          await supabase.from("shows").update({ origin_country: fetched.originCountry }).eq("id", showRow.id).then(() => {}, () => {});
         })
         .catch((err) => console.error(`Background episode sync failed for tmdbId=${tmdbId}:`, err.message));
     }
@@ -2726,6 +2729,7 @@ mountComms(app, { requireAuth, asyncHandler });
 mountCommsWrite(app, { requireAuth, asyncHandler });
 require("./journey").mountJourney(app, { requireAuth, asyncHandler });
 require("./friendProfile").mountFriendProfile(app, { supabase, requireAuth, asyncHandler });
+require("./badges").mountBadges(app, { requireAuth, asyncHandler });
 
 // Real, in-app account deletion — required by Google Play policy
 // alongside the web-based deletion link already in delete-account.html
@@ -3330,6 +3334,35 @@ app.get("/admin/season-diff-result", asyncHandler(async (req, res) => {
 
 app.get("/admin/backfill-show-meta", backfillShowMetaHandler);
 app.post("/admin/backfill-show-meta", backfillShowMetaHandler);
+
+// Backfill the country of origin per show (Anime / K-Drama badges). Needs
+// migrations/shows_origin_country.sql first. 60 shows per call: repeat the URL until "remaining" is 0.
+// Same secret as the other /admin endpoints (x-cron-secret header or ?secret=).
+const backfillShowOriginHandler = asyncHandler(async (req, res) => {
+  const providedSecret = req.headers["x-cron-secret"] || req.query.secret;
+  if (!process.env.CRON_SECRET || providedSecret !== process.env.CRON_SECRET) {
+    return res.status(401).json({ error: "Unauthorized" });
+  }
+  const { data: rows, error } = await supabase
+    .from("shows").select("id, tmdb_id").is("origin_country", null).limit(60);
+  if (error) return res.status(500).json({ error: error.message, hint: "Run migrations/shows_origin_country.sql in the Supabase SQL editor first." });
+  let updated = 0, failed = 0;
+  for (const show of rows || []) {
+    try {
+      const meta = await fetchShowMeta(show.tmdb_id);
+      // empty array (not null) when TMDB has no country, so it is not retried forever
+      await supabase.from("shows").update({ origin_country: meta.originCountry || [] }).eq("id", show.id);
+      updated++;
+    } catch (err) {
+      failed++;
+      console.error(`Show origin backfill failed for tmdb_id=${show.tmdb_id}:`, err.message);
+    }
+  }
+  const { count } = await supabase.from("shows").select("id", { count: "exact", head: true }).is("origin_country", null);
+  res.json({ checked: (rows || []).length, updated, failed, remaining: count ?? null });
+});
+app.get("/admin/backfill-show-origin", backfillShowOriginHandler);
+app.post("/admin/backfill-show-origin", backfillShowOriginHandler);
 
 // One-off backfill for movies with a null poster_path — mainly ones
 // created by the Trakt sync bug fixed 4 Οκτ 2026 (traktSync.js used to

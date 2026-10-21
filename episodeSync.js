@@ -24,7 +24,9 @@ async function tmdbFetch(path) {
 function showMeta(show) {
   const genres = Array.isArray(show.genres) ? show.genres.map((g) => g.name).filter(Boolean) : null;
   const year = show.first_air_date ? parseInt(String(show.first_air_date).slice(0, 4), 10) : null;
-  return { genres, firstAirYear: Number.isFinite(year) ? year : null };
+  // Countries of origin (e.g. ["JP"], ["KR"]), for the Anime / K-Drama badges. [] when TMDB has none.
+  const originCountry = Array.isArray(show.origin_country) ? show.origin_country.filter(Boolean) : null;
+  return { genres, firstAirYear: Number.isFinite(year) ? year : null, originCountry };
 }
 
 // Season list as TMDB currently reports it: [{season_number, episode_count}], seasons > 0 only.
