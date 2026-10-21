@@ -2632,22 +2632,31 @@ app.get("/shows/:tmdbId/full-progress", requireAuth, asyncHandler(async (req, re
   // "not watched" (then marking one failed with a duplicate-key error).
   // Paged so a show with >1000 watched episodes still comes back whole.
   const watchedIds = [];
+  let firstWatchedAt = null, lastWatchedAt = null; // earliest / latest watch date, for "Started · Finished" on the show page
   for (let from = 0; ; from += 1000) {
     const { data: page, error: wErr } = await supabase
       .from("watched_episodes")
-      .select("episode_id, episodes!inner(show_id)")
+      .select("episode_id, watched_at, episodes!inner(show_id)")
       .eq("user_id", req.userId)
       .eq("episodes.show_id", showRow.id)
       .order("episode_id", { ascending: true })
       .range(from, from + 999);
     if (wErr) throw wErr;
-    (page || []).forEach((w) => watchedIds.push(w.episode_id));
+    (page || []).forEach((w) => {
+      watchedIds.push(w.episode_id);
+      if (w.watched_at) {
+        if (!firstWatchedAt || w.watched_at < firstWatchedAt) firstWatchedAt = w.watched_at;
+        if (!lastWatchedAt || w.watched_at > lastWatchedAt) lastWatchedAt = w.watched_at;
+      }
+    });
     if (!page || page.length < 1000) break;
   }
 
   res.json({
     episodes: cached.map((e) => ({ id: e.id, season_number: e.season_number, episode_number: e.episode_number })),
     watchedEpisodeIds: watchedIds,
+    firstWatchedAt,
+    lastWatchedAt,
     showStatus,
   });
 }));
