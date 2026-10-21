@@ -704,6 +704,8 @@ app.post("/feature-requests", requireAuth, asyncHandler(async (req, res) => {
     title: "New feature request",
     body: title.slice(0, 120),
   }).catch((e) => console.error("Failed to notify admin of feature request:", e.message));
+  createNotification(supabase, adminId, { type: "feature_request", title: "New feature request", body: description ? `${title}\n\n${description}` : title, data: { fromUserId: req.userId } })
+    .catch((e) => console.error("Failed to save feature request notification:", e.message));
 
   res.json(created);
 }));
@@ -723,6 +725,9 @@ app.post("/feedback", requireAuth, asyncHandler(async (req, res) => {
   const adminId = process.env.ADMIN_USER_ID || "47d65eeb-e49b-4854-a5e4-64b468541886";
   sendPushToUser(supabase, adminId, { title: "New feedback", body: (context ? `${context}. ${message}` : message).slice(0, 120) })
     .catch((e) => console.error("Failed to notify admin of feedback:", e.message));
+  // The push disappears once tapped, so keep the full text in the developer's in-app notification list too.
+  createNotification(supabase, adminId, { type: "feedback", title: "New feedback", body: stored, data: { fromUserId: req.userId } })
+    .catch((e) => console.error("Failed to save feedback notification:", e.message));
   res.json({ ok: true });
 }));
 
