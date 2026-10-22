@@ -3529,4 +3529,27 @@ app.use((err, req, res, next) => {
 });
 
 const PORT = process.env.PORT || 3000;
+// TEMPORARY: how many stills does TMDB hold per episode? Read-only, no user data, no secrets
+// in the output. Remove once the numbers have been read.
+app.get("/tmp-stills-count", asyncHandler(async (req, res) => {
+  const key = process.env.TMDB_API_KEY;
+  const sample = [
+    ["Breaking Bad", 1396, 1, 1], ["Breaking Bad", 1396, 5, 14], ["Game of Thrones", 1399, 1, 1],
+    ["Game of Thrones", 1399, 8, 6], ["Money Heist", 71446, 1, 1], ["Stranger Things", 66732, 1, 1],
+    ["The Office", 2316, 2, 1], ["The Walking Dead", 1402, 1, 1], ["Friends", 1668, 1, 1],
+    ["Supernatural", 1622, 1, 1], ["Peaky Blinders", 60574, 1, 1], ["Squid Game", 93405, 1, 1],
+  ];
+  const lines = [];
+  for (const [name, id, s, e] of sample) {
+    try {
+      const r = await fetch(`https://api.themoviedb.org/3/tv/${id}/season/${s}/episode/${e}/images?api_key=${key}`);
+      const j = await r.json();
+      lines.push(`${name} S${s}E${e}: ${r.ok ? (j.stills || []).length + " stills" : "error " + r.status}`);
+    } catch (err) {
+      lines.push(`${name} S${s}E${e}: failed`);
+    }
+  }
+  res.type("text/plain").send(lines.join("\n"));
+}));
+
 app.listen(PORT, () => console.log(`Nextup backend running on port ${PORT}`));
