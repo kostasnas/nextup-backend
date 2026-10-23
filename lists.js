@@ -278,7 +278,7 @@ function mountLists(app, { supabase, requireAuth, asyncHandler }) {
         if (e.code !== "42P01") throw e;
       }
     }
-    res.set("Cache-Control", "public, max-age=120");
+    res.set("Cache-Control", "no-cache"); // always revalidate: switching a list off must take effect at once
     // helmet's default policy only allows our own images; this page shows TMDB posters and needs its inline style.
     res.set("Content-Security-Policy", "default-src 'none'; img-src https://image.tmdb.org; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'");
     if (!list) {
