@@ -16,15 +16,16 @@
 // the episode step only ran inside the app and was lost when the app was closed): the same work also
 // runs by itself, a couple of minutes after the server starts and then every 20 minutes, on imports
 // older than 30 minutes (younger ones are probably still being run by the app). Shows that fail are
-// not retried for 24 hours. If anything is still waiting after more than a day, the developer gets a
-// push (at most one per day).
+// not retried for 24 hours. The developer gets a push as soon as a run could not finish something (or
+// stopped with an error), once per show, and also for anything still waiting after 2 hours (e.g. the
+// server was asleep).
 const { getPool } = require("./db");
 
 const BATCH = 24;
 const SWEEP_EVERY_MS = 20 * 60 * 1000;
 const SWEEP_MIN_AGE_MIN = 30;
 const RETRY_FAILED_AFTER_MS = 24 * 60 * 60 * 1000;
-const ALERT_EVERY_MS = 24 * 60 * 60 * 1000;
+const STUCK_AFTER_HOURS = 2;
 const CONCURRENCY = 4;
 const isUuid = (s) => typeof s === "string" && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(s);
 
@@ -41,10 +42,11 @@ function mountFinishImports(app, { supabase, asyncHandler, syncShowProgress, for
   }
 
   const failedUntil = new Map(); // import_job_shows.id -> time before which the sweep leaves it alone
-  let lastAlertAt = 0;
+  const alertedIds = new Set(); // import_job_shows.id values the developer has already been told about
 
   async function run(userId, minAgeMin = null) {
     const failedIds = [];
+    const failedRows = []; // what this run could not finish: { id, tmdbId, error }
     try {
       for (;;) {
         if (state.stopRequested) break;
@@ -73,6 +75,7 @@ function mountFinishImports(app, { supabase, asyncHandler, syncShowProgress, for
           } catch (err) {
             failedIds.push(row.id);
             failedUntil.set(row.id, Date.now() + RETRY_FAILED_AFTER_MS);
+            failedRows.push({ id: row.id, tmdbId: row.tmdb_id, error: String(err?.message || err).slice(0, 80) });
             if (state.failed.length < 50) state.failed.push({ tmdbId: row.tmdb_id, error: String(err?.message || err).slice(0, 160) });
             console.error(`finish-imports: tmdb_id ${row.tmdb_id} failed:`, err?.message || err);
           }
@@ -85,21 +88,27 @@ function mountFinishImports(app, { supabase, asyncHandler, syncShowProgress, for
       state.running = false;
       state.finishedAt = new Date().toISOString();
     }
-    if (minAgeMin !== null) await alertIfStuck();
+    if (minAgeMin !== null) await alertIfStuck(failedRows);
   }
 
-  // Anything still waiting more than a day after its import started needs a human to look.
-  async function alertIfStuck() {
+  // Tells the developer straight away when a run could not finish something, or stopped with an error,
+  // and about anything that has been waiting for hours. Each show is reported once.
+  async function alertIfStuck(failedRows) {
     try {
-      if (!sendAlert || Date.now() - lastAlertAt < ALERT_EVERY_MS) return;
+      if (!sendAlert) return;
+      const fresh = new Map();
+      for (const f of failedRows) if (!alertedIds.has(f.id)) fresh.set(f.id, f);
       const { rows } = await getPool().query(
-        `select count(*)::int as shows, count(distinct j.user_id)::int as users
-           from import_job_shows s join import_jobs j on j.id = s.import_job_id
-          where s.synced = false and j.created_at < now() - interval '24 hours'`
+        `select s.id, s.tmdb_id from import_job_shows s join import_jobs j on j.id = s.import_job_id
+          where s.synced = false and j.created_at < now() - make_interval(hours => $1::int) limit 200`,
+        [STUCK_AFTER_HOURS]
       );
-      if (!rows[0] || rows[0].shows === 0) return;
-      lastAlertAt = Date.now();
-      await sendAlert("Imports stuck", `${rows[0].shows} shows from ${rows[0].users} import(s) still have no episodes after 24 h. See /admin/finish-imports`);
+      for (const r of rows) if (!alertedIds.has(r.id) && !fresh.has(r.id)) fresh.set(r.id, { id: r.id, tmdbId: r.tmdb_id, error: "still waiting" });
+      const error = state.lastError;
+      if (fresh.size === 0 && !error) return;
+      for (const id of fresh.keys()) alertedIds.add(id);
+      const sample = [...fresh.values()].slice(0, 3).map((f) => `${f.tmdbId} (${f.error})`).join(", ");
+      await sendAlert("Import problem", `${fresh.size} show(s) not finished${sample ? `: ${sample}` : ""}${error ? `. Run error: ${error}` : ""}. See /admin/finish-imports`);
     } catch (e) {
       console.error("finish-imports alert failed:", e.message);
     }
