@@ -39,7 +39,7 @@ function matchShow(said, shows) {
 function buildPrompt({ shows, context, languageHint }) {
   const list = shows.slice(0, 250).map((s) => s.title).join(" | ");
   const ctx = context && context.showTitle
-    ? `The person currently has open: "${context.showTitle}"${context.season != null ? ` season ${context.season}` : ""}${context.episode != null ? ` episode ${context.episode}` : ""}. "this episode" / "this show" means that.`
+    ? `The person currently has open: "${context.showTitle}"${context.season != null ? ` season ${context.season}` : ""}${context.episode != null ? ` episode ${context.episode}` : ""}. "this show" means that show; if no season/episode is open, "the next episode" means count 1 of it.`
     : "Nothing is open in the app right now, so \"this episode\" cannot be resolved.";
   return `You turn a spoken request to a TV tracking app into JSON. The request may be in any language (often Greek or English)${languageHint ? `; the app language is ${languageHint}` : ""}.
 The person's tracked shows (use these exact titles in "show"): ${list || "none"}
@@ -147,10 +147,14 @@ function mountVoice(app, { supabase, requireAuth, asyncHandler }) {
     if (!onlyDeveloper(req, res)) return;
     const text = String(req.body?.text || "").trim().slice(0, 600);
     if (!text) return res.status(400).json({ error: "text is required" });
-    const context = req.body?.context || null;
     const today = new Date().toISOString().slice(0, 10);
 
     const shows = await loadShows(req.userId);
+    // The app can say which show is open (by TMDB id) so "I watched the next episode" needs no title.
+    let context = null;
+    const openId = Number(req.body?.context?.showTmdbId);
+    const openShow = Number.isInteger(openId) ? shows.find((s) => s.tmdb_id === openId) : null;
+    if (openShow) context = { showTitle: openShow.title };
     let parsed;
     try {
       parsed = await askModel(buildPrompt({ shows, context, languageHint: req.body?.locale }), text);
