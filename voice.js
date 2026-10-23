@@ -11,6 +11,7 @@ const { setMovieStatus } = require("./movies");
 const GROQ_URL = "https://api.groq.com/openai/v1/chat/completions";
 const MODEL = process.env.VOICE_MODEL || "openai/gpt-oss-120b";
 const MAX_EPISODES_PER_SHOW = 30;
+const MAX_EPISODES_ALL = 400; // "I finished the whole show"
 
 const adminId = () => process.env.ADMIN_USER_ID || "47d65eeb-e49b-4854-a5e4-64b468541886";
 
@@ -75,13 +76,16 @@ ${ctx}
 
 Reply ONLY with one JSON object:
 {"intent": "mark_watched" | "open" | "comment" | "recommend" | "other",
- "marks": [{"kind": "show" | "movie", "action": "mark" | "unmark", "title": "<title>", "season": <number or null>, "episode": <number or null>, "count": <number or null>}],
+ "marks": [{"kind": "show" | "movie", "action": "mark" | "unmark", "title": "<title>", "season": <number or null>, "episode": <number or null>, "count": <number or null>, "all": <true or false>}],
  "open": {"title": "<title>", "kind": "show" | "movie" | null} or null,
  "comment": {"show": "<exact title>", "season": <number or null>, "episode": <number or null>, "text": "<the comment, in the language the person dictated it>"} or null,
  "reply": "<one short sentence in the person's language, only for intent other>"}
 
 Rules:
 - mark_watched, shows: "I watched episode 3 of season 2 of X" -> season 2, episode 3. "I watched 3 episodes of X today" / "the next 3 of X" -> count 3, season and episode null (the next unwatched ones). "I watched X" with no numbers -> count 1. "Mark this episode" -> use the open show/season/episode. One mark per show; several shows in one request = several marks.
+- Wording varies a lot, accept all of it. Marking as watched: "I watched / saw / finished / just got through", "mark / tick / check off / log / add as watched", Greek "είδα, ολοκλήρωσα, τέλειωσα, μάρκαρε, σημείωσε, τσέκαρε, πέρασε, κατέγραψε, το είδα". Unmarking: "unmark, untick, remove, undo, take back, I didn't actually watch", Greek "ξεμάρκαρε, βγάλε, αφαίρεσε, σβήσε, ακύρωσε, δεν το είδα". Opening: "open, go to, show me, take me to, pull up, bring up, find", Greek "άνοιξε, πήγαινε, δείξε μου, βρες, φέρε μου, πάμε σε". Recommending: "what should I watch, suggest, recommend, I'm bored", Greek "τι να δω, πρότεινε, προτάσεις, δώσε μου ιδέες, βαριέμαι". Ordinals and numbers can be words or digits in either language ("third", "τρίτο", "3ο", "episode three").
+- "all": set true when the person says they finished everything: "I finished season 2 of X" / "τέλειωσα τη σεζόν 2 του X" -> season 2, all true; "I finished X" / "είδα όλο το X" / "mark the whole show" -> season null, all true. Otherwise false.
+- Relative words: "yesterday/today" are ignored (the date is always now). "the last episode" when marking = the final episode of the latest season only if the person clearly says so; "the next one" = next unwatched (count 1).
 - unmark: "unmark episode 3 of season 2 of X", "I didn't actually watch the last 2 episodes of X", "remove season 2 of X from watched" -> action "unmark" (intent stays mark_watched). Explicit season+episode = that episode; "the last N" -> count N, season and episode null; a whole season -> season set, episode and count null. Everything else is action "mark". Unmarking movies is not supported (use intent other and say so).
 - mark_watched, movies: "I watched the movie X" / "mark movie X as watched" -> kind "movie" (season/episode/count null). If the person says "movie"/"film" use kind "movie"; if it is clearly a tracked show use "show".
 - open: "open X", "go to X", "show me X" -> {"title": X, "kind": ...}. Titles that are not tracked are fine here (they are searched).
@@ -233,6 +237,12 @@ function mountVoice(app, { supabase, requireAuth, asyncHandler }) {
       return { show, episodes: [hit], alreadyWatched: hit.watched ? [hit] : [], action: "mark" };
     }
 
+    if (mark.all === true) {
+      const all = eps.filter((e) => !e.watched && e.air_date && e.air_date <= today && (season == null || e.season_number === season)).slice(0, MAX_EPISODES_ALL);
+      if (!all.length) return { problem: season != null ? `Nothing left to mark in season ${season} of ${show.title}` : `Nothing left to mark for ${show.title}` };
+      return { show, episodes: all, alreadyWatched: [], action: "mark" };
+    }
+
     const count = Math.max(1, Math.min(MAX_EPISODES_PER_SHOW, Number.isInteger(mark.count) ? mark.count : 1));
     // "the next N": first unwatched episodes that have already aired, in order
     const next = eps.filter((e) => !e.watched && e.air_date && e.air_date <= today).slice(0, count);
@@ -320,10 +330,14 @@ function mountVoice(app, { supabase, requireAuth, asyncHandler }) {
   // the show's last episode -> Completed (ended) / Up to date, otherwise Planned/Favourite -> Watching.
   app.post("/voice/apply-watched", requireAuth, asyncHandler(async (req, res) => {
     if (!onlyDeveloper(req, res)) return;
-    const ids = [...new Set((Array.isArray(req.body?.episodeIds) ? req.body.episodeIds : []).filter((x) => x != null))].slice(0, 200);
+    const ids = [...new Set((Array.isArray(req.body?.episodeIds) ? req.body.episodeIds : []).filter((x) => x != null))].slice(0, 600);
     if (!ids.length) return res.status(400).json({ error: "episodeIds is required" });
-    const { data: found, error } = await supabase.from("episodes").select("id, show_id, season_number, episode_number").in("id", ids);
-    if (error) throw error;
+    const found = [];
+    for (let i = 0; i < ids.length; i += 100) {
+      const { data, error } = await supabase.from("episodes").select("id, show_id, season_number, episode_number").in("id", ids.slice(i, i + 100));
+      if (error) throw error;
+      found.push(...(data || []));
+    }
     const unmark = req.body?.unmark === true;
     const rows = (found || []).map((e) => ({ user_id: req.userId, episode_id: e.id, source: "manual" }));
     if (unmark) {
@@ -331,9 +345,11 @@ function mountVoice(app, { supabase, requireAuth, asyncHandler }) {
         const { error: delErr } = await supabase.from("watched_episodes").delete().eq("user_id", req.userId).in("episode_id", rows.slice(i, i + 100).map((r) => r.episode_id));
         if (delErr) throw delErr;
       }
-    } else if (rows.length) {
-      const { error: upErr } = await supabase.from("watched_episodes").upsert(rows, { onConflict: "user_id,episode_id", ignoreDuplicates: true });
-      if (upErr) throw upErr;
+    } else {
+      for (let i = 0; i < rows.length; i += 200) {
+        const { error: upErr } = await supabase.from("watched_episodes").upsert(rows.slice(i, i + 200), { onConflict: "user_id,episode_id", ignoreDuplicates: true });
+        if (upErr) throw upErr;
+      }
     }
 
     // list status per affected show (best effort: the episodes are already saved)
