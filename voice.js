@@ -33,7 +33,8 @@ function matchShow(said, shows) {
   if (exact.length > 1) return { show: null, ambiguous: exact };
   const loose = shows.filter((s) => {
     const t = norm(s.title);
-    return t && (t.includes(key) || key.includes(t));
+    // whole-word containment, so "you" does not match "young sheldon"
+    return t && ((` ${t} `).includes(` ${key} `) || (` ${key} `).includes(` ${t} `));
   });
   if (loose.length === 1) return { show: loose[0], ambiguous: [] };
   if (loose.length > 1) return { show: null, ambiguous: loose };
@@ -86,21 +87,25 @@ Rules:
 - comment: the person wants to post a comment on an episode. Put only the comment text itself in "text", without the instruction words.
 - recommend: asks what to watch / for suggestions.
 - other: anything else (then explain briefly in "reply").
-- The request comes from speech recognition, so titles are often misheard, split or transliterated (English titles written in Greek letters, e.g. "Μπρέικινγκ Μπαντ" = "Breaking Bad"). For tracked titles put the one from the lists that SOUNDS closest; otherwise give the title as you best understand it.`;
+- The request comes from speech recognition, so titles are often misheard, split or transliterated (English titles written in Greek letters, e.g. "Μπρέικινγκ Μπαντ" = "Breaking Bad"). For tracked titles put the one from the lists that SOUNDS closest; otherwise give the title as you best understand it, in its original / English form as listed on TMDB (not transliterated into another alphabet).`;
 }
 
 async function askModel(system, text) {
-  const res = await fetch(GROQ_URL, {
+  const call = (extra) => fetch(GROQ_URL, {
     method: "POST",
     headers: { "Content-Type": "application/json", Authorization: `Bearer ${process.env.GROQ_API_KEY}` },
     body: JSON.stringify({
       model: MODEL,
       messages: [{ role: "system", content: system }, { role: "user", content: text }],
       temperature: 0,
-      max_tokens: 1500, // this model spends part of the budget on a reasoning trace first
+      max_tokens: 2000, // this model spends part of the budget on a reasoning trace first
       response_format: { type: "json_object" },
+      ...extra,
     }),
   });
+  // A short reasoning trace is plenty for this (and faster); fall back if the parameter is rejected.
+  let res = await call({ reasoning_effort: "low" });
+  if (res.status === 400) res = await call({});
   if (!res.ok) throw new Error(`Groq ${res.status}: ${await res.text()}`);
   const data = await res.json();
   return JSON.parse(data.choices?.[0]?.message?.content || "{}");
@@ -295,17 +300,44 @@ function mountVoice(app, { supabase, requireAuth, asyncHandler }) {
   }));
 
   // Writes the confirmed plan's watched episodes. Only ids that exist are accepted; the same row the
-  // app's own tick writes (source "manual").
+  // app's own tick writes (source "manual"), plus the same list-status moves the app makes when ticking:
+  // the show's last episode -> Completed (ended) / Up to date, otherwise Planned/Favourite -> Watching.
   app.post("/voice/apply-watched", requireAuth, asyncHandler(async (req, res) => {
     if (!onlyDeveloper(req, res)) return;
     const ids = [...new Set((Array.isArray(req.body?.episodeIds) ? req.body.episodeIds : []).filter((x) => x != null))].slice(0, 200);
     if (!ids.length) return res.status(400).json({ error: "episodeIds is required" });
-    const { data: found, error } = await supabase.from("episodes").select("id").in("id", ids);
+    const { data: found, error } = await supabase.from("episodes").select("id, show_id, season_number, episode_number").in("id", ids);
     if (error) throw error;
     const rows = (found || []).map((e) => ({ user_id: req.userId, episode_id: e.id, source: "manual" }));
     if (rows.length) {
       const { error: upErr } = await supabase.from("watched_episodes").upsert(rows, { onConflict: "user_id,episode_id", ignoreDuplicates: true });
       if (upErr) throw upErr;
+    }
+
+    // list status per affected show (best effort: the episodes are already saved)
+    try {
+      const byShow = new Map();
+      for (const e of found || []) { if (!byShow.has(e.show_id)) byShow.set(e.show_id, []); byShow.get(e.show_id).push(e); }
+      for (const [showId, marked] of byShow) {
+        const [{ data: showRow }, { data: wl }, { data: last }] = await Promise.all([
+          supabase.from("shows").select("status").eq("id", showId).maybeSingle(),
+          supabase.from("user_watchlist").select("status").eq("user_id", req.userId).eq("show_id", showId).maybeSingle(),
+          supabase.from("episodes").select("id").eq("show_id", showId).gt("season_number", 0)
+            .order("season_number", { ascending: false }).order("episode_number", { ascending: false }).limit(1),
+        ]);
+        if (!wl) continue; // not on the list: nothing to move
+        const finaleId = last && last[0] && last[0].id;
+        let status = wl.status;
+        if (finaleId && marked.some((m) => m.id === finaleId)) {
+          const ended = showRow && (showRow.status === "Ended" || showRow.status === "Canceled");
+          status = ended ? "completed" : "up_to_date";
+        } else if (wl.status === "planned" || wl.status === "favorite") {
+          status = "watching";
+        }
+        await supabase.from("user_watchlist").update({ status, updated_at: new Date().toISOString() }).eq("user_id", req.userId).eq("show_id", showId);
+      }
+    } catch (e) {
+      console.error("voice: status update failed:", e.message);
     }
     res.json({ ok: true, marked: rows.length });
   }));
