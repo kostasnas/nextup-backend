@@ -262,6 +262,32 @@ function mountVoice(app, { supabase, requireAuth, asyncHandler }) {
     const openId = Number(req.body?.context?.showTmdbId);
     const openShow = Number.isInteger(openId) ? shows.find((s) => s.tmdb_id === openId) : null;
     if (openShow) context = { showTitle: openShow.title };
+    const t0 = Date.now();
+
+    // Fast paths: the two most common commands are recognised by wording, no model call (saves seconds).
+    // Anything not matched cleanly, or not found in the person's own lists, falls through to the model.
+    const OPEN_RE = /^\s*(?:άνοιξε|ανοιξε|πήγαινε|πηγαινε|πάμε|παμε|δείξε|δειξε|βρες|φέρε|φερε|open|go to|show me|take me to|pull up|find)\s+(?:μου\s+)?(?:(?:σε|στο|στη|στην|στον|το|τη|την|τον|the|to)\s+)?(?:(σειρά|σειρα|series|show|ταινία|ταινια|movie|film)\s+)?(.+?)\s*[.!]?\s*$/i;
+    const om = OPEN_RE.exec(text);
+    if (om && om[2]) {
+      const kindWord = (om[1] || "").toLowerCase();
+      const kind = /ταιν|movie|film/.test(kindWord) ? "movie" : kindWord ? "show" : null;
+      let hit = null;
+      if (kind !== "movie") { const m = matchShow(om[2], shows); if (m.show) hit = { kind: "show", tmdbId: m.show.tmdb_id, title: m.show.title }; }
+      if (!hit && kind !== "show") { const m = matchShow(om[2], movies); if (m.show) hit = { kind: "movie", tmdbId: m.show.tmdb_id, title: m.show.title }; }
+      if (hit) { console.log(`voice fast open ${Date.now() - t0}ms`); return res.json({ type: "open", transcript: text, ...hit }); }
+    }
+
+    const NEXT_RE = /(next|επόμενο|επομενο|επόμενη|επομενη)/i;
+    const DONE_RE = /(mark|watched|saw|seen|finished|tick|check|είδα|ειδα|σημείωσε|σημειωσε|μάρκαρε|μαρκαρε|τσέκαρε|τσεκαρε|τελείωσα|τελειωσα)/i;
+    const UNDO_RE = /(unmark|untick|remove|undo|didn't|did not|ξεμάρκαρε|ξεμαρκαρε|βγάλε|βγαλε|αφαίρεσε|αφαιρεσε|σβήσε|σβησε|ακύρωσε|ακυρωσε|δεν )/i;
+    if (openShow && NEXT_RE.test(text) && DONE_RE.test(text) && !UNDO_RE.test(text) && !/\d|\b(season|episodes?|σεζόν|σεζον|επεισόδια|επεισοδια)\b/i.test(text)) {
+      const r = await planMark(req.userId, { show: openShow.title, action: "mark", count: 1 }, shows, today);
+      if (!r.problem) {
+        console.log(`voice fast next ${Date.now() - t0}ms`);
+        return res.json({ type: "plan", transcript: text, comment: null, problems: [], marks: [{ kind: "show", action: "mark", showTitle: r.show.title, tmdbId: r.show.tmdb_id, episodes: r.episodes.map((e) => ({ id: e.id, season: e.season_number, episode: e.episode_number })), alreadyWatched: 0 }] });
+      }
+    }
+
     let parsed;
     try {
       parsed = await askModel(buildPrompt({ shows, movies, context, languageHint: req.body?.locale }), text);
@@ -270,6 +296,7 @@ function mountVoice(app, { supabase, requireAuth, asyncHandler }) {
       return res.status(502).json({ error: "Couldn't understand that, try again" });
     }
 
+    console.log(`voice model ${Date.now() - t0}ms intent=${parsed.intent}`);
     const intent = parsed.intent;
     if (intent === "recommend") return res.json({ type: "recommend", transcript: text });
     if (intent === "open") {
