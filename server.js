@@ -870,25 +870,37 @@ function mapGiphyResults(data) {
   })).filter((g) => g.url);
 }
 
+// The beta key allows 100 Giphy calls per hour for the WHOLE app (GIPHY refused a production key), so
+// results are cached in memory: the same search / the trending list is fetched once per window and
+// shared by everyone. Failures are not cached.
+const GIF_CACHE_TTL_MS = 15 * 60 * 1000;
+const gifCache = new Map(); // key -> { at, gifs }
+async function cachedGifs(key, url, failMessage, res) {
+  const hit = gifCache.get(key);
+  if (hit && Date.now() - hit.at < GIF_CACHE_TTL_MS) return res.json({ gifs: hit.gifs });
+  const giphyRes = await fetch(url);
+  if (giphyRes.status === 429) return res.status(429).json({ error: "GIFs are busy right now, try again in a bit" });
+  if (!giphyRes.ok) return res.status(502).json({ error: failMessage });
+  const gifs = mapGiphyResults(await giphyRes.json());
+  gifCache.set(key, { at: Date.now(), gifs });
+  if (gifCache.size > 300) gifCache.delete(gifCache.keys().next().value);
+  res.json({ gifs });
+}
+
 app.get("/gifs/search", requireAuth, asyncHandler(async (req, res) => {
   const q = (req.query.q || "").trim();
   if (!q) return res.json({ gifs: [] });
-  const giphyRes = await fetch(
-    `https://api.giphy.com/v1/gifs/search?api_key=${process.env.GIPHY_API_KEY}&q=${encodeURIComponent(q)}&limit=24&rating=pg-13`
-  );
-  if (!giphyRes.ok) return res.status(502).json({ error: "GIF search failed" });
-  const data = await giphyRes.json();
-  res.json({ gifs: mapGiphyResults(data) });
+  await cachedGifs(`s:${q.toLowerCase()}`,
+    `https://api.giphy.com/v1/gifs/search?api_key=${process.env.GIPHY_API_KEY}&q=${encodeURIComponent(q)}&limit=24&rating=pg-13`,
+    "GIF search failed", res);
 }));
 
 app.get("/gifs/trending", requireAuth, asyncHandler(async (req, res) => {
-  const giphyRes = await fetch(
-    `https://api.giphy.com/v1/gifs/trending?api_key=${process.env.GIPHY_API_KEY}&limit=24&rating=pg-13`
-  );
-  if (!giphyRes.ok) return res.status(502).json({ error: "GIF trending fetch failed" });
-  const data = await giphyRes.json();
-  res.json({ gifs: mapGiphyResults(data) });
+  await cachedGifs("trending",
+    `https://api.giphy.com/v1/gifs/trending?api_key=${process.env.GIPHY_API_KEY}&limit=24&rating=pg-13`,
+    "GIF trending fetch failed", res);
 }));
+
 
 app.get("/discover/top-shows", asyncHandler(async (req, res) => {
   const region = (req.query.region || "US").toUpperCase();
