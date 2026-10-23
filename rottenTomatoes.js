@@ -45,10 +45,11 @@ async function getImdbId(tmdbId, mediaType) {
   const url = `${TMDB_BASE}/${mediaType}/${tmdbId}/external_ids?api_key=${apiKey}`;
   const data = await throttle(async () => {
     const res = await fetch(url);
+    if (res.status === 404) return null; // TMDB doesn't know this id (removed, or never existed): no rating, not an error
     if (!res.ok) throw new Error(`TMDB external_ids failed: ${res.status}`);
     return res.json();
   });
-  const imdbId = data.imdb_id || "";
+  const imdbId = data?.imdb_id || "";
   setCached(cacheKey, imdbId);
   return imdbId;
 }

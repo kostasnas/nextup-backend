@@ -249,9 +249,15 @@ app.get("/watchlist/remaining", requireAuth, asyncHandler(async (req, res) => {
     return rows;
   }
 
+  // A long list of ids in one .in() makes the request URL too long (over ~16 KB the call fails with
+  // "Headers Overflow"; seen for a person with a very large library), so ask for the shows in groups.
+  const showGroups = [];
+  for (let i = 0; i < showIds.length; i += 100) showGroups.push(showIds.slice(i, i + 100));
+  const perGroup = async (build) => (await Promise.all(showGroups.map((g) => readAll(() => build(g))))).flat();
+
   const [aired, upcoming, watchedRows] = await Promise.all([
-    readAll(() => supabase.from("episodes").select("id, show_id").in("show_id", showIds).gt("season_number", 0).lte("air_date", today).order("id")),
-    readAll(() => supabase.from("episodes").select("id, show_id").in("show_id", showIds).gt("season_number", 0).gt("air_date", today).order("id")),
+    perGroup((g) => supabase.from("episodes").select("id, show_id").in("show_id", g).gt("season_number", 0).lte("air_date", today).order("id")),
+    perGroup((g) => supabase.from("episodes").select("id, show_id").in("show_id", g).gt("season_number", 0).gt("air_date", today).order("id")),
     readAll(() => supabase.from("watched_episodes").select("episode_id").eq("user_id", req.userId).order("episode_id")),
   ]);
   const watchedIds = new Set(watchedRows.map((w) => w.episode_id));
