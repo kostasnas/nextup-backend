@@ -2782,6 +2782,8 @@ require("./badges").mountBadges(app, { requireAuth, asyncHandler });
 // Locked to the developer account while TMDB's answer on image use is pending (see scenes.js).
 require("./scenes").mountScenes(app, { supabase, requireAuth, asyncHandler });
 require("./voice").mountVoice(app, { supabase, requireAuth, asyncHandler });
+// One-off admin call that finishes imports whose episode step never completed (see finishImports.js).
+require("./finishImports").mountFinishImports(app, { supabase, asyncHandler, syncShowProgress, forEachConcurrent });
 // Custom lists (needs migrations/user_lists.sql) + the public /l/:slug page.
 require("./lists").mountLists(app, { supabase, requireAuth, asyncHandler });
 
