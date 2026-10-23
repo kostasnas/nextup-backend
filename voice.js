@@ -75,13 +75,14 @@ ${ctx}
 
 Reply ONLY with one JSON object:
 {"intent": "mark_watched" | "open" | "comment" | "recommend" | "other",
- "marks": [{"kind": "show" | "movie", "title": "<title>", "season": <number or null>, "episode": <number or null>, "count": <number or null>}],
+ "marks": [{"kind": "show" | "movie", "action": "mark" | "unmark", "title": "<title>", "season": <number or null>, "episode": <number or null>, "count": <number or null>}],
  "open": {"title": "<title>", "kind": "show" | "movie" | null} or null,
  "comment": {"show": "<exact title>", "season": <number or null>, "episode": <number or null>, "text": "<the comment, in the language the person dictated it>"} or null,
  "reply": "<one short sentence in the person's language, only for intent other>"}
 
 Rules:
 - mark_watched, shows: "I watched episode 3 of season 2 of X" -> season 2, episode 3. "I watched 3 episodes of X today" / "the next 3 of X" -> count 3, season and episode null (the next unwatched ones). "I watched X" with no numbers -> count 1. "Mark this episode" -> use the open show/season/episode. One mark per show; several shows in one request = several marks.
+- unmark: "unmark episode 3 of season 2 of X", "I didn't actually watch the last 2 episodes of X", "remove season 2 of X from watched" -> action "unmark" (intent stays mark_watched). Explicit season+episode = that episode; "the last N" -> count N, season and episode null; a whole season -> season set, episode and count null. Everything else is action "mark". Unmarking movies is not supported (use intent other and say so).
 - mark_watched, movies: "I watched the movie X" / "mark movie X as watched" -> kind "movie" (season/episode/count null). If the person says "movie"/"film" use kind "movie"; if it is clearly a tracked show use "show".
 - open: "open X", "go to X", "show me X" -> {"title": X, "kind": ...}. Titles that are not tracked are fine here (they are searched).
 - comment: the person wants to post a comment on an episode. Put only the comment text itself in "text", without the instruction words.
@@ -213,17 +214,30 @@ function mountVoice(app, { supabase, requireAuth, asyncHandler }) {
     const season = Number.isInteger(mark.season) ? mark.season : null;
     const episode = Number.isInteger(mark.episode) ? mark.episode : null;
 
+    if (mark.action === "unmark") {
+      const watched = eps.filter((e) => e.watched);
+      let targets;
+      if (season != null && episode != null) targets = watched.filter((e) => e.season_number === season && e.episode_number === episode);
+      else if (season != null && !Number.isInteger(mark.count)) targets = watched.filter((e) => e.season_number === season);
+      else {
+        const count = Math.max(1, Math.min(MAX_EPISODES_PER_SHOW, Number.isInteger(mark.count) ? mark.count : 1));
+        targets = watched.slice(-count); // eps is in watching order, so the end is the latest
+      }
+      if (!targets.length) return { problem: `Nothing marked as watched to remove for ${show.title}` };
+      return { show, episodes: targets, alreadyWatched: [], action: "unmark" };
+    }
+
     if (season != null && episode != null) {
       const hit = eps.find((e) => e.season_number === season && e.episode_number === episode);
       if (!hit) return { problem: `${show.title} has no S${season}E${episode}` };
-      return { show, episodes: [hit], alreadyWatched: hit.watched ? [hit] : [] };
+      return { show, episodes: [hit], alreadyWatched: hit.watched ? [hit] : [], action: "mark" };
     }
 
     const count = Math.max(1, Math.min(MAX_EPISODES_PER_SHOW, Number.isInteger(mark.count) ? mark.count : 1));
     // "the next N": first unwatched episodes that have already aired, in order
     const next = eps.filter((e) => !e.watched && e.air_date && e.air_date <= today).slice(0, count);
     if (!next.length) return { problem: `Nothing left to mark for ${show.title}` };
-    return { show, episodes: next, alreadyWatched: [] };
+    return { show, episodes: next, alreadyWatched: [], action: "mark" };
   }
 
   app.post("/voice/interpret", requireAuth, asyncHandler(async (req, res) => {
@@ -263,6 +277,7 @@ function mountVoice(app, { supabase, requireAuth, asyncHandler }) {
     if (intent === "mark_watched") {
       for (const m of (Array.isArray(parsed.marks) ? parsed.marks : []).slice(0, 8)) {
         if (m.kind === "movie") {
+          if (m.action === "unmark") { problems.push("I can't unmark movies by voice yet"); continue; }
           let r;
           try { r = await planMovie(m, movies); } catch (e) { r = { problem: "Couldn't look that movie up, try again" }; }
           if (r.problem) { problems.push(r.problem); continue; }
@@ -274,6 +289,7 @@ function mountVoice(app, { supabase, requireAuth, asyncHandler }) {
         if (r.problem) { problems.push(r.problem); continue; }
         marks.push({
           kind: "show",
+          action: r.action,
           showTitle: r.show.title,
           tmdbId: r.show.tmdb_id,
           episodes: r.episodes.map((e) => ({ id: e.id, season: e.season_number, episode: e.episode_number })),
@@ -308,8 +324,14 @@ function mountVoice(app, { supabase, requireAuth, asyncHandler }) {
     if (!ids.length) return res.status(400).json({ error: "episodeIds is required" });
     const { data: found, error } = await supabase.from("episodes").select("id, show_id, season_number, episode_number").in("id", ids);
     if (error) throw error;
+    const unmark = req.body?.unmark === true;
     const rows = (found || []).map((e) => ({ user_id: req.userId, episode_id: e.id, source: "manual" }));
-    if (rows.length) {
+    if (unmark) {
+      for (let i = 0; i < rows.length; i += 100) {
+        const { error: delErr } = await supabase.from("watched_episodes").delete().eq("user_id", req.userId).in("episode_id", rows.slice(i, i + 100).map((r) => r.episode_id));
+        if (delErr) throw delErr;
+      }
+    } else if (rows.length) {
       const { error: upErr } = await supabase.from("watched_episodes").upsert(rows, { onConflict: "user_id,episode_id", ignoreDuplicates: true });
       if (upErr) throw upErr;
     }
@@ -328,7 +350,10 @@ function mountVoice(app, { supabase, requireAuth, asyncHandler }) {
         if (!wl) continue; // not on the list: nothing to move
         const finaleId = last && last[0] && last[0].id;
         let status = wl.status;
-        if (finaleId && marked.some((m) => m.id === finaleId)) {
+        if (unmark) {
+          // same as the app: taking back the finale of a finished / up-to-date show moves it back to Watching
+          if (finaleId && marked.some((m) => m.id === finaleId) && (wl.status === "up_to_date" || wl.status === "completed")) status = "watching";
+        } else if (finaleId && marked.some((m) => m.id === finaleId)) {
           const ended = showRow && (showRow.status === "Ended" || showRow.status === "Canceled");
           status = ended ? "completed" : "up_to_date";
         } else if (wl.status === "planned" || wl.status === "favorite") {
