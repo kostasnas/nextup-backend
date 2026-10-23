@@ -5,6 +5,9 @@
 //
 // LOCKED to the developer account while it is being tried out: every route answers 403 for anyone else and
 // /voice/status tells the app whether to show the microphone. Nothing here is stored.
+const { searchShow, searchMovie } = require("./tmdbMatcher");
+const { setMovieStatus } = require("./movies");
+
 const GROQ_URL = "https://api.groq.com/openai/v1/chat/completions";
 const MODEL = process.env.VOICE_MODEL || "openai/gpt-oss-120b";
 const MAX_EPISODES_PER_SHOW = 30;
@@ -58,28 +61,32 @@ function editDistance(a, b) {
   return prev[b.length];
 }
 
-function buildPrompt({ shows, context, languageHint }) {
+function buildPrompt({ shows, movies, context, languageHint }) {
   const list = shows.slice(0, 250).map((s) => s.title).join(" | ");
+  const movieList = movies.slice(0, 150).map((m) => m.title).join(" | ");
   const ctx = context && context.showTitle
     ? `The person currently has open: "${context.showTitle}"${context.season != null ? ` season ${context.season}` : ""}${context.episode != null ? ` episode ${context.episode}` : ""}. "this show" means that show; if no season/episode is open, "the next episode" means count 1 of it.`
     : "Nothing is open in the app right now, so \"this episode\" cannot be resolved.";
-  return `You turn a spoken request to a TV tracking app into JSON. The request may be in any language (often Greek or English)${languageHint ? `; the app language is ${languageHint}` : ""}.
-The person's tracked shows (use these exact titles in "show"): ${list || "none"}
+  return `You turn a spoken request to a TV and movie tracking app into JSON. The request may be in any language (often Greek or English)${languageHint ? `; the app language is ${languageHint}` : ""}.
+The person's tracked shows: ${list || "none"}
+The person's tracked movies: ${movieList || "none"}
 ${ctx}
 
 Reply ONLY with one JSON object:
-{"intent": "mark_watched" | "comment" | "recommend" | "other",
- "marks": [{"show": "<exact title from the list>", "season": <number or null>, "episode": <number or null>, "count": <number or null>}],
+{"intent": "mark_watched" | "open" | "comment" | "recommend" | "other",
+ "marks": [{"kind": "show" | "movie", "title": "<title>", "season": <number or null>, "episode": <number or null>, "count": <number or null>}],
+ "open": {"title": "<title>", "kind": "show" | "movie" | null} or null,
  "comment": {"show": "<exact title>", "season": <number or null>, "episode": <number or null>, "text": "<the comment, in the language the person dictated it>"} or null,
  "reply": "<one short sentence in the person's language, only for intent other>"}
 
 Rules:
-- mark_watched: "I watched episode 3 of season 2 of X" -> season 2, episode 3. "I watched 3 episodes of X today" / "I watched the next 3 of X" -> count 3, season and episode null (the next unwatched ones). "I watched X" with no numbers -> count 1. "Mark this episode" -> use the open show/season/episode. One mark per show; several shows in one request = several marks.
+- mark_watched, shows: "I watched episode 3 of season 2 of X" -> season 2, episode 3. "I watched 3 episodes of X today" / "the next 3 of X" -> count 3, season and episode null (the next unwatched ones). "I watched X" with no numbers -> count 1. "Mark this episode" -> use the open show/season/episode. One mark per show; several shows in one request = several marks.
+- mark_watched, movies: "I watched the movie X" / "mark movie X as watched" -> kind "movie" (season/episode/count null). If the person says "movie"/"film" use kind "movie"; if it is clearly a tracked show use "show".
+- open: "open X", "go to X", "show me X" -> {"title": X, "kind": ...}. Titles that are not tracked are fine here (they are searched).
 - comment: the person wants to post a comment on an episode. Put only the comment text itself in "text", without the instruction words.
 - recommend: asks what to watch / for suggestions.
-- other: anything else, or a title that is not in the list (then explain briefly in "reply").
-- The request comes from speech recognition, so titles are often misheard, split or transliterated (English titles written in Greek letters, e.g. "Μπρέικινγκ Μπαντ" = "Breaking Bad"). In "show" put the title from the list that SOUNDS closest to what was said; only treat a show as missing if nothing in the list sounds similar.
-- Never invent a show that is not in the list.`;
+- other: anything else (then explain briefly in "reply").
+- The request comes from speech recognition, so titles are often misheard, split or transliterated (English titles written in Greek letters, e.g. "Μπρέικινγκ Μπαντ" = "Breaking Bad"). For tracked titles put the one from the lists that SOUNDS closest; otherwise give the title as you best understand it.`;
 }
 
 async function askModel(system, text) {
@@ -124,6 +131,48 @@ function mountVoice(app, { supabase, requireAuth, asyncHandler }) {
       .filter((r) => r.shows && r.shows.title)
       .sort((a, b) => rank(a.status) - rank(b.status))
       .map((r) => r.shows);
+  }
+
+  async function loadMovies(userId) {
+    const { data, error } = await supabase
+      .from("user_movie_watchlist")
+      .select("status, movies(id, tmdb_id, title, poster_path, release_date, runtime, overview)")
+      .eq("user_id", userId)
+      .limit(500);
+    if (error) throw error;
+    return (data || []).filter((r) => r.movies && r.movies.title).map((r) => ({ ...r.movies, status: r.status }));
+  }
+
+  const yearOf = (d) => (d ? String(d).slice(0, 4) : null);
+
+  // A movie to mark watched: one of the person's tracked movies, otherwise the best TMDB match.
+  async function planMovie(mark, movies) {
+    const said = mark.title || mark.show;
+    const { show: hit } = matchShow(said, movies);
+    if (hit) {
+      return { movie: { tmdb_id: hit.tmdb_id, title: hit.title, poster_path: hit.poster_path, release_date: hit.release_date, runtime: hit.runtime, overview: hit.overview }, alreadyWatched: hit.status === "watched" };
+    }
+    const results = await searchMovie(said);
+    const r = results && results[0];
+    if (!r) return { problem: `I couldn't find a movie called "${said}"` };
+    return { movie: { tmdb_id: r.id, title: r.title, poster_path: r.poster_path || null, release_date: r.release_date || null, runtime: null, overview: r.overview || null }, alreadyWatched: false };
+  }
+
+  // "open X": tracked show/movie first, otherwise the most popular TMDB match.
+  async function resolveOpen(open, shows, movies) {
+    const said = open?.title;
+    if (!said) return null;
+    const kind = open.kind === "show" || open.kind === "movie" ? open.kind : null;
+    if (kind !== "movie") { const { show } = matchShow(said, shows); if (show) return { kind: "show", tmdbId: show.tmdb_id, title: show.title }; }
+    if (kind !== "show") { const { show } = matchShow(said, movies); if (show) return { kind: "movie", tmdbId: show.tmdb_id, title: show.title }; }
+    const [tv, mv] = await Promise.all([
+      kind !== "movie" ? searchShow(said).catch(() => []) : [],
+      kind !== "show" ? searchMovie(said).catch(() => []) : [],
+    ]);
+    const t = tv && tv[0], m = mv && mv[0];
+    if (t && (!m || (t.popularity || 0) >= (m.popularity || 0))) return { kind: "show", tmdbId: t.id, title: t.name };
+    if (m) return { kind: "movie", tmdbId: m.id, title: m.title };
+    return null;
   }
 
   // Episodes of one show in watching order, with whether this person has watched each one.
@@ -178,7 +227,7 @@ function mountVoice(app, { supabase, requireAuth, asyncHandler }) {
     if (!text) return res.status(400).json({ error: "text is required" });
     const today = new Date().toISOString().slice(0, 10);
 
-    const shows = await loadShows(req.userId);
+    const [shows, movies] = await Promise.all([loadShows(req.userId), loadMovies(req.userId)]);
     // The app can say which show is open (by TMDB id) so "I watched the next episode" needs no title.
     let context = null;
     const openId = Number(req.body?.context?.showTmdbId);
@@ -186,7 +235,7 @@ function mountVoice(app, { supabase, requireAuth, asyncHandler }) {
     if (openShow) context = { showTitle: openShow.title };
     let parsed;
     try {
-      parsed = await askModel(buildPrompt({ shows, context, languageHint: req.body?.locale }), text);
+      parsed = await askModel(buildPrompt({ shows, movies, context, languageHint: req.body?.locale }), text);
     } catch (e) {
       console.error("voice interpret failed:", e.message);
       return res.status(502).json({ error: "Couldn't understand that, try again" });
@@ -194,6 +243,12 @@ function mountVoice(app, { supabase, requireAuth, asyncHandler }) {
 
     const intent = parsed.intent;
     if (intent === "recommend") return res.json({ type: "recommend", transcript: text });
+    if (intent === "open") {
+      let target = null;
+      try { target = await resolveOpen(parsed.open, shows, movies); } catch (e) { console.error("voice open failed:", e.message); }
+      if (!target) return res.json({ type: "unknown", transcript: text, reply: `I couldn't find "${parsed.open?.title || text}"` });
+      return res.json({ type: "open", transcript: text, ...target });
+    }
     if (intent !== "mark_watched" && intent !== "comment") {
       return res.json({ type: "unknown", transcript: text, reply: parsed.reply || null });
     }
@@ -202,9 +257,18 @@ function mountVoice(app, { supabase, requireAuth, asyncHandler }) {
     const marks = [];
     if (intent === "mark_watched") {
       for (const m of (Array.isArray(parsed.marks) ? parsed.marks : []).slice(0, 8)) {
-        const r = await planMark(req.userId, m, shows, today);
+        if (m.kind === "movie") {
+          let r;
+          try { r = await planMovie(m, movies); } catch (e) { r = { problem: "Couldn't look that movie up, try again" }; }
+          if (r.problem) { problems.push(r.problem); continue; }
+          const yr = yearOf(r.movie.release_date);
+          marks.push({ kind: "movie", showTitle: yr ? `${r.movie.title} (${yr})` : r.movie.title, tmdbId: r.movie.tmdb_id, movie: r.movie, episodes: [], alreadyWatched: r.alreadyWatched ? 1 : 0 });
+          continue;
+        }
+        const r = await planMark(req.userId, { ...m, show: m.title || m.show }, shows, today);
         if (r.problem) { problems.push(r.problem); continue; }
         marks.push({
+          kind: "show",
           showTitle: r.show.title,
           tmdbId: r.show.tmdb_id,
           episodes: r.episodes.map((e) => ({ id: e.id, season: e.season_number, episode: e.episode_number })),
@@ -244,6 +308,18 @@ function mountVoice(app, { supabase, requireAuth, asyncHandler }) {
       if (upErr) throw upErr;
     }
     res.json({ ok: true, marked: rows.length });
+  }));
+
+  // Marks one movie watched (the same write the app's own "Watched" button makes).
+  app.post("/voice/apply-movie", requireAuth, asyncHandler(async (req, res) => {
+    if (!onlyDeveloper(req, res)) return;
+    const m = req.body?.movie || {};
+    if (!Number.isInteger(m.tmdb_id) || m.tmdb_id <= 0 || typeof m.title !== "string" || !m.title) return res.status(400).json({ error: "movie is required" });
+    await setMovieStatus(supabase, req.userId, {
+      tmdb_id: m.tmdb_id, title: m.title.slice(0, 300), poster_path: m.poster_path || null,
+      release_date: m.release_date || null, runtime: m.runtime || null, overview: m.overview || null,
+    }, "watched");
+    res.json({ ok: true });
   }));
 }
 
