@@ -2082,6 +2082,23 @@ async function getOwnedJob(jobId, userId) {
   return data;
 }
 
+// Imports whose episode details were never (fully) fetched: the first step of an import only lists the
+// shows, and the app fetches the episodes in a second step. If the app was closed during it, nothing
+// continued it. The app asks here on start and carries on quietly. Jobs younger than 20 minutes are
+// left alone (the import screen is probably still running them).
+app.get("/import/pending", requireAuth, asyncHandler(async (req, res) => {
+  const { rows } = await getPool().query(
+    `select j.id as job_id, count(*)::int as remaining
+       from import_jobs j
+       join import_job_shows s on s.import_job_id = j.id
+      where j.user_id = $1 and s.synced = false and j.created_at < now() - interval '20 minutes'
+      group by j.id, j.created_at
+      order by j.created_at`,
+    [req.userId]
+  );
+  res.json({ jobs: rows.map((r) => ({ jobId: r.job_id, remaining: r.remaining })) });
+}));
+
 app.get("/import/status/:jobId", requireAuth, asyncHandler(async (req, res) => {
   const job = await getOwnedJob(req.params.jobId, req.userId);
   res.json(job);
