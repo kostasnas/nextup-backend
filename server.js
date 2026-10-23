@@ -156,6 +156,8 @@ async function requireAuth(req, res, next) {
 
   req.userId = data.user.id;
   req.userEmail = data.user.email;
+  // So an error in Sentry says whose request it was (id only, never the email).
+  try { Sentry.getIsolationScope().setUser({ id: data.user.id }); } catch { /* never break a request over this */ }
   next();
 }
 
@@ -2783,7 +2785,11 @@ require("./badges").mountBadges(app, { requireAuth, asyncHandler });
 require("./scenes").mountScenes(app, { supabase, requireAuth, asyncHandler });
 require("./voice").mountVoice(app, { supabase, requireAuth, asyncHandler });
 // One-off admin call that finishes imports whose episode step never completed (see finishImports.js).
-require("./finishImports").mountFinishImports(app, { supabase, asyncHandler, syncShowProgress, forEachConcurrent });
+require("./finishImports").mountFinishImports(app, {
+  supabase, asyncHandler, syncShowProgress, forEachConcurrent,
+  // sendPushToUser is required further down this file; looked up only when an alert is actually sent.
+  sendAlert: (title, body) => sendPushToUser(supabase, process.env.ADMIN_USER_ID || "47d65eeb-e49b-4854-a5e4-64b468541886", { title, body: String(body).slice(0, 160) }),
+});
 // Custom lists (needs migrations/user_lists.sql) + the public /l/:slug page.
 require("./lists").mountLists(app, { supabase, requireAuth, asyncHandler });
 
