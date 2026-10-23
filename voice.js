@@ -33,7 +33,29 @@ function matchShow(said, shows) {
     return t && (t.includes(key) || key.includes(t));
   });
   if (loose.length === 1) return { show: loose[0], ambiguous: [] };
-  return { show: null, ambiguous: loose };
+  if (loose.length > 1) return { show: null, ambiguous: loose };
+  // Speech recognition mishears names ("slow horses" -> "slow horse", "hannah" -> "hanna"): accept a title
+  // within a small edit distance, but only when it is clearly the closest one.
+  const scored = shows
+    .map((s) => ({ s, d: editDistance(norm(s.title), key) }))
+    .filter((x) => x.d <= Math.max(1, Math.floor(key.length / 5)))
+    .sort((a, b) => a.d - b.d);
+  if (scored.length && (scored.length === 1 || scored[1].d > scored[0].d)) return { show: scored[0].s, ambiguous: [] };
+  return { show: null, ambiguous: scored.map((x) => x.s) };
+}
+
+function editDistance(a, b) {
+  if (a === b) return 0;
+  if (!a.length || !b.length) return Math.max(a.length, b.length);
+  let prev = Array.from({ length: b.length + 1 }, (_, i) => i);
+  for (let i = 1; i <= a.length; i++) {
+    const cur = [i];
+    for (let j = 1; j <= b.length; j++) {
+      cur[j] = Math.min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1));
+    }
+    prev = cur;
+  }
+  return prev[b.length];
 }
 
 function buildPrompt({ shows, context, languageHint }) {
@@ -56,6 +78,7 @@ Rules:
 - comment: the person wants to post a comment on an episode. Put only the comment text itself in "text", without the instruction words.
 - recommend: asks what to watch / for suggestions.
 - other: anything else, or a title that is not in the list (then explain briefly in "reply").
+- The request comes from speech recognition, so titles are often misheard, split or transliterated (English titles written in Greek letters, e.g. "Μπρέικινγκ Μπαντ" = "Breaking Bad"). In "show" put the title from the list that SOUNDS closest to what was said; only treat a show as missing if nothing in the list sounds similar.
 - Never invent a show that is not in the list.`;
 }
 
@@ -94,7 +117,13 @@ function mountVoice(app, { supabase, requireAuth, asyncHandler }) {
       .eq("user_id", userId)
       .limit(500);
     if (error) throw error;
-    return (data || []).map((r) => r.shows).filter((s) => s && s.title);
+    // Shows being watched right now come first: they are what people talk about, and the prompt lists only
+    // the first 250 titles.
+    const rank = (st) => (st === "watching" ? 0 : st === "planned" ? 1 : 2);
+    return (data || [])
+      .filter((r) => r.shows && r.shows.title)
+      .sort((a, b) => rank(a.status) - rank(b.status))
+      .map((r) => r.shows);
   }
 
   // Episodes of one show in watching order, with whether this person has watched each one.
