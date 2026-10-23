@@ -78,7 +78,7 @@ Reply ONLY with one JSON object:
 {"intent": "mark_watched" | "open" | "comment" | "recommend" | "other",
  "marks": [{"kind": "show" | "movie", "action": "mark" | "unmark", "title": "<title>", "season": <number or null>, "episode": <number or null>, "count": <number or null>, "all": <true or false>}],
  "open": {"title": "<title>", "kind": "show" | "movie" | null} or null,
- "comment": {"show": "<exact title>", "season": <number or null>, "episode": <number or null>, "text": "<the comment, in the language the person dictated it>"} or null,
+ "comment": {"show": "<exact title>", "season": <number or null>, "episode": <number or null>, "target": "scenera" | "community" | null, "text": "<the comment, in the language the person dictated it>"} or null,
  "reply": "<one short sentence in the person's language, only for intent other>"}
 
 Rules:
@@ -89,7 +89,7 @@ Rules:
 - unmark: "unmark episode 3 of season 2 of X", "I didn't actually watch the last 2 episodes of X", "remove season 2 of X from watched" -> action "unmark" (intent stays mark_watched). Explicit season+episode = that episode; "the last N" -> count N, season and episode null; a whole season -> season set, episode and count null. Everything else is action "mark". Unmarking movies is not supported (use intent other and say so).
 - mark_watched, movies: "I watched the movie X" / "mark movie X as watched" -> kind "movie" (season/episode/count null). If the person says "movie"/"film" use kind "movie"; if it is clearly a tracked show use "show".
 - open: "open X", "go to X", "show me X" -> {"title": X, "kind": ...}. Titles that are not tracked are fine here (they are searched).
-- comment: the person wants to post a comment on an episode. Put only the comment text itself in "text", without the instruction words.
+- comment: the person wants to post a comment on an episode ("comment on", "write / post / leave a comment", "γράψε / άφησε σχόλιο / σχολίασε"). "target": "community" if they say community / shared / everyone / κοινότητα / κοινό, otherwise null. Put only the comment text itself in "text", without the instruction words.
 - recommend: asks what to watch / for suggestions.
 - other: anything else (then explain briefly in "reply").
 - The request comes from speech recognition, so titles are often misheard, split or transliterated (English titles written in Greek letters, e.g. "Μπρέικινγκ Μπαντ" = "Breaking Bad"). For tracked titles put the one from the lists that SOUNDS closest; otherwise give the title as you best understand it, in its original / English form as listed on TMDB (not transliterated into another alphabet).`;
@@ -318,7 +318,7 @@ function mountVoice(app, { supabase, requireAuth, asyncHandler }) {
         const eps = await loadEpisodes(req.userId, show.id);
         const hit = eps.find((e) => e.season_number === c.season && e.episode_number === c.episode);
         if (!hit) problems.push(`${show.title} has no S${c.season}E${c.episode}`);
-        else comment = { episodeId: hit.id, label: `${show.title} S${c.season}E${c.episode}`, text: String(c.text).slice(0, 1000) };
+        else comment = { target: c.target === "community" ? "community" : "scenera", episodeId: hit.id, label: `${show.title} S${c.season}E${c.episode}`, text: String(c.text).slice(0, 1000) };
       }
     }
 
