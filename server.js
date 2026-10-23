@@ -2746,6 +2746,7 @@ require("./friendProfile").mountFriendProfile(app, { supabase, requireAuth, asyn
 require("./badges").mountBadges(app, { requireAuth, asyncHandler });
 // Locked to the developer account while TMDB's answer on image use is pending (see scenes.js).
 require("./scenes").mountScenes(app, { supabase, requireAuth, asyncHandler });
+require("./voice").mountVoice(app, { supabase, requireAuth, asyncHandler });
 
 // Real, in-app account deletion — required by Google Play policy
 // alongside the web-based deletion link already in delete-account.html
