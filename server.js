@@ -676,7 +676,15 @@ app.get("/surprise-pick", requireAuth, asyncHandler(async (req, res) => {
   }
 
   const pick = pool[Math.floor(Math.random() * pool.length)];
-  res.json({ pick, poolSize: pool.length });
+  // Other posters from the same pool, only for the spinning strip in the app (the pick is placed at
+  // the end of the spin by the client). Shuffled, no duplicates of the pick, only titles with a poster.
+  const others = pool.filter((item) => item !== pick && item.posterPath);
+  for (let i = others.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [others[i], others[j]] = [others[j], others[i]];
+  }
+  const strip = others.slice(0, 14).map((item) => ({ posterPath: item.posterPath, title: item.title }));
+  res.json({ pick, poolSize: pool.length, strip });
 }));
 
 app.get("/feature-requests", requireAuth, asyncHandler(async (req, res) => {
