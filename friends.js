@@ -69,26 +69,37 @@ async function listFriends(supabase, userId) {
   const pendingReceived = [];
   const pendingSent = [];
 
-  // Unread chat messages per accepted connection (sent by the other person, read_at still empty), one query for
-  // all of them. Best effort: before migrations/messages_receipts.sql the column does not exist, the query errors,
-  // and every count stays 0 - the friends list works as it did.
-  const unreadByConnection = new Map();
+  // Everything the list needs beyond the connections is fetched at once instead of one round trip per friend:
+  //  - display info of every other person, in a single query;
+  //  - unread chat messages per accepted connection (sent by the other person, read_at still empty). Best effort:
+  //    before migrations/messages_receipts.sql the column does not exist, the query errors, and every count stays 0.
+  const otherIds = [...new Set((data || []).map((r) => (r.requester_id === userId ? r.recipient_id : r.requester_id)))];
   const acceptedIds = (data || []).filter((r) => r.status === "accepted").map((r) => r.id);
-  if (acceptedIds.length) {
-    const { data: unreadRows, error: unreadError } = await supabase
-      .from("messages")
-      .select("connection_id")
-      .in("connection_id", acceptedIds)
-      .neq("sender_id", userId)
-      .is("read_at", null);
-    if (!unreadError) {
-      for (const m of unreadRows || []) unreadByConnection.set(m.connection_id, (unreadByConnection.get(m.connection_id) || 0) + 1);
-    }
+  const [infoRows, unreadResult] = await Promise.all([
+    otherIds.length
+      ? getPool()
+          .query(
+            `select id, email,
+                    raw_user_meta_data->>'display_name' as display_name,
+                    raw_user_meta_data->>'avatar_url' as avatar_url
+               from auth.users where id = any($1::uuid[])`,
+            [otherIds]
+          )
+          .then((r) => r.rows)
+      : Promise.resolve([]),
+    acceptedIds.length
+      ? supabase.from("messages").select("connection_id").in("connection_id", acceptedIds).neq("sender_id", userId).is("read_at", null)
+      : Promise.resolve({ data: [], error: null }),
+  ]);
+  const infoById = new Map(infoRows.map((u) => [u.id, u]));
+  const unreadByConnection = new Map();
+  if (!unreadResult.error) {
+    for (const m of unreadResult.data || []) unreadByConnection.set(m.connection_id, (unreadByConnection.get(m.connection_id) || 0) + 1);
   }
 
   for (const row of data || []) {
     const otherId = row.requester_id === userId ? row.recipient_id : row.requester_id;
-    const other = await getUserDisplayInfo(otherId);
+    const other = infoById.get(otherId) || null;
     const entry = {
       connectionId: row.id,
       userId: otherId,

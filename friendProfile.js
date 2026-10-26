@@ -104,7 +104,9 @@ async function readStats(friendId) {
 
 async function getFriendProfile(supabase, connectionId, userId) {
   const friendId = await resolveFriendId(supabase, connectionId, userId);
-  const [identity, cast] = await Promise.all([readIdentity(supabase, friendId), readCast(supabase, friendId)]);
+  // The numbers are computed at the same time as the identity instead of after it (one round trip less); they are only
+  // returned when the person has not chosen to hide them, and only after the accepted-friend check above.
+  const [identity, cast, stats] = await Promise.all([readIdentity(supabase, friendId), readCast(supabase, friendId), readStats(friendId)]);
   const profile = {
     name: identity.name,
     avatarUrl: identity.avatarUrl,
@@ -113,7 +115,7 @@ async function getFriendProfile(supabase, connectionId, userId) {
     cast,
     statsHidden: identity.hideStats,
   };
-  if (!identity.hideStats) profile.stats = await readStats(friendId);
+  if (!identity.hideStats) profile.stats = stats;
   return profile;
 }
 
