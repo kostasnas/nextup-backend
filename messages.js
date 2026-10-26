@@ -68,6 +68,13 @@ async function getMessages(supabase, connectionId, userId) {
     throw e;
   }
 
+  // Reading the conversation is what marks the other person's messages as delivered and read
+  // (the double ticks on their side). Best effort: before migrations/messages_receipts.sql has been run the
+  // columns do not exist, the update just fails, and the chat works as it did.
+  const now = new Date().toISOString();
+  await supabase.from("messages").update({ delivered_at: now }).eq("connection_id", connectionId).neq("sender_id", userId).is("delivered_at", null);
+  await supabase.from("messages").update({ read_at: now }).eq("connection_id", connectionId).neq("sender_id", userId).is("read_at", null);
+
   const { data: messages, error: msgError } = await supabase
     .from("messages")
     .select("*")
@@ -76,6 +83,28 @@ async function getMessages(supabase, connectionId, userId) {
   if (msgError) throw msgError;
 
   return messages || [];
+}
+
+/**
+ * The app calls this when it opens or comes back to the foreground (and when a message push arrives while it is
+ * open): every message sent to this person that had not reached the app yet gets delivered_at, which is the
+ * second grey tick for the sender. Not "read" - that only happens when the conversation is opened (getMessages).
+ */
+async function markDelivered(supabase, userId) {
+  const { data: connections } = await supabase
+    .from("friend_connections")
+    .select("id")
+    .eq("status", "accepted")
+    .or(`requester_id.eq.${userId},recipient_id.eq.${userId}`);
+  const ids = (connections || []).map((c) => c.id);
+  if (ids.length === 0) return { ok: true };
+  await supabase
+    .from("messages")
+    .update({ delivered_at: new Date().toISOString() })
+    .in("connection_id", ids)
+    .neq("sender_id", userId)
+    .is("delivered_at", null);
+  return { ok: true };
 }
 
 /**
@@ -106,4 +135,4 @@ async function deleteMessage(supabase, messageId, userId) {
   return { ok: true };
 }
 
-module.exports = { sendMessage, getMessages, deleteMessage };
+module.exports = { sendMessage, getMessages, deleteMessage, markDelivered };

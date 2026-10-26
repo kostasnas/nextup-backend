@@ -20,7 +20,7 @@ const { parseImdbRatingsExport } = require("./imdbParser");
 const { matchShows, searchShow, searchMovie, matchMovie, findByImdbId } = require("./tmdbMatcher");
 const { syncShowProgress, fetchAllEpisodes, cacheEpisodes, fetchShowMeta, fetchSeasonList } = require("./episodeSync");
 const { sendFriendRequest, listFriends, acceptFriendRequest, declineFriendRequest, removeFriend, getFriendFavorites, getFriendWatching } = require("./friends");
-const { sendMessage, getMessages, deleteMessage } = require("./messages");
+const { sendMessage, getMessages, deleteMessage, markDelivered } = require("./messages");
 const { getComments, getCommentCountsForShow, addComment, deleteComment, toggleCommentLike, getEpisodeContext, getMovieComments, addMovieComment, getMovieContext, getMovieCommentCount } = require("./episodeComments");
 const { forEachConcurrent } = require("./concurrency");
 const MOVIE_IMPORT_CONCURRENCY = 12;
@@ -2905,6 +2905,11 @@ app.post("/friends/:id/messages", requireAuth, asyncHandler(async (req, res) => 
   if (!content || !content.trim()) return res.status(400).json({ error: "content is required" });
   const result = await sendMessage(supabase, req.params.id, req.userId, content.trim());
   res.json(result);
+}));
+
+// The app reports in when it opens or returns to the foreground: messages sent to this person have reached it.
+app.post("/messages/delivered", requireAuth, asyncHandler(async (req, res) => {
+  res.json(await markDelivered(supabase, req.userId));
 }));
 
 app.delete("/messages/:id", requireAuth, asyncHandler(async (req, res) => {
