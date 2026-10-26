@@ -69,6 +69,23 @@ async function listFriends(supabase, userId) {
   const pendingReceived = [];
   const pendingSent = [];
 
+  // Unread chat messages per accepted connection (sent by the other person, read_at still empty), one query for
+  // all of them. Best effort: before migrations/messages_receipts.sql the column does not exist, the query errors,
+  // and every count stays 0 - the friends list works as it did.
+  const unreadByConnection = new Map();
+  const acceptedIds = (data || []).filter((r) => r.status === "accepted").map((r) => r.id);
+  if (acceptedIds.length) {
+    const { data: unreadRows, error: unreadError } = await supabase
+      .from("messages")
+      .select("connection_id")
+      .in("connection_id", acceptedIds)
+      .neq("sender_id", userId)
+      .is("read_at", null);
+    if (!unreadError) {
+      for (const m of unreadRows || []) unreadByConnection.set(m.connection_id, (unreadByConnection.get(m.connection_id) || 0) + 1);
+    }
+  }
+
   for (const row of data || []) {
     const otherId = row.requester_id === userId ? row.recipient_id : row.requester_id;
     const other = await getUserDisplayInfo(otherId);
@@ -79,7 +96,7 @@ async function listFriends(supabase, userId) {
       avatarUrl: other?.avatar_url || null,
     };
     if (row.status === "accepted") {
-      friends.push(entry);
+      friends.push({ ...entry, unreadCount: unreadByConnection.get(row.id) || 0 });
     } else if (row.recipient_id === userId) {
       pendingReceived.push(entry);
     } else {
