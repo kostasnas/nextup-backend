@@ -248,8 +248,9 @@ async function extractSongs(text, title) {
           content:
             "You read a passage from a Wikipedia article about a TV series or film and list the existing songs it says are used or heard in it " +
             "(licensed or original songs with a named artist, not the composer's score cues, not albums). Use ONLY what the passage says. " +
-            "If a song's artist is not given in the passage, leave artist empty. Never add songs from your own memory. " +
-            'Answer as JSON: {"songs":[{"title":"...","artist":"..."}]} with at most 10 songs, or {"songs":[]} if none.',
+            "Never add songs the passage does not name. \"artist\" is the performer ONLY if the passage says it, otherwise empty. " +
+            "\"likely_artist\" is the performer of the recording this title is best known for, from what you know, or empty if unsure. " +
+            'Answer as JSON: {"songs":[{"title":"...","artist":"...","likely_artist":"..."}]} with at most 10 songs, or {"songs":[]} if none.',
         },
         { role: "user", content: `Title: ${title}\n\nPassage:\n${text}` },
       ],
@@ -262,25 +263,40 @@ async function extractSongs(text, title) {
   const list = Array.isArray(parsed.songs) ? parsed.songs : [];
   const haystack = norm(text);
   return list
-    .map((x) => ({ title: cleanText(x?.title, 120), artist: cleanText(x?.artist, 120) }))
+    .map((x) => ({ title: cleanText(x?.title, 120), artist: cleanText(x?.artist, 120), likelyArtist: cleanText(x?.likely_artist, 120) }))
     .filter((x) => x.title && norm(x.title).length > 1 && haystack.includes(norm(x.title))) // it has to be written in the article
     .slice(0, 10);
 }
 
 // A song on Deezer: the first result whose title and (when we have one) artist match what was asked for.
 async function deezerSong(song) {
-  const q = song.artist ? `track:"${song.title}" artist:"${song.artist}"` : `track:"${song.title}"`;
-  const data = await deezer(`/search/track?q=${encodeURIComponent(q)}&limit=8`);
   const wantTitle = norm(song.title);
-  const wantArtist = norm(song.artist);
-  const hit = (data.data || []).find((t) => {
+  const sameArtist = (t, name) => {
+    const want = norm(name);
+    const ta = norm(t.artist?.name);
+    return !!want && (ta.includes(want) || want.includes(ta));
+  };
+  const titleOk = (t) => {
     const tt = norm(t.title_short || t.title);
     if (!(tt === wantTitle || tt.startsWith(`${wantTitle} `) || wantTitle.startsWith(`${tt} `))) return false;
-    if (NOT_WANTED.test(norm(t.title)) || NOT_WANTED.test(norm(t.album?.title))) return false;
-    if (!wantArtist) return true;
-    const ta = norm(t.artist?.name);
-    return ta.includes(wantArtist) || wantArtist.includes(ta);
-  });
+    return !(NOT_WANTED.test(norm(t.title)) || NOT_WANTED.test(norm(t.album?.title)));
+  };
+  const search = async (q) => ((await deezer(`/search/track?q=${encodeURIComponent(q)}&limit=15`)).data || []).filter(titleOk);
+
+  let hit = null;
+  if (song.artist) {
+    hit = (await search(`track:"${song.title}" artist:"${song.artist}"`)).find((t) => sameArtist(t, song.artist)) || null;
+  } else {
+    // The article names no performer, and a famous song has many versions (covers, other languages). Prefer the recording
+    // the model knows from this title, else the most listened to one; Deezer's "rank" is its popularity number.
+    const all = await search(`track:"${song.title}"`);
+    const byRank = [...all].sort((x, y) => (y.rank || 0) - (x.rank || 0));
+    if (song.likelyArtist) {
+      hit = byRank.find((t) => sameArtist(t, song.likelyArtist)) || null;
+      if (!hit) hit = (await search(`track:"${song.title}" artist:"${song.likelyArtist}"`)).find((t) => sameArtist(t, song.likelyArtist)) || null;
+    }
+    if (!hit) hit = byRank[0] || null;
+  }
   if (!hit) return null;
   return {
     id: String(hit.id),
@@ -293,25 +309,21 @@ async function deezerSong(song) {
   };
 }
 
-async function featuredSongs(imdbId, title, trace = null) {
+async function featuredSongs(imdbId, title) {
   const key = `featured:${imdbId}`;
-  const cached = trace ? undefined : cacheGet(key);
+  const cached = cacheGet(key);
   if (cached) return cached;
   let songs = [];
   try {
     const wikiTitle = await wikipediaTitleFor(imdbId);
-    if (trace) trace.wikiTitle = wikiTitle;
     const text = wikiTitle ? await articleMusicText(wikiTitle) : "";
-    if (trace) { trace.textChars = text.length; trace.textStart = text.slice(0, 200); }
     const named = text ? await extractSongs(text, title) : [];
-    if (trace) trace.named = named;
     const found = await Promise.allSettled(named.map(deezerSong));
     const seen = new Set();
     for (const f of found) {
       if (f.status === "fulfilled" && f.value && !seen.has(f.value.id)) { seen.add(f.value.id); songs.push(f.value); }
     }
-  } catch (e) {
-    if (trace) trace.error = String(e && e.message || e);
+  } catch {
     songs = []; // a missing list is better than a wrong one, and not worth an error on screen
     return songs; // not cached, so the next open tries again
   }
@@ -370,10 +382,7 @@ function mountSoundtracks(app, { requireAuth, asyncHandler }) {
   app.get("/soundtrack/featured", requireAuth, asyncHandler(async (req, res) => {
     const imdbId = String(req.query.imdb_id || "");
     if (!/^tt\d{5,10}$/.test(imdbId)) return res.json({ songs: [] });
-    // ?debug=1 adds what each step found (which article, how much text, which songs were named), for finding out why a list is empty.
-    const trace = req.query.debug === "1" ? {} : null;
-    const songs = await featuredSongs(imdbId, cleanText(req.query.title, 120), trace);
-    res.json(trace ? { songs, debug: trace } : { songs });
+    res.json({ songs: await featuredSongs(imdbId, cleanText(req.query.title, 120)) });
   }));
 
   app.get("/soundtrack/album/:id", requireAuth, asyncHandler(async (req, res) => {
