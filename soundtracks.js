@@ -293,21 +293,25 @@ async function deezerSong(song) {
   };
 }
 
-async function featuredSongs(imdbId, title) {
+async function featuredSongs(imdbId, title, trace = null) {
   const key = `featured:${imdbId}`;
-  const cached = cacheGet(key);
+  const cached = trace ? undefined : cacheGet(key);
   if (cached) return cached;
   let songs = [];
   try {
     const wikiTitle = await wikipediaTitleFor(imdbId);
+    if (trace) trace.wikiTitle = wikiTitle;
     const text = wikiTitle ? await articleMusicText(wikiTitle) : "";
+    if (trace) { trace.textChars = text.length; trace.textStart = text.slice(0, 200); }
     const named = text ? await extractSongs(text, title) : [];
+    if (trace) trace.named = named;
     const found = await Promise.allSettled(named.map(deezerSong));
     const seen = new Set();
     for (const f of found) {
       if (f.status === "fulfilled" && f.value && !seen.has(f.value.id)) { seen.add(f.value.id); songs.push(f.value); }
     }
-  } catch {
+  } catch (e) {
+    if (trace) trace.error = String(e && e.message || e);
     songs = []; // a missing list is better than a wrong one, and not worth an error on screen
     return songs; // not cached, so the next open tries again
   }
@@ -366,7 +370,10 @@ function mountSoundtracks(app, { requireAuth, asyncHandler }) {
   app.get("/soundtrack/featured", requireAuth, asyncHandler(async (req, res) => {
     const imdbId = String(req.query.imdb_id || "");
     if (!/^tt\d{5,10}$/.test(imdbId)) return res.json({ songs: [] });
-    res.json({ songs: await featuredSongs(imdbId, cleanText(req.query.title, 120)) });
+    // ?debug=1 adds what each step found (which article, how much text, which songs were named), for finding out why a list is empty.
+    const trace = req.query.debug === "1" ? {} : null;
+    const songs = await featuredSongs(imdbId, cleanText(req.query.title, 120), trace);
+    res.json(trace ? { songs, debug: trace } : { songs });
   }));
 
   app.get("/soundtrack/album/:id", requireAuth, asyncHandler(async (req, res) => {
