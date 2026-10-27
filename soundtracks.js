@@ -45,6 +45,24 @@ function cacheSet(key, value, ttl) {
   cache.set(key, { value, expires: Date.now() + ttl });
 }
 
+// The same cache, shared by everybody and kept in the database (migrations/soundtrack_cache.sql): the first person who opens a
+// title makes the lookup, later people and restarts read it. Every step is optional: no table or connection = memory only.
+async function dbCacheGet(key, maxDays) {
+  try {
+    const { rows } = await getPool().query(
+      "select value from soundtrack_cache where key = $1 and updated_at > now() - ($2 || ' days')::interval", [key, String(maxDays)]);
+    return rows[0] ? rows[0].value : null;
+  } catch { return null; }
+}
+async function dbCacheSet(key, value) {
+  try {
+    await getPool().query(
+      `insert into soundtrack_cache (key, value, updated_at) values ($1, $2::jsonb, now())
+       on conflict (key) do update set value = excluded.value, updated_at = now()`, [key, JSON.stringify(value)]);
+  } catch { /* table not created yet, or no connection: the memory cache still works */ }
+}
+const DB_DAYS = 180;
+
 async function deezer(path) {
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), 7000);
@@ -125,6 +143,8 @@ async function findAlbums(titles, year, composers = []) {
   const key = `albums:${wanted.join("|")}:${year || ""}:${composerNames.join("|")}`;
   const cached = cacheGet(key);
   if (cached) return cached;
+  const stored = await dbCacheGet(key, DB_DAYS);
+  if (Array.isArray(stored) && stored.length) { cacheSet(key, stored, SEARCH_TTL_MS); return stored; }
 
   // Two angles per title: albums whose name contains it, and a plain "<title> soundtrack" search.
   const queries = [];
@@ -175,7 +195,10 @@ async function findAlbums(titles, year, composers = []) {
       cover: cleanCover(a.cover_medium) || cleanCover(a.cover) || null,
       trackCount: a.nb_tracks || null,
     }));
-  cacheSet(key, ranked, SEARCH_TTL_MS);
+  // Found albums are kept for everybody. "Nothing found" is only remembered briefly, and not at all when part of the search failed.
+  const partial = settled.some((x) => x.status === "rejected");
+  if (ranked.length) { cacheSet(key, ranked, SEARCH_TTL_MS); await dbCacheSet(key, ranked); }
+  else if (!partial) cacheSet(key, ranked, 60 * 60 * 1000);
   return ranked;
 }
 
@@ -344,26 +367,49 @@ async function youtubeVideoId(query) {
   }
 }
 
+// Runs fn over items a few at a time (Deezer refuses bursts) and retries a failed one once. Never throws: a failure is reported
+// as { failed: true } so the caller can tell "Deezer errored" from "Deezer has no such song".
+async function lookupSongs(named) {
+  const out = new Array(named.length);
+  let next = 0;
+  const worker = async () => {
+    while (next < named.length) {
+      const i = next++;
+      for (let attempt = 0; attempt < 2; attempt++) {
+        try { out[i] = { value: await deezerSong(named[i]) }; break; }
+        catch { out[i] = { failed: true }; await new Promise((r) => setTimeout(r, 400)); }
+      }
+    }
+  };
+  await Promise.all([worker(), worker(), worker()]);
+  return out;
+}
+
 async function featuredSongs(imdbId, title) {
   const key = `featured:${imdbId}`;
   const cached = cacheGet(key);
   if (cached) return cached;
+  const stored = await dbCacheGet(key, 90);
+  if (Array.isArray(stored) && stored.length) { cacheSet(key, stored, FEATURED_TTL_MS); return stored; }
   let songs = [];
+  let complete = false; // true only when nothing went wrong along the way
   try {
     const wikiTitle = await wikipediaTitleFor(imdbId);
     const text = wikiTitle ? await articleMusicText(wikiTitle) : "";
     const named = text ? await extractSongs(text, title) : [];
-    const found = await Promise.allSettled(named.map(deezerSong));
+    const found = await lookupSongs(named);
     const seen = new Set();
     for (const f of found) {
-      if (f.status === "fulfilled" && f.value && !seen.has(f.value.id)) { seen.add(f.value.id); songs.push(f.value); }
+      if (f.value && !seen.has(f.value.id)) { seen.add(f.value.id); songs.push(f.value); }
     }
+    complete = !found.some((f) => f.failed);
     await Promise.all(songs.map(async (sg) => { sg.ytId = await youtubeVideoId(`${sg.title} ${sg.artist} ${title}`); }));
   } catch {
-    songs = []; // a missing list is better than a wrong one, and not worth an error on screen
-    return songs; // not cached, so the next open tries again
+    return []; // a missing list is better than a wrong one, and not worth an error on screen; not cached, so the next open tries again
   }
-  cacheSet(key, songs, FEATURED_TTL_MS);
+  // A good list is kept for a week. When nothing was found it is kept 30 minutes, and when something failed only 15 seconds, so one bad moment (Deezer or Groq busy) is not remembered.
+  cacheSet(key, songs, complete && songs.length ? FEATURED_TTL_MS : complete ? 30 * 60 * 1000 : 15 * 1000); // none found: 30 min; something failed: just 15 s
+  if (complete && songs.length) await dbCacheSet(key, songs.map((sg) => ({ ...sg, preview: null }))); // preview links expire; a fresh one is fetched on play
   return songs;
 }
 
@@ -371,6 +417,9 @@ async function albumTracks(albumId) {
   const key = `tracks:${albumId}`;
   const cached = cacheGet(key);
   if (cached) return cached;
+  // From the shared cache the songs come without preview links (they expire): the app asks for a fresh one when a song is played.
+  const stored = await dbCacheGet(key, DB_DAYS);
+  if (Array.isArray(stored) && stored.length) { cacheSet(key, stored, TRACKS_TTL_MS); return stored; }
   const data = await deezer(`/album/${encodeURIComponent(albumId)}/tracks?limit=100`);
   const tracks = (data.data || [])
     .filter((t) => t && t.id)
@@ -382,6 +431,7 @@ async function albumTracks(albumId) {
       preview: typeof t.preview === "string" && t.preview.startsWith("https://") ? t.preview : null,
     }));
   cacheSet(key, tracks, TRACKS_TTL_MS);
+  if (tracks.length) await dbCacheSet(key, tracks.map((t) => ({ ...t, preview: null })));
   return tracks;
 }
 
