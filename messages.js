@@ -6,10 +6,33 @@
 // right as a small set of explicit, audited endpoints rather than
 // RLS policies trying to encode "only if accepted, only between
 // these two people."
-const { getUserDisplayInfo } = require("./db");
+const { getUserDisplayInfo, getPool } = require("./db");
 const { sendPushToUser } = require("./pushNotifications");
 
-async function sendMessage(supabase, connectionId, senderId, content) {
+// A card for an episode, movie or show that rides along with a message. Anything that does not look right is dropped
+// (returns null) rather than failing the message: the text still goes through.
+function cleanRef(ref) {
+  if (!ref || typeof ref !== "object") return null;
+  const kind = ref.kind === "episode" || ref.kind === "movie" || ref.kind === "show" ? ref.kind : null;
+  const tmdbId = Number.isInteger(ref.tmdbId) && ref.tmdbId > 0 ? ref.tmdbId : null;
+  if (!kind || !tmdbId) return null;
+  const title = typeof ref.title === "string" ? ref.title.replace(/\s+/g, " ").trim().slice(0, 160) : "";
+  if (!title) return null;
+  let season = null;
+  let episode = null;
+  if (kind === "episode") {
+    season = Number.isInteger(ref.season) && ref.season >= 0 && ref.season < 1000 ? ref.season : null;
+    episode = Number.isInteger(ref.episode) && ref.episode > 0 && ref.episode < 100000 ? ref.episode : null;
+    if (season == null || episode == null) return null;
+  }
+  const poster = typeof ref.posterPath === "string" && /^\/[A-Za-z0-9._-]{3,80}$/.test(ref.posterPath) ? ref.posterPath : null;
+  return { kind, tmdbId, season, episode, title, poster };
+}
+
+const refLabel = (r) => (r.kind === "episode" ? `${r.title} S${r.season}E${r.episode}` : r.title);
+
+async function sendMessage(supabase, connectionId, senderId, content, rawRef = null) {
+  const ref = cleanRef(rawRef);
   const { data: connection, error } = await supabase
     .from("friend_connections")
     .select("*")
@@ -28,17 +51,31 @@ async function sendMessage(supabase, connectionId, senderId, content) {
 
   const { data: message, error: insertError } = await supabase
     .from("messages")
-    .insert({ connection_id: connectionId, sender_id: senderId, content })
+    .insert({
+      connection_id: connectionId, sender_id: senderId, content,
+      ...(ref ? { ref_kind: ref.kind, ref_tmdb_id: ref.tmdbId, ref_season: ref.season, ref_episode: ref.episode, ref_title: ref.title, ref_poster: ref.poster } : {}),
+    })
     .select()
     .single();
-  if (insertError) throw insertError;
+  if (insertError) {
+    // Before migrations/messages_media_ref.sql has been run the card columns do not exist.
+    if (ref && /ref_/.test(String(insertError.message))) {
+      const e = new Error("Sending an episode to a friend is not available yet.");
+      e.status = 503;
+      throw e;
+    }
+    throw insertError;
+  }
 
   const recipientId = connection.requester_id === senderId ? connection.recipient_id : connection.requester_id;
   const sender = await getUserDisplayInfo(senderId);
   const senderName = sender?.display_name || sender?.email || "Someone";
   await sendPushToUser(supabase, recipientId, {
     title: senderName,
-    body: content.length > 100 ? content.slice(0, 100) + "…" : content,
+    body: (() => {
+      const text = ref ? (content ? `${refLabel(ref)}: ${content}` : refLabel(ref)) : content;
+      return text.length > 100 ? text.slice(0, 100) + "…" : text;
+    })(),
     data: { type: "friend_message", connectionId: String(connectionId), friendName: senderName },
   });
 
@@ -82,7 +119,55 @@ async function getMessages(supabase, connectionId, userId) {
     .order("created_at", { ascending: true });
   if (msgError) throw msgError;
 
-  return messages || [];
+  return annotateWatched(messages || [], userId);
+}
+
+/**
+ * For the cards in a conversation: has the person reading it already watched what the card is about? The chat blurs the
+ * text of a card message the reader has not watched yet (a spoiler). Only messages sent by the other person get the flag
+ * (ref_watched true / false); everything else is left as it is. If anything goes wrong the flag is simply missing and
+ * nothing is blurred.
+ */
+async function annotateWatched(messages, userId) {
+  const cards = messages.filter((m) => m.ref_kind && m.sender_id !== userId);
+  if (cards.length === 0) return messages;
+  try {
+    const pool = getPool();
+    const episodes = [...new Map(cards.filter((m) => m.ref_kind === "episode")
+      .map((m) => [`${m.ref_tmdb_id}:${m.ref_season}:${m.ref_episode}`, m])).values()];
+    const movies = [...new Set(cards.filter((m) => m.ref_kind === "movie").map((m) => m.ref_tmdb_id))];
+    const watched = new Set();
+    if (episodes.length) {
+      const { rows } = await pool.query(
+        `select s.tmdb_id, e.season_number, e.episode_number
+           from watched_episodes we
+           join episodes e on e.id = we.episode_id
+           join shows s on s.id = e.show_id
+          where we.user_id = $1 and s.tmdb_id = any($2::int[])`,
+        [userId, [...new Set(episodes.map((m) => m.ref_tmdb_id))]]
+      );
+      for (const r of rows) watched.add(`${r.tmdb_id}:${r.season_number}:${r.episode_number}`);
+    }
+    if (movies.length) {
+      const { rows } = await pool.query(
+        `select m.tmdb_id
+           from user_movie_watchlist w
+           join movies m on m.id = w.movie_id
+          where w.user_id = $1 and w.status = 'watched' and m.tmdb_id = any($2::int[])`,
+        [userId, movies]
+      );
+      for (const r of rows) watched.add(`movie:${r.tmdb_id}`);
+    }
+    return messages.map((m) => {
+      if (!m.ref_kind || m.sender_id === userId) return m;
+      if (m.ref_kind === "show") return { ...m, ref_watched: true }; // a whole show: nothing to spoil
+      const key = m.ref_kind === "movie" ? `movie:${m.ref_tmdb_id}` : `${m.ref_tmdb_id}:${m.ref_season}:${m.ref_episode}`;
+      return { ...m, ref_watched: watched.has(key) };
+    });
+  } catch (e) {
+    console.error("annotateWatched failed:", e.message);
+    return messages;
+  }
 }
 
 /**
@@ -135,4 +220,4 @@ async function deleteMessage(supabase, messageId, userId) {
   return { ok: true };
 }
 
-module.exports = { sendMessage, getMessages, deleteMessage, markDelivered };
+module.exports = { sendMessage, getMessages, deleteMessage, markDelivered, cleanRef };

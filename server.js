@@ -38,6 +38,7 @@ const { buildOverview } = require("./statsOverview");
 const { getShowCommunityRating } = require("./showRatings");
 const { createNotification, listNotifications, getUnreadCount, markAllRead, markRead } = require("./notifications");
 const { runSmokeTest: runCommsSmokeTest } = require("./commsuni");
+const { pollNotifications: pollCommsNotifications } = require("./commsFeed");
 const { mountComms } = require("./commsBoard");
 const { mountCommsWrite } = require("./commsWrite");
 
@@ -2902,9 +2903,13 @@ app.get("/friends/:id/messages", requireAuth, asyncHandler(async (req, res) => {
 }));
 
 app.post("/friends/:id/messages", requireAuth, asyncHandler(async (req, res) => {
-  const { content } = req.body;
-  if (!content || !content.trim()) return res.status(400).json({ error: "content is required" });
-  const result = await sendMessage(supabase, req.params.id, req.userId, content.trim());
+  const { content, ref } = req.body;
+  const text = typeof content === "string" ? content.trim() : "";
+  // A message needs text, or a card (an episode or movie sent on its own).
+  if (!text && !(ref && typeof ref === "object")) return res.status(400).json({ error: "content is required" });
+  if (text.length > 4000) return res.status(400).json({ error: "content is too long" });
+  const result = await sendMessage(supabase, req.params.id, req.userId, text, ref);
+  if (!text && !result.ref_kind) return res.status(400).json({ error: "content is required" });
   res.json(result);
 }));
 
@@ -3207,6 +3212,19 @@ app.get("/admin/comms-smoke", asyncHandler(async (req, res) => {
   }
   res.json(await runCommsSmokeTest({ write: req.query.write === "1" }));
 }));
+
+// CommsUni notification feed -> in-app inbox (replies and likes on our users' Community comments).
+// Meant for an external scheduler (cron-job.org) every 2-5 minutes, same secret as the other /admin routes.
+// Safe to call more often: it answers "too_soon" instead of hitting the API twice within 30 s.
+const commsPollHandler = asyncHandler(async (req, res) => {
+  const providedSecret = req.headers["x-cron-secret"] || req.query.secret;
+  if (!process.env.CRON_SECRET || providedSecret !== process.env.CRON_SECRET) {
+    return res.status(401).json({ error: "Unauthorized" });
+  }
+  res.json(await pollCommsNotifications(supabase));
+});
+app.get("/admin/comms-poll", commsPollHandler);
+app.post("/admin/comms-poll", commsPollHandler);
 
 app.get("/notifications/send-daily-upcoming", dailyMaintenanceHandler);
 app.post("/notifications/send-daily-upcoming", dailyMaintenanceHandler);
