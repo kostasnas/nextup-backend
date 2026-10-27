@@ -73,11 +73,18 @@ const norm = (s) =>
     .trim();
 
 const SOUNDTRACK_WORDS = /\b(soundtrack|score|ost|original|music from|motion picture|series|television|tv)\b/;
-const NOT_WANTED = /\b(karaoke|tribute|lullaby|lullabies|piano version|piano tribute|8 bit|made famous|in the style of|workout|cover version|covers|instrumental version)\b/;
+const NOT_WANTED = /\b(karaoke|tribute|lullaby|lullabies|piano version|piano tribute|8 bit|made famous|in the style of|workout|cover version|covers|instrumental version|inspired|trailer|teaser|tv spot|minimad|remix|remixes|sped up|slowed|nightcore|lo fi|lofi|music box|relaxing|sleep|parody|reaction|ringtones?)\b/;
+
+// Official releases say so: "(Original Series Soundtrack)", "(Original Motion Picture Score)", "Music from ...".
+// Covers, "inspired by" albums and trailer uploads don't, so this works for any title without a list of bad words.
+const OFFICIAL = /\boriginal\b.*\b(soundtrack|score|series|motion picture|television|tv|music|film|movie)\b|\bmusic (from|inspired by the)\b|\bofficial (soundtrack|score)\b/;
+const isOfficial = (album) => OFFICIAL.test(norm(album.title));
 
 function rankAlbum(album, titles) {
   const name = norm(album.title);
   if (NOT_WANTED.test(name) || NOT_WANTED.test(norm(album.artist?.name))) return -1;
+  // Singles and two-song releases are uploads of one track (a trailer, a title theme), not the soundtrack.
+  if (album.record_type === "single" || (album.nb_tracks && album.nb_tracks < 3)) return -1;
   let score = 0;
   if (titles.some((t) => t && name.includes(t))) score += 5;
   else return -1; // an album that doesn't mention the title is never the soundtrack
@@ -107,11 +114,14 @@ async function findAlbums(titles, year) {
     if (s.status !== "fulfilled") continue;
     for (const a of s.value.data || []) if (a && a.id && !byId.has(a.id)) byId.set(a.id, a);
   }
-  const ranked = [...byId.values()]
+  const candidates = [...byId.values()]
     .map((a) => ({ a, score: rankAlbum(a, wanted) + (year && String(a.release_date || "").startsWith(String(year)) ? 1 : 0) }))
     .filter((x) => x.score >= 8) // title in the name AND it looks like a soundtrack/score
-    .sort((x, y) => y.score - x.score || (y.a.nb_tracks || 0) - (x.a.nb_tracks || 0))
-    .slice(0, 5)
+    .sort((x, y) => y.score - x.score || (y.a.nb_tracks || 0) - (x.a.nb_tracks || 0));
+  // Albums that call themselves the original soundtrack win. Only when there are none (older or obscure titles) do the
+  // looser matches show up, and then just the best few.
+  const official = candidates.filter((x) => isOfficial(x.a));
+  const ranked = (official.length ? official.slice(0, 5) : candidates.slice(0, 3))
     .map(({ a }) => ({
       id: String(a.id),
       title: a.title,
