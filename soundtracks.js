@@ -238,9 +238,9 @@ async function extractSongs(text, title) {
     method: "POST",
     headers: { "Content-Type": "application/json", Authorization: `Bearer ${process.env.GROQ_API_KEY}` },
     body: JSON.stringify({
-      model: process.env.GROQ_SONGS_MODEL || "llama-3.3-70b-versatile",
+      model: process.env.GROQ_SONGS_MODEL || "openai/gpt-oss-120b", // the one the rest of the backend already uses with Groq
       temperature: 0,
-      max_tokens: 700,
+      max_tokens: 3000, // this model writes a reasoning trace first, which can use up a small budget before any answer
       response_format: { type: "json_object" },
       messages: [
         {
@@ -255,7 +255,7 @@ async function extractSongs(text, title) {
       ],
     }),
   });
-  if (!res.ok) throw new Error(`Groq ${res.status}`);
+  if (!res.ok) throw new Error(`Groq ${res.status}: ${(await res.text().catch(() => "")).slice(0, 160)}`);
   const data = await res.json();
   let parsed;
   try { parsed = JSON.parse(data.choices?.[0]?.message?.content || "{}"); } catch { return []; }
