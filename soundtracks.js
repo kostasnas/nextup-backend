@@ -110,8 +110,16 @@ function rankAlbum(album, titles) {
   return score;
 }
 
+// Catalogues often drop the leading article: the film is "The Last of the Mohicans", the album "Last of the Mohicans (Original
+// Motion Picture Soundtrack)". So a title with 2+ words left after the article is also wanted without it.
+const LEADING_ARTICLE = /^(the|a|an|der|die|das|le|la|les|el|los|las|il|lo|i|gli)\s+/;
+const withoutArticle = (name) => {
+  const rest = name.replace(LEADING_ARTICLE, "");
+  return rest !== name && rest.split(" ").length >= 2 ? rest : null;
+};
+
 async function findAlbums(titles, year, composers = []) {
-  const wanted = titles.map(norm).filter(Boolean);
+  const wanted = [...new Set(titles.map(norm).filter(Boolean).flatMap((t) => [t, withoutArticle(t)].filter(Boolean)))];
   if (!wanted.length) return [];
   const composerNames = composers.map(norm).filter((c) => c.length > 2);
   const key = `albums:${wanted.join("|")}:${year || ""}:${composerNames.join("|")}`;
@@ -120,7 +128,8 @@ async function findAlbums(titles, year, composers = []) {
 
   // Two angles per title: albums whose name contains it, and a plain "<title> soundtrack" search.
   const queries = [];
-  for (const t of titles.filter(Boolean)) {
+  const searchTitles = [...new Set(titles.filter(Boolean).flatMap((t) => [t, withoutArticle(norm(t))].filter(Boolean)))];
+  for (const t of searchTitles) {
     queries.push(`/search/album?q=${encodeURIComponent(`album:"${t}"`)}&limit=25`);
     queries.push(`/search/album?q=${encodeURIComponent(`${t} soundtrack`)}&limit=25`);
   }
