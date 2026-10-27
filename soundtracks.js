@@ -170,6 +170,151 @@ async function findAlbums(titles, year, composers = []) {
   return ranked;
 }
 
+// ---- songs that are in the show or film (not the composer's score) ----
+// No free database says which songs play in which title, and asking a model to recall them invents some. So the song names
+// come from the title's own Wikipedia article: IMDb id -> Wikidata -> the English article -> its music section. A model
+// only reads that text and lists the songs in it, and any song whose name is not written in the text is thrown away.
+// Each one is then looked up on Deezer for the preview. A title with no usable article simply has no list.
+const FEATURED_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+const MAX_ARTICLE_CHARS = 7000;
+
+async function getJson(url, ms = 7000) {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), ms);
+  try {
+    const res = await fetch(url, { signal: ctrl.signal, headers: { "User-Agent": "Scenera/1.0 (https://scenera.online)" } });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return await res.json();
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+// IMDb id -> title of the English Wikipedia article, through Wikidata (exact, no guessing from the name).
+async function wikipediaTitleFor(imdbId) {
+  const search = await getJson(
+    `https://www.wikidata.org/w/api.php?action=query&list=search&srsearch=${encodeURIComponent(`haswbstatement:P345=${imdbId}`)}&format=json&origin=*`
+  );
+  const qid = search?.query?.search?.[0]?.title;
+  if (!/^Q\d+$/.test(qid || "")) return null;
+  const ent = await getJson(
+    `https://www.wikidata.org/w/api.php?action=wbgetentities&ids=${qid}&props=sitelinks&sitefilter=enwiki&format=json&origin=*`
+  );
+  return ent?.entities?.[qid]?.sitelinks?.enwiki?.title || null;
+}
+
+// The music part of the article: its "Music" / "Soundtrack" section, else the paragraphs that talk about songs.
+async function articleMusicText(wikiTitle) {
+  const data = await getJson(
+    `https://en.wikipedia.org/w/api.php?action=query&prop=extracts&explaintext=1&redirects=1&titles=${encodeURIComponent(wikiTitle)}&format=json&origin=*`,
+    9000
+  );
+  const page = Object.values(data?.query?.pages || {})[0];
+  const text = String(page?.extract || "");
+  if (!text) return "";
+  const lines = text.split("\n");
+  const sections = [];
+  let current = null;
+  for (const line of lines) {
+    const m = line.match(/^(={2,6})\s*(.+?)\s*\1\s*$/);
+    if (m) {
+      const level = m[1].length;
+      if (current && level <= current.level) { sections.push(current); current = null; }
+      if (!current && /\b(music|soundtrack|songs?)\b/i.test(m[2]) && !/\b(release|reception|award)/i.test(m[2])) current = { level, body: [] };
+      else if (current) current.body.push(line);
+    } else if (current) current.body.push(line);
+  }
+  if (current) sections.push(current);
+  let out = sections.map((x) => x.body.join("\n")).join("\n").trim();
+  if (!out) {
+    out = lines.filter((l) => /\b(song|theme song|soundtrack|performed by|singing|sung)\b/i.test(l) && l.length > 40).join("\n");
+  }
+  return out.slice(0, MAX_ARTICLE_CHARS);
+}
+
+async function extractSongs(text, title) {
+  if (!process.env.GROQ_API_KEY) return [];
+  const res = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${process.env.GROQ_API_KEY}` },
+    body: JSON.stringify({
+      model: process.env.GROQ_SONGS_MODEL || "llama-3.3-70b-versatile",
+      temperature: 0,
+      max_tokens: 700,
+      response_format: { type: "json_object" },
+      messages: [
+        {
+          role: "system",
+          content:
+            "You read a passage from a Wikipedia article about a TV series or film and list the existing songs it says are used or heard in it " +
+            "(licensed or original songs with a named artist, not the composer's score cues, not albums). Use ONLY what the passage says. " +
+            "If a song's artist is not given in the passage, leave artist empty. Never add songs from your own memory. " +
+            'Answer as JSON: {"songs":[{"title":"...","artist":"..."}]} with at most 10 songs, or {"songs":[]} if none.',
+        },
+        { role: "user", content: `Title: ${title}\n\nPassage:\n${text}` },
+      ],
+    }),
+  });
+  if (!res.ok) throw new Error(`Groq ${res.status}`);
+  const data = await res.json();
+  let parsed;
+  try { parsed = JSON.parse(data.choices?.[0]?.message?.content || "{}"); } catch { return []; }
+  const list = Array.isArray(parsed.songs) ? parsed.songs : [];
+  const haystack = norm(text);
+  return list
+    .map((x) => ({ title: cleanText(x?.title, 120), artist: cleanText(x?.artist, 120) }))
+    .filter((x) => x.title && norm(x.title).length > 1 && haystack.includes(norm(x.title))) // it has to be written in the article
+    .slice(0, 10);
+}
+
+// A song on Deezer: the first result whose title and (when we have one) artist match what was asked for.
+async function deezerSong(song) {
+  const q = song.artist ? `track:"${song.title}" artist:"${song.artist}"` : `track:"${song.title}"`;
+  const data = await deezer(`/search/track?q=${encodeURIComponent(q)}&limit=8`);
+  const wantTitle = norm(song.title);
+  const wantArtist = norm(song.artist);
+  const hit = (data.data || []).find((t) => {
+    const tt = norm(t.title_short || t.title);
+    if (!(tt === wantTitle || tt.startsWith(`${wantTitle} `) || wantTitle.startsWith(`${tt} `))) return false;
+    if (NOT_WANTED.test(norm(t.title)) || NOT_WANTED.test(norm(t.album?.title))) return false;
+    if (!wantArtist) return true;
+    const ta = norm(t.artist?.name);
+    return ta.includes(wantArtist) || wantArtist.includes(ta);
+  });
+  if (!hit) return null;
+  return {
+    id: String(hit.id),
+    title: hit.title_short || hit.title,
+    artist: hit.artist?.name || song.artist || "",
+    duration: hit.duration || 0,
+    preview: typeof hit.preview === "string" && hit.preview.startsWith("https://") ? hit.preview : null,
+    album: hit.album?.title || "",
+    cover: cleanCover(hit.album?.cover_medium) || cleanCover(hit.album?.cover) || null,
+  };
+}
+
+async function featuredSongs(imdbId, title) {
+  const key = `featured:${imdbId}`;
+  const cached = cacheGet(key);
+  if (cached) return cached;
+  let songs = [];
+  try {
+    const wikiTitle = await wikipediaTitleFor(imdbId);
+    const text = wikiTitle ? await articleMusicText(wikiTitle) : "";
+    const named = text ? await extractSongs(text, title) : [];
+    const found = await Promise.allSettled(named.map(deezerSong));
+    const seen = new Set();
+    for (const f of found) {
+      if (f.status === "fulfilled" && f.value && !seen.has(f.value.id)) { seen.add(f.value.id); songs.push(f.value); }
+    }
+  } catch {
+    songs = []; // a missing list is better than a wrong one, and not worth an error on screen
+    return songs; // not cached, so the next open tries again
+  }
+  cacheSet(key, songs, FEATURED_TTL_MS);
+  return songs;
+}
+
 async function albumTracks(albumId) {
   const key = `tracks:${albumId}`;
   const cached = cacheGet(key);
@@ -215,6 +360,13 @@ function mountSoundtracks(app, { requireAuth, asyncHandler }) {
     const albums = await findAlbums(titles, Number.isInteger(year) ? year : null, composers);
     const tracks = albums[0] ? await albumTracks(albums[0].id) : [];
     res.json({ albums, albumId: albums[0]?.id || null, tracks });
+  }));
+
+  // Songs the title's Wikipedia article says are in it (see featuredSongs). Never an error: an empty list means "none known".
+  app.get("/soundtrack/featured", requireAuth, asyncHandler(async (req, res) => {
+    const imdbId = String(req.query.imdb_id || "");
+    if (!/^tt\d{5,10}$/.test(imdbId)) return res.json({ songs: [] });
+    res.json({ songs: await featuredSongs(imdbId, cleanText(req.query.title, 120)) });
   }));
 
   app.get("/soundtrack/album/:id", requireAuth, asyncHandler(async (req, res) => {
@@ -290,4 +442,4 @@ function mountSoundtracks(app, { requireAuth, asyncHandler }) {
   }));
 }
 
-module.exports = { mountSoundtracks, findAlbums, rankAlbum };
+module.exports = { mountSoundtracks, findAlbums, rankAlbum, featuredSongs };
