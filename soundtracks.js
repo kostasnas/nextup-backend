@@ -309,6 +309,32 @@ async function deezerSong(song) {
   };
 }
 
+// ---- the exact YouTube video for a song (optional: needs YOUTUBE_API_KEY) ----
+// A search link lands on whichever version YouTube ranks first. For the few songs of a title we look the video up once with
+// YouTube's own API (a search costs 100 of the free 10,000 daily units), keep it for a month, and link straight to it.
+// No key, no quota or any failure just means the song keeps its search link.
+const YT_TTL_MS = 30 * 24 * 60 * 60 * 1000;
+let ytPausedUntil = 0;
+async function youtubeVideoId(query) {
+  const key = process.env.YOUTUBE_API_KEY;
+  if (!key || Date.now() < ytPausedUntil) return null;
+  const ck = `yt:${norm(query)}`;
+  const cached = cacheGet(ck);
+  if (cached !== undefined) return cached;
+  try {
+    const data = await getJson(
+      `https://www.googleapis.com/youtube/v3/search?part=id&type=video&videoCategoryId=10&maxResults=1&q=${encodeURIComponent(query)}&key=${encodeURIComponent(key)}`
+    );
+    const id = data?.items?.[0]?.id?.videoId;
+    const value = /^[A-Za-z0-9_-]{11}$/.test(id || "") ? id : null;
+    cacheSet(ck, value, YT_TTL_MS);
+    return value;
+  } catch (e) {
+    if (/HTTP 403|HTTP 429/.test(String(e && e.message))) ytPausedUntil = Date.now() + 60 * 60 * 1000; // out of quota: stop for an hour
+    return null;
+  }
+}
+
 async function featuredSongs(imdbId, title) {
   const key = `featured:${imdbId}`;
   const cached = cacheGet(key);
@@ -323,6 +349,7 @@ async function featuredSongs(imdbId, title) {
     for (const f of found) {
       if (f.status === "fulfilled" && f.value && !seen.has(f.value.id)) { seen.add(f.value.id); songs.push(f.value); }
     }
+    await Promise.all(songs.map(async (sg) => { sg.ytId = await youtubeVideoId(`${sg.title} ${sg.artist} ${title}`); }));
   } catch {
     songs = []; // a missing list is better than a wrong one, and not worth an error on screen
     return songs; // not cached, so the next open tries again
