@@ -80,6 +80,23 @@ const NOT_WANTED = /\b(karaoke|tribute|lullaby|lullabies|piano version|piano tri
 const OFFICIAL = /\boriginal\b.*\b(soundtrack|score|series|motion picture|television|tv|music|film|movie)\b|\bmusic (from|inspired by the)\b|\bofficial (soundtrack|score)\b/;
 const isOfficial = (album) => OFFICIAL.test(norm(album.title));
 
+// After the title, an official album's name only holds words like these ("Season 2", "Original Series Soundtrack",
+// "Deluxe Edition"). Any other word means a different work: "Carrie Pilby", "Carrie TV Emotional Musical ...".
+const NAME_FILLER = new Set(("original motion picture soundtrack score music from the film movie series tv television season vol volume " +
+  "deluxe edition expanded complete official apple netflix hbo max disney amazon prime video plus a an and of ost digital " +
+  "remastered anniversary special version limited bonus tracks cast recording").split(" "));
+const isTitleAlbum = (album, wanted) => {
+  const name = norm(album.title);
+  return wanted.some((t) => {
+    if (!(name === t || name.startsWith(`${t} `))) return false;
+    // A number or roman numeral is fine after "season" or "vol" ("Season 2"), but straight after the title it is another
+    // installment: "Street Fighter II", "Toy Story 2", "Rocky III" are not "Street Fighter", "Toy Story", "Rocky".
+    const NUMBER = /^(\d+|[ivxlc]+)$/;
+    const words = name.slice(t.length).split(" ").filter(Boolean);
+    return words.every((w, i) => NAME_FILLER.has(w) || (NUMBER.test(w) && ["season", "vol", "volume"].includes(words[i - 1])));
+  });
+};
+
 function rankAlbum(album, titles) {
   const name = norm(album.title);
   if (NOT_WANTED.test(name) || NOT_WANTED.test(norm(album.artist?.name))) return -1;
@@ -93,10 +110,11 @@ function rankAlbum(album, titles) {
   return score;
 }
 
-async function findAlbums(titles, year) {
+async function findAlbums(titles, year, composers = []) {
   const wanted = titles.map(norm).filter(Boolean);
   if (!wanted.length) return [];
-  const key = `albums:${wanted.join("|")}:${year || ""}`;
+  const composerNames = composers.map(norm).filter((c) => c.length > 2);
+  const key = `albums:${wanted.join("|")}:${year || ""}:${composerNames.join("|")}`;
   const cached = cacheGet(key);
   if (cached) return cached;
 
@@ -120,14 +138,26 @@ async function findAlbums(titles, year) {
     .sort((x, y) => y.score - x.score || (y.a.nb_tracks || 0) - (x.a.nb_tracks || 0));
   // Albums that call themselves the original soundtrack win. Only when there are none (older or obscure titles) do the
   // looser matches show up, and then just the best few.
-  // The title has to open the album's name: "Severance: Season 1 (Original Series Soundtrack)" is the show's, while
-  // "Life On Earth: Severance (Original Series Soundtrack)" is another series that only mentions the word.
-  const opens = (a) => wanted.some((t) => norm(a.title).startsWith(t));
+  // 1. Albums that call themselves the original soundtrack. 2. Of those, the ones named after this title and nothing else
+  // ("Severance: Season 1 (...)" yes, "Life On Earth: Severance (...)" and "Carrie Pilby (...)" no). 3. If TMDB told us
+  // who composed it, the albums by that person (or a "Various Artists" compilation). 4. The ones released around the
+  // film's or show's year. Each step only narrows the list when something is left, so an unusual title never ends up empty.
   const official = candidates.filter((x) => isOfficial(x.a));
-  const officialOpening = official.filter((x) => opens(x.a));
-  const chosen = officialOpening.length ? officialOpening.slice(0, 5)
-    : official.length ? official.slice(0, 5)
-    : candidates.slice(0, 3);
+  let pool = official.length ? official : candidates;
+  const narrow = (fn) => { const f = pool.filter(fn); if (f.length) pool = f; };
+  narrow((x) => isTitleAlbum(x.a, wanted));
+  if (composerNames.length) {
+    const byComposer = (x) => composerNames.some((c) => norm(x.a.artist?.name).includes(c));
+    if (pool.some(byComposer)) pool = pool.filter((x) => byComposer(x) || norm(x.a.artist?.name) === "various artists");
+  }
+  if (year) {
+    const near = (x) => {
+      const y = parseInt(String(x.a.release_date || "").slice(0, 4), 10);
+      return Number.isInteger(y) && y >= year - 1 && y <= year + 2;
+    };
+    narrow(near);
+  }
+  const chosen = pool.slice(0, official.length ? 5 : 3);
   const ranked = chosen
     .map(({ a }) => ({
       id: String(a.id),
@@ -181,7 +211,8 @@ function mountSoundtracks(app, { requireAuth, asyncHandler }) {
     if (!title && !originalTitle) throw httpError(400, "title is required");
     const year = parseInt(req.query.year, 10);
     const titles = [...new Set([originalTitle, title].filter(Boolean))];
-    const albums = await findAlbums(titles, Number.isInteger(year) ? year : null);
+    const composers = String(req.query.composer || "").split(",").map((c) => cleanText(c, 80)).filter(Boolean).slice(0, 4);
+    const albums = await findAlbums(titles, Number.isInteger(year) ? year : null, composers);
     const tracks = albums[0] ? await albumTracks(albums[0].id) : [];
     res.json({ albums, albumId: albums[0]?.id || null, tracks });
   }));
