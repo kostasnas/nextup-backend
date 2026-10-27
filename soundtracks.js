@@ -120,8 +120,15 @@ async function findAlbums(titles, year) {
     .sort((x, y) => y.score - x.score || (y.a.nb_tracks || 0) - (x.a.nb_tracks || 0));
   // Albums that call themselves the original soundtrack win. Only when there are none (older or obscure titles) do the
   // looser matches show up, and then just the best few.
+  // The title has to open the album's name: "Severance: Season 1 (Original Series Soundtrack)" is the show's, while
+  // "Life On Earth: Severance (Original Series Soundtrack)" is another series that only mentions the word.
+  const opens = (a) => wanted.some((t) => norm(a.title).startsWith(t));
   const official = candidates.filter((x) => isOfficial(x.a));
-  const ranked = (official.length ? official.slice(0, 5) : candidates.slice(0, 3))
+  const officialOpening = official.filter((x) => opens(x.a));
+  const chosen = officialOpening.length ? officialOpening.slice(0, 5)
+    : official.length ? official.slice(0, 5)
+    : candidates.slice(0, 3);
+  const ranked = chosen
     .map(({ a }) => ({
       id: String(a.id),
       title: a.title,
