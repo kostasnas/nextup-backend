@@ -25,7 +25,7 @@ const cleanPoster = (p) => (typeof p === "string" && /^\/[A-Za-z0-9._-]{3,80}$/.
 const cleanCover = (u) => {
   try {
     const url = new URL(u);
-    return url.protocol === "https:" && url.hostname.endsWith(".dzcdn.net") ? url.toString().slice(0, 300) : null;
+    return url.protocol === "https:" && (url.hostname.endsWith(".dzcdn.net") || url.hostname.endsWith(".mzstatic.com")) ? url.toString().slice(0, 300) : null;
   } catch {
     return null;
   }
@@ -79,6 +79,40 @@ async function deezer(path) {
   } finally {
     clearTimeout(timer);
   }
+}
+
+// iTunes Search API (no key): the second source, used when Deezer has no matching album or cannot be reached. Its ids
+// are stored as id + ITUNES_OFFSET so they fit the same numeric columns and routes as Deezer's, and never collide with them.
+const ITUNES = "https://itunes.apple.com";
+const ITUNES_OFFSET = 1e12;
+const isItunesId = (id) => Number(id) >= ITUNES_OFFSET;
+async function itunes(path) {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), 7000);
+  try {
+    const res = await fetch(`${ITUNES}${path}`, { signal: ctrl.signal });
+    if (!res.ok) throw httpError(502, "Music service unavailable");
+    return await res.json();
+  } catch (e) {
+    if (e.status) throw e;
+    throw httpError(502, "Music service unavailable");
+  } finally {
+    clearTimeout(timer);
+  }
+}
+// An iTunes album in the shape the Deezer ranking code reads.
+function itunesAlbum(r) {
+  if (!r || r.wrapperType !== "collection" || !r.collectionId) return null;
+  const single = /-\s*(single|ep)$/i.test(String(r.collectionName || "").trim());
+  return {
+    id: r.collectionId + ITUNES_OFFSET,
+    title: r.collectionName || "",
+    artist: { name: r.artistName || "" },
+    release_date: String(r.releaseDate || "").slice(0, 10),
+    nb_tracks: r.trackCount || 0,
+    record_type: single ? "single" : "album",
+    cover_medium: typeof r.artworkUrl100 === "string" ? r.artworkUrl100.replace(/\/\d+x\d+bb\./, "/300x300bb.") : null,
+  };
 }
 
 // ---- finding the album ----
@@ -136,41 +170,26 @@ const withoutArticle = (name) => {
   return rest !== name && rest.split(" ").length >= 2 ? rest : null;
 };
 
-async function findAlbums(titles, year, composers = []) {
-  const wanted = [...new Set(titles.map(norm).filter(Boolean).flatMap((t) => [t, withoutArticle(t)].filter(Boolean)))];
-  if (!wanted.length) return [];
-  const composerNames = composers.map(norm).filter((c) => c.length > 2);
-  const key = `albums:${wanted.join("|")}:${year || ""}:${composerNames.join("|")}`;
-  const cached = cacheGet(key);
-  if (cached) return cached;
-  const stored = await dbCacheGet(key, DB_DAYS);
-  if (Array.isArray(stored) && stored.length) { cacheSet(key, stored, SEARCH_TTL_MS); return stored; }
-
-  // Two angles per title: albums whose name contains it, and a plain "<title> soundtrack" search.
-  const queries = [];
-  const searchTitles = [...new Set(titles.filter(Boolean).flatMap((t) => [t, withoutArticle(norm(t))].filter(Boolean)))];
-  for (const t of searchTitles) {
-    queries.push(`/search/album?q=${encodeURIComponent(`album:"${t}"`)}&limit=25`);
-    queries.push(`/search/album?q=${encodeURIComponent(`${t} soundtrack`)}&limit=25`);
-  }
-  const settled = await Promise.allSettled(queries.map((q) => deezer(q)));
-  if (settled.every((s) => s.status === "rejected")) throw settled[0].reason;
-
+// Ranks and narrows candidate albums (Deezer-shaped objects, from either source) down to the few worth showing.
+function pickAlbums(found, wanted, year, composerNames) {
   const byId = new Map();
-  for (const s of settled) {
-    if (s.status !== "fulfilled") continue;
-    for (const a of s.value.data || []) if (a && a.id && !byId.has(a.id)) byId.set(a.id, a);
-  }
+  for (const a of found) if (a && a.id && !byId.has(a.id)) byId.set(a.id, a);
   const candidates = [...byId.values()]
     .map((a) => ({ a, score: rankAlbum(a, wanted) + (year && String(a.release_date || "").startsWith(String(year)) ? 1 : 0) }))
     .filter((x) => x.score >= 8) // title in the name AND it looks like a soundtrack/score
+    // A soundtrack cannot come out years before the film or show it is for. This is what keeps another work with the same
+    // word in its name away: "Lupin" (2021) is not "Lupin the Third" (1978-2013). One year of slack for early releases.
+    .filter((x) => {
+      if (!year) return true;
+      const y = parseInt(String(x.a.release_date || "").slice(0, 4), 10);
+      return !Number.isInteger(y) || y >= Number(year) - 1;
+    })
     .sort((x, y) => y.score - x.score || (y.a.nb_tracks || 0) - (x.a.nb_tracks || 0));
-  // Albums that call themselves the original soundtrack win. Only when there are none (older or obscure titles) do the
-  // looser matches show up, and then just the best few.
   // 1. Albums that call themselves the original soundtrack. 2. Of those, the ones named after this title and nothing else
   // ("Severance: Season 1 (...)" yes, "Life On Earth: Severance (...)" and "Carrie Pilby (...)" no). 3. If TMDB told us
   // who composed it, the albums by that person (or a "Various Artists" compilation). 4. The ones released around the
   // film's or show's year. Each step only narrows the list when something is left, so an unusual title never ends up empty.
+  // Only when there are no official albums (older or obscure titles) do the looser matches show up, and then just the best few.
   const official = candidates.filter((x) => isOfficial(x.a));
   let pool = official.length ? official : candidates;
   const narrow = (fn) => { const f = pool.filter(fn); if (f.length) pool = f; };
@@ -186,19 +205,90 @@ async function findAlbums(titles, year, composers = []) {
     };
     narrow(near);
   }
-  const chosen = pool.slice(0, official.length ? 5 : 3);
-  const ranked = chosen
-    .map(({ a }) => ({
-      id: String(a.id),
-      title: a.title,
-      artist: a.artist?.name || "",
-      cover: cleanCover(a.cover_medium) || cleanCover(a.cover) || null,
-      trackCount: a.nb_tracks || null,
-    }));
+  return pool.slice(0, official.length ? 5 : 3).map(({ a }) => ({
+    id: String(a.id),
+    title: a.title,
+    artist: a.artist?.name || "",
+    cover: cleanCover(a.cover_medium) || cleanCover(a.cover) || null,
+    trackCount: a.nb_tracks || null,
+  }));
+}
+
+// A small record of what was searched and what came out (migrations/soundtrack_search_log.sql, also created on first use), so
+// the titles that find nothing can be looked at later instead of guessed. Never blocks or breaks a search.
+let logReady = null;
+function logSearch(titles, year, composers, source, found) {
+  (async () => {
+    try {
+      const pool = getPool();
+      if (!logReady) {
+        logReady = pool.query(`
+          create table if not exists soundtrack_search_log (
+            id bigserial primary key,
+            title text not null,
+            year integer,
+            composers text,
+            source text not null,
+            found integer not null,
+            created_at timestamptz not null default now()
+          );
+          alter table soundtrack_search_log enable row level security;`).catch((e) => { logReady = null; throw e; });
+      }
+      await logReady;
+      await pool.query("insert into soundtrack_search_log (title, year, composers, source, found) values ($1,$2,$3,$4,$5)",
+        [titles.filter(Boolean).join(" / ").slice(0, 200), year || null, composers.join(", ").slice(0, 200) || null, source, found]);
+    } catch { /* logging is optional */ }
+  })();
+}
+
+async function findAlbums(titles, year, composers = []) {
+  const wanted = [...new Set(titles.map(norm).filter(Boolean).flatMap((t) => [t, withoutArticle(t)].filter(Boolean)))];
+  if (!wanted.length) return [];
+  const composerNames = composers.map(norm).filter((c) => c.length > 2);
+  const key = `albums:${wanted.join("|")}:${year || ""}:${composerNames.join("|")}`;
+  const cached = cacheGet(key);
+  if (cached) return cached;
+  const stored = await dbCacheGet(key, DB_DAYS);
+  if (Array.isArray(stored) && stored.length) { cacheSet(key, stored, SEARCH_TTL_MS); return stored; }
+
+  const searchTitles = [...new Set(titles.filter(Boolean).flatMap((t) => [t, withoutArticle(norm(t))].filter(Boolean)))];
+  const topComposers = composers.filter((c) => norm(c).length > 2).slice(0, 2);
+
+  // Deezer. Angles per title: albums whose name contains it, and a plain "<title> soundtrack" search. With a composer, also
+  // "artist + album", the most precise search there is (it finds albums whose title is written a little differently).
+  const queries = [];
+  for (const t of searchTitles) {
+    queries.push(`/search/album?q=${encodeURIComponent(`album:"${t}"`)}&limit=25`);
+    queries.push(`/search/album?q=${encodeURIComponent(`${t} soundtrack`)}&limit=25`);
+  }
+  for (const c of topComposers) queries.push(`/search/album?q=${encodeURIComponent(`artist:"${c}" album:"${searchTitles[0]}"`)}&limit=25`);
+  const settled = await Promise.allSettled(queries.map((q) => deezer(q)));
+  const deezerDown = settled.every((s) => s.status === "rejected");
+  const found = [];
+  for (const s of settled) if (s.status === "fulfilled") found.push(...(s.value.data || []));
+  let ranked = deezerDown ? [] : pickAlbums(found, wanted, year, composerNames);
+  let source = ranked.length ? "deezer" : "none";
+
+  // Second source: iTunes, when Deezer found nothing usable or could not be reached. Same ranking, same filters.
+  let itunesFailed = false;
+  if (!ranked.length) {
+    const terms = searchTitles.flatMap((t) => [`${t} soundtrack`, `${t} original score`]);
+    for (const c of topComposers) terms.push(`${c} ${searchTitles[0]}`);
+    const results = await Promise.allSettled([...new Set(terms)].map((term) =>
+      itunes(`/search?term=${encodeURIComponent(term)}&media=music&entity=album&limit=25`)));
+    itunesFailed = results.every((r) => r.status === "rejected");
+    const items = [];
+    for (const r of results) if (r.status === "fulfilled") for (const x of r.value.results || []) { const a = itunesAlbum(x); if (a) items.push(a); }
+    ranked = pickAlbums(items, wanted, year, composerNames);
+    if (ranked.length) source = "itunes";
+  }
+
+  if (deezerDown && itunesFailed) throw httpError(502, "Music service unavailable");
   // Found albums are kept for everybody. "Nothing found" is only remembered briefly, and not at all when part of the search failed.
-  const partial = settled.some((x) => x.status === "rejected");
+  const partial = deezerDown || itunesFailed || settled.some((x) => x.status === "rejected");
   if (ranked.length) { cacheSet(key, ranked, SEARCH_TTL_MS); await dbCacheSet(key, ranked); }
   else if (!partial) cacheSet(key, ranked, 60 * 60 * 1000);
+  if (!partial || ranked.length) logSearch(titles, year, composers, source, ranked.length);
   return ranked;
 }
 
@@ -420,6 +510,21 @@ async function albumTracks(albumId) {
   // From the shared cache the songs come without preview links (they expire): the app asks for a fresh one when a song is played.
   const stored = await dbCacheGet(key, DB_DAYS);
   if (Array.isArray(stored) && stored.length) { cacheSet(key, stored, TRACKS_TTL_MS); return stored; }
+  if (isItunesId(albumId)) {
+    const data = await itunes(`/lookup?id=${Number(albumId) - ITUNES_OFFSET}&entity=song&limit=200`);
+    const tracks = (data.results || [])
+      .filter((t) => t && t.wrapperType === "track" && t.trackId)
+      .map((t) => ({
+        id: String(t.trackId + ITUNES_OFFSET),
+        title: t.trackName,
+        artist: t.artistName || "",
+        duration: t.trackTimeMillis ? Math.round(t.trackTimeMillis / 1000) : null,
+        preview: typeof t.previewUrl === "string" && t.previewUrl.startsWith("https://") ? t.previewUrl : null,
+      }));
+    cacheSet(key, tracks, TRACKS_TTL_MS);
+    if (tracks.length) await dbCacheSet(key, tracks.map((t) => ({ ...t, preview: null })));
+    return tracks;
+  }
   const data = await deezer(`/album/${encodeURIComponent(albumId)}/tracks?limit=100`);
   const tracks = (data.data || [])
     .filter((t) => t && t.id)
@@ -472,13 +577,18 @@ function mountSoundtracks(app, { requireAuth, asyncHandler }) {
   }));
 
   app.get("/soundtrack/album/:id", requireAuth, asyncHandler(async (req, res) => {
-    if (!/^\d{1,12}$/.test(req.params.id)) throw httpError(400, "Bad album id");
+    if (!/^\d{1,13}$/.test(req.params.id)) throw httpError(400, "Bad album id");
     res.json({ tracks: await albumTracks(req.params.id) });
   }));
 
   // A fresh 30 second preview link for one song (saved songs don't keep theirs: the links expire).
   app.get("/soundtrack/track/:id", requireAuth, asyncHandler(async (req, res) => {
-    if (!/^\d{1,12}$/.test(req.params.id)) throw httpError(400, "Bad track id");
+    if (!/^\d{1,13}$/.test(req.params.id)) throw httpError(400, "Bad track id");
+    if (isItunesId(req.params.id)) {
+      const d = await itunes(`/lookup?id=${Number(req.params.id) - ITUNES_OFFSET}`);
+      const p = d.results?.[0]?.previewUrl;
+      return res.json({ preview: typeof p === "string" && p.startsWith("https://") ? p : null });
+    }
     const t = await deezer(`/track/${req.params.id}`);
     res.json({ preview: typeof t.preview === "string" && t.preview.startsWith("https://") ? t.preview : null });
   }));
@@ -516,7 +626,7 @@ function mountSoundtracks(app, { requireAuth, asyncHandler }) {
     const kind = kindOf(b.kind);
     const tmdbId = parseInt(b.tmdb_id, 10);
     const mediaTitle = cleanText(b.title, 200);
-    const trackId = /^\d{1,12}$/.test(String(b.track?.id ?? "")) ? String(b.track.id) : null;
+    const trackId = /^\d{1,13}$/.test(String(b.track?.id ?? "")) ? String(b.track.id) : null;
     const trackTitle = cleanText(b.track?.title, 200);
     if (!kind || !Number.isInteger(tmdbId) || tmdbId <= 0 || !mediaTitle || !trackId || !trackTitle) throw httpError(400, "Missing fields");
     const pool = getPool();
@@ -535,7 +645,7 @@ function mountSoundtracks(app, { requireAuth, asyncHandler }) {
   app.delete("/soundtrack/saved/:kind/:tmdbId/:trackId", requireAuth, guard(async (req, res) => {
     const kind = kindOf(req.params.kind);
     const tmdbId = parseInt(req.params.tmdbId, 10);
-    if (!kind || !Number.isInteger(tmdbId) || !/^\d{1,12}$/.test(req.params.trackId)) throw httpError(400, "Bad request");
+    if (!kind || !Number.isInteger(tmdbId) || !/^\d{1,13}$/.test(req.params.trackId)) throw httpError(400, "Bad request");
     await getPool().query(
       "delete from user_saved_tracks where user_id = $1 and kind = $2 and tmdb_id = $3 and track_id = $4",
       [req.userId, kind, tmdbId, req.params.trackId]
@@ -544,4 +654,4 @@ function mountSoundtracks(app, { requireAuth, asyncHandler }) {
   }));
 }
 
-module.exports = { mountSoundtracks, findAlbums, rankAlbum, featuredSongs };
+module.exports = { mountSoundtracks, findAlbums, albumTracks, rankAlbum, featuredSongs };
