@@ -74,7 +74,8 @@ app.use(helmet());
 app.use(cors({
   origin: (origin, callback) => {
     if (!origin || ALLOWED_ORIGINS.includes(origin)) return callback(null, true);
-    return callback(new Error("Not allowed by CORS"));
+    // Refuse quietly: the browser blocks the request anyway, and throwing here sent every crawler's visit to Sentry as an error.
+    return callback(null, false);
   },
 }));
 
@@ -130,9 +131,26 @@ const uploadZip = multer({
   limits: { fileSize: 150 * 1024 * 1024 }, // 150MB for the full GDPR export zip
 });
 
+// Supabase sits behind Cloudflare, which now and then answers a single request with a 502/503/504 page. That reached users as
+// "Couldn't load episodes right now". Reads (GET/HEAD) are safe to repeat, so they get up to two more tries; writes are never repeated.
+async function supabaseFetch(input, init) {
+  const method = String((init && init.method) || (input && input.method) || "GET").toUpperCase();
+  if (method !== "GET" && method !== "HEAD") return fetch(input, init);
+  for (let attempt = 0; ; attempt++) {
+    try {
+      const res = await fetch(input, init);
+      if (![502, 503, 504].includes(res.status) || attempt >= 2) return res;
+    } catch (e) {
+      if (attempt >= 2) throw e;
+    }
+    await new Promise((r) => setTimeout(r, 300 * (attempt + 1) ** 2)); // 300 ms, then 1.2 s
+  }
+}
+
 const supabase = createClient(
   process.env.SUPABASE_URL,
-  process.env.SUPABASE_SERVICE_KEY
+  process.env.SUPABASE_SERVICE_KEY,
+  { global: { fetch: supabaseFetch } }
 );
 
 function asyncHandler(fn) {
