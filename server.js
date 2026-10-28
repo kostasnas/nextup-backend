@@ -3226,6 +3226,19 @@ const commsPollHandler = asyncHandler(async (req, res) => {
 app.get("/admin/comms-poll", commsPollHandler);
 app.post("/admin/comms-poll", commsPollHandler);
 
+// Why does a title get the wrong soundtrack? Shows every album Deezer returns for it and what the ranking did with each.
+// Same secret as the other /admin routes. Example: /admin/soundtrack-debug?secret=...&title=Lupin&year=2021&composer=Mathieu%20Lamboley
+app.get("/admin/soundtrack-debug", asyncHandler(async (req, res) => {
+  if (!process.env.CRON_SECRET || (req.headers["x-cron-secret"] || req.query.secret) !== process.env.CRON_SECRET) {
+    return res.status(401).json({ error: "Unauthorized" });
+  }
+  const titles = [req.query.title, req.query.original_title].filter(Boolean).map(String);
+  if (!titles.length) return res.status(400).json({ error: "title is required" });
+  const year = parseInt(req.query.year, 10);
+  const composers = String(req.query.composer || "").split(",").map((c) => c.trim()).filter(Boolean);
+  res.json({ commit: (process.env.RENDER_GIT_COMMIT || "").slice(0, 7) || null, ...(await require("./soundtracks").debugAlbums(titles, Number.isInteger(year) ? year : null, composers)) });
+}));
+
 app.get("/notifications/send-daily-upcoming", dailyMaintenanceHandler);
 app.post("/notifications/send-daily-upcoming", dailyMaintenanceHandler);
 

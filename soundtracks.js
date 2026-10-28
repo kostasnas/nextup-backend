@@ -241,6 +241,30 @@ function logSearch(titles, year, composers, source, found) {
   })();
 }
 
+// For /admin/soundtrack-debug: the same search as findAlbums, uncached, showing every album Deezer returned and what the ranking
+// did with it. Used to see why a title gets the wrong album.
+async function debugAlbums(titles, year, composers = []) {
+  const wanted = [...new Set(titles.map(norm).filter(Boolean).flatMap((t) => [t, withoutArticle(t)].filter(Boolean)))];
+  const composerNames = composers.map(norm).filter((c) => c.length > 2);
+  const searchTitles = [...new Set(titles.filter(Boolean).flatMap((t) => [t, withoutArticle(norm(t))].filter(Boolean)))];
+  const qs = [];
+  for (const t of searchTitles) { qs.push(`album:"${t}"`); qs.push(`${t} soundtrack`); }
+  for (const c of composers.slice(0, 2)) qs.push(`artist:"${c}" album:"${searchTitles[0]}"`);
+  qs.push(`${searchTitles[0]} original series soundtrack`, `${searchTitles[0]} original motion picture soundtrack`);
+  const settled = await Promise.allSettled(qs.map((q) => deezer(`/search/album?q=${encodeURIComponent(q)}&limit=25`)));
+  const byId = new Map();
+  const errors = [];
+  settled.forEach((r, i) => { if (r.status === "fulfilled") for (const a of r.value.data || []) { if (a && a.id && !byId.has(a.id)) byId.set(a.id, a); } else errors.push(`${qs[i]}: ${r.reason?.message}`); });
+  const kept = new Set(pickAlbums([...byId.values()], wanted, year, composerNames).map((a) => a.id));
+  return {
+    wanted, year, composers: composerNames, queries: qs, errors,
+    albums: [...byId.values()].map((a) => ({
+      id: a.id, title: a.title, artist: a.artist?.name, released: a.release_date, tracks: a.nb_tracks, type: a.record_type,
+      score: rankAlbum(a, wanted), official: isOfficial(a), titleAlbum: isTitleAlbum(a, wanted), kept: kept.has(String(a.id)),
+    })).sort((x, y) => Number(y.kept) - Number(x.kept) || y.score - x.score),
+  };
+}
+
 async function findAlbums(titles, year, composers = []) {
   const wanted = [...new Set(titles.map(norm).filter(Boolean).flatMap((t) => [t, withoutArticle(t)].filter(Boolean)))];
   if (!wanted.length) return [];
@@ -263,6 +287,10 @@ async function findAlbums(titles, year, composers = []) {
     queries.push(`/search/album?q=${encodeURIComponent(`${t} soundtrack`)}&limit=25`);
   }
   for (const c of topComposers) queries.push(`/search/album?q=${encodeURIComponent(`artist:"${c}" album:"${searchTitles[0]}"`)}&limit=25`);
+  // Official releases are named "(Original Series Soundtrack)" or "(Original Motion Picture Soundtrack)": asking for those words
+  // brings them up above the other works that share the title's word ("Lupin" the show vs "Lupin the Third" the anime).
+  queries.push(`/search/album?q=${encodeURIComponent(`${searchTitles[0]} original series soundtrack`)}&limit=25`);
+  queries.push(`/search/album?q=${encodeURIComponent(`${searchTitles[0]} original motion picture soundtrack`)}&limit=25`);
   const settled = await Promise.allSettled(queries.map((q) => deezer(q)));
   const deezerDown = settled.every((s) => s.status === "rejected");
   const found = [];
@@ -655,4 +683,4 @@ function mountSoundtracks(app, { requireAuth, asyncHandler }) {
   }));
 }
 
-module.exports = { mountSoundtracks, findAlbums, albumTracks, rankAlbum, featuredSongs };
+module.exports = { mountSoundtracks, findAlbums, albumTracks, debugAlbums, rankAlbum, featuredSongs };
