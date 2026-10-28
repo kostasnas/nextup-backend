@@ -257,7 +257,7 @@ function logSearch(titles, year, composers, source, found) {
 // list (it answers with numbers, anything else is thrown away), and when it is not sure it picks nothing. The rules in
 // pickAlbums stay as the fallback for when the model is not reachable.
 const AI_MODEL = process.env.GROQ_ALBUMS_MODEL || process.env.GROQ_SONGS_MODEL || "openai/gpt-oss-120b";
-const MAX_CANDIDATES = 25;
+const MAX_CANDIDATES = 60;
 
 // Albums that could be about this title: its name is in the album's name, or the album is by the composer. Best ones first.
 function albumCandidates(found, wanted, composerNames) {
@@ -274,12 +274,15 @@ function albumCandidates(found, wanted, composerNames) {
 
 // Deezer's search results carry no release date. One lookup per candidate fills it in (and the real track count).
 async function withReleaseDates(list) {
-  await Promise.allSettled(list.map(async (a) => {
-    if (a.release_date || isItunesId(a.id)) return;
-    const full = await deezer(`/album/${a.id}`);
-    if (full && full.release_date) a.release_date = full.release_date;
-    if (full && full.nb_tracks) a.nb_tracks = full.nb_tracks;
-  }));
+  // A few at a time: Deezer refuses bursts (about 50 requests per 5 seconds).
+  for (let i = 0; i < list.length; i += 12) {
+    await Promise.allSettled(list.slice(i, i + 12).map(async (a) => {
+      if (a.release_date || isItunesId(a.id)) return;
+      const full = await deezer(`/album/${a.id}`);
+      if (full && full.release_date) a.release_date = full.release_date;
+      if (full && full.nb_tracks) a.nb_tracks = full.nb_tracks;
+    }));
+  }
   return list;
 }
 
@@ -358,8 +361,8 @@ async function debugAlbums(titles, year, composers = []) {
   const qs = [];
   for (const t of searchTitles) { qs.push(`album:"${t}"`); qs.push(`${t} soundtrack`); }
   for (const c of composers.slice(0, 2)) qs.push(`artist:"${c}" album:"${searchTitles[0]}"`);
-  qs.push(`${searchTitles[0]} original series soundtrack`, `${searchTitles[0]} original motion picture soundtrack`);
-  const settled = await Promise.allSettled(qs.map((q) => deezer(`/search/album?q=${encodeURIComponent(q)}&limit=25`)));
+  qs.push(`${searchTitles[0]} original series soundtrack`, `${searchTitles[0]} original motion picture soundtrack`, `${searchTitles[0]} music from the series`);
+  const settled = await Promise.allSettled(qs.map((q, i) => deezer(`/search/album?q=${encodeURIComponent(q)}&limit=${i < searchTitles.length * 2 ? 100 : 50}`)));
   const byId = new Map();
   const errors = [];
   settled.forEach((r, i) => { if (r.status === "fulfilled") for (const a of r.value.data || []) { if (a && a.id && !byId.has(a.id)) byId.set(a.id, a); } else errors.push(`${qs[i]}: ${r.reason?.message}`); });
@@ -401,12 +404,12 @@ async function findAlbums(titles, year, composers = []) {
   const wanted = [...new Set(titles.map(norm).filter(Boolean).flatMap((t) => [t, withoutArticle(t)].filter(Boolean)))];
   if (!wanted.length) return [];
   const composerNames = composers.map(norm).filter((c) => c.length > 2);
-  // v4: picks are ordered oldest first. v3: albums are chosen by the model now (v2 and older held wrong albums, e.g. Lupin III for Lupin).
+  // v5: wider search (100 results + a "music from the series" query). v4: picks are ordered oldest first. v3: albums are chosen by the model now (v2 and older held wrong albums, e.g. Lupin III for Lupin).
   for (const t of titles) {
     const pinned = await dbCacheGet(overrideKey(t, year), 36500);
     if (Array.isArray(pinned) && pinned.length) return pinned;
   }
-  const key = `albums:v4:${wanted.join("|")}:${year || ""}:${composerNames.join("|")}`;
+  const key = `albums:v5:${wanted.join("|")}:${year || ""}:${composerNames.join("|")}`;
   const cached = cacheGet(key);
   if (cached) return cached;
   const stored = await dbCacheGet(key, DB_DAYS);
@@ -419,14 +422,16 @@ async function findAlbums(titles, year, composers = []) {
   // "artist + album", the most precise search there is (it finds albums whose title is written a little differently).
   const queries = [];
   for (const t of searchTitles) {
-    queries.push(`/search/album?q=${encodeURIComponent(`album:"${t}"`)}&limit=25`);
-    queries.push(`/search/album?q=${encodeURIComponent(`${t} soundtrack`)}&limit=25`);
+    // 100 results: a title shared with a big franchise (25+ "Lupin the Third" albums) would otherwise push the real one out of the list.
+    queries.push(`/search/album?q=${encodeURIComponent(`album:"${t}"`)}&limit=100`);
+    queries.push(`/search/album?q=${encodeURIComponent(`${t} soundtrack`)}&limit=100`);
   }
   for (const c of topComposers) queries.push(`/search/album?q=${encodeURIComponent(`artist:"${c}" album:"${searchTitles[0]}"`)}&limit=25`);
   // Official releases are named "(Original Series Soundtrack)" or "(Original Motion Picture Soundtrack)": asking for those words
   // brings them up above the other works that share the title's word ("Lupin" the show vs "Lupin the Third" the anime).
   queries.push(`/search/album?q=${encodeURIComponent(`${searchTitles[0]} original series soundtrack`)}&limit=25`);
   queries.push(`/search/album?q=${encodeURIComponent(`${searchTitles[0]} original motion picture soundtrack`)}&limit=25`);
+  queries.push(`/search/album?q=${encodeURIComponent(`${searchTitles[0]} music from the series`)}&limit=50`);
   const settled = await Promise.allSettled(queries.map((q) => deezer(q)));
   const deezerDown = settled.every((s) => s.status === "rejected");
   const found = [];
