@@ -245,7 +245,8 @@ async function findAlbums(titles, year, composers = []) {
   const wanted = [...new Set(titles.map(norm).filter(Boolean).flatMap((t) => [t, withoutArticle(t)].filter(Boolean)))];
   if (!wanted.length) return [];
   const composerNames = composers.map(norm).filter((c) => c.length > 2);
-  const key = `albums:${wanted.join("|")}:${year || ""}:${composerNames.join("|")}`;
+  // v2: lookups stored before the release-year guard, the composer search and the second source held wrong albums (Lupin III for Lupin).
+  const key = `albums:v2:${wanted.join("|")}:${year || ""}:${composerNames.join("|")}`;
   const cached = cacheGet(key);
   if (cached) return cached;
   const stored = await dbCacheGet(key, DB_DAYS);
