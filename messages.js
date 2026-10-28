@@ -70,14 +70,21 @@ async function sendMessage(supabase, connectionId, senderId, content, rawRef = n
   const recipientId = connection.requester_id === senderId ? connection.recipient_id : connection.requester_id;
   const sender = await getUserDisplayInfo(senderId);
   const senderName = sender?.display_name || sender?.email || "Someone";
-  await sendPushToUser(supabase, recipientId, {
+  // What the notification says. A card about an episode or movie the friend has not watched must not show the text the
+  // sender wrote (it can spoil it): then the notification only says that there is a message about it. If it cannot be
+  // worked out whether it was watched, the text stays hidden.
+  let text = ref ? (content ? `${refLabel(ref)}: ${content}` : refLabel(ref)) : content;
+  if (ref && ref.kind !== "show") {
+    const [checked] = await annotateWatched([{ ref_kind: ref.kind, ref_tmdb_id: ref.tmdbId, ref_season: ref.season, ref_episode: ref.episode, sender_id: senderId }], recipientId);
+    if (!checked || checked.ref_watched !== true) text = ref.kind === "movie" ? "Sent you a message about a movie" : "Sent you a message about an episode";
+  }
+  const push = await sendPushToUser(supabase, recipientId, {
     title: senderName,
-    body: (() => {
-      const text = ref ? (content ? `${refLabel(ref)}: ${content}` : refLabel(ref)) : content;
-      return text.length > 100 ? text.slice(0, 100) + "…" : text;
-    })(),
+    body: text.length > 100 ? text.slice(0, 100) + "…" : text,
     data: { type: "friend_message", connectionId: String(connectionId), friendName: senderName },
   });
+  // Written down, so a message that "never arrived" can be traced: no token saved for the friend, or the send itself failed.
+  console.log(`friend message push: connection ${connectionId} targeted ${push?.devicesTargeted ?? "?"}, ok ${push?.successCount ?? "-"}, failed ${push?.failureCount ?? "-"}${push?.error ? `, error ${push.error}` : ""}`);
 
   return message;
 }
