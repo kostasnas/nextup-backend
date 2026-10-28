@@ -326,7 +326,10 @@ async function aiPickAlbums(list, titles, year, composers) {
       const i = Number(n) - 1;
       if (Number.isInteger(i) && list[i] && !seen.has(i)) { seen.add(i); out.push(list[i]); }
     }
-    return out.slice(0, 6);
+    // Oldest first, so a series reads Part 1, Part 2, Part 3... whatever order the model wrote them in. Albums with no date keep their place.
+    const when = (a) => (/^\d{4}/.test(String(a.release_date || "")) ? String(a.release_date) : null);
+    const dated = out.filter(when).sort((x, y) => when(x).localeCompare(when(y)));
+    return (dated.length === out.length ? dated : out).slice(0, 6);
   } catch (e) {
     console.error("soundtrack album pick failed:", e.message);
     return null;
@@ -398,12 +401,12 @@ async function findAlbums(titles, year, composers = []) {
   const wanted = [...new Set(titles.map(norm).filter(Boolean).flatMap((t) => [t, withoutArticle(t)].filter(Boolean)))];
   if (!wanted.length) return [];
   const composerNames = composers.map(norm).filter((c) => c.length > 2);
-  // v3: albums are chosen by the model now (v2 and older held wrong albums, e.g. Lupin III for Lupin).
+  // v4: picks are ordered oldest first. v3: albums are chosen by the model now (v2 and older held wrong albums, e.g. Lupin III for Lupin).
   for (const t of titles) {
     const pinned = await dbCacheGet(overrideKey(t, year), 36500);
     if (Array.isArray(pinned) && pinned.length) return pinned;
   }
-  const key = `albums:v3:${wanted.join("|")}:${year || ""}:${composerNames.join("|")}`;
+  const key = `albums:v4:${wanted.join("|")}:${year || ""}:${composerNames.join("|")}`;
   const cached = cacheGet(key);
   if (cached) return cached;
   const stored = await dbCacheGet(key, DB_DAYS);
@@ -539,11 +542,14 @@ async function extractSongs(text, title) {
         {
           role: "system",
           content:
-            "You read a passage from a Wikipedia article about a TV series or film and list the existing songs it says are used or heard in it " +
+            "You read a passage from a Wikipedia article about a TV series or film and list the existing songs that are heard IN THE PRODUCTION ITSELF " +
             "(licensed or original songs with a named artist, not the composer's score cues, not albums). Use ONLY what the passage says. " +
-            "Never add songs the passage does not name. \"artist\" is the performer ONLY if the passage says it, otherwise empty. " +
+            "Leave out songs that belong to something else the passage talks about: a stage musical, a remake or sequel, a parody, a tribute, " +
+            "a song that only references the title, or the production's later influence on music. For each song, \"evidence\" is the exact sentence " +
+            "or phrase copied from the passage that says the song is in this production. If you cannot copy such a sentence, leave the song out. " +
+            "\"artist\" is the performer ONLY if the passage says it, otherwise empty. " +
             "\"likely_artist\" is the performer of the recording this title is best known for, from what you know, or empty if unsure. " +
-            'Answer as JSON: {"songs":[{"title":"...","artist":"...","likely_artist":"..."}]} with at most 10 songs, or {"songs":[]} if none.',
+            'Answer as JSON: {"songs":[{"title":"...","artist":"...","likely_artist":"...","evidence":"..."}]} with at most 10 songs, or {"songs":[]} if none.',
         },
         { role: "user", content: `Title: ${title}\n\nPassage:\n${text}` },
       ],
@@ -556,8 +562,9 @@ async function extractSongs(text, title) {
   const list = Array.isArray(parsed.songs) ? parsed.songs : [];
   const haystack = norm(text);
   return list
-    .map((x) => ({ title: cleanText(x?.title, 120), artist: cleanText(x?.artist, 120), likelyArtist: cleanText(x?.likely_artist, 120) }))
+    .map((x) => ({ title: cleanText(x?.title, 120), artist: cleanText(x?.artist, 120), likelyArtist: cleanText(x?.likely_artist, 120), evidence: norm(cleanText(x?.evidence, 400)) }))
     .filter((x) => x.title && norm(x.title).length > 1 && haystack.includes(norm(x.title))) // it has to be written in the article
+    .filter((x) => x.evidence.length > 8 && haystack.includes(x.evidence) && x.evidence.includes(norm(x.title))) // and in a sentence that really is in the article, naming the song
     .slice(0, 10);
 }
 
@@ -647,7 +654,7 @@ async function lookupSongs(named) {
 }
 
 async function featuredSongs(imdbId, title) {
-  const key = `featured:${imdbId}`;
+  const key = `featured:v2:${imdbId}`; // v2: songs now need a quoted sentence from the article as evidence
   const cached = cacheGet(key);
   if (cached) return cached;
   const stored = await dbCacheGet(key, 90);
@@ -825,4 +832,4 @@ function mountSoundtracks(app, { requireAuth, asyncHandler }) {
   }));
 }
 
-module.exports = { mountSoundtracks, findAlbums, pinAlbums, albumTracks, debugAlbums, rankAlbum, featuredSongs };
+module.exports = { mountSoundtracks, findAlbums, pinAlbums, albumTracks, debugAlbums, rankAlbum, featuredSongs, _extractSongs: extractSongs };
