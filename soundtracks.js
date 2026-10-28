@@ -174,38 +174,48 @@ const withoutArticle = (name) => {
 function pickAlbums(found, wanted, year, composerNames) {
   const byId = new Map();
   for (const a of found) if (a && a.id && !byId.has(a.id)) byId.set(a.id, a);
-  const candidates = [...byId.values()]
+  const scored = [...byId.values()]
     .map((a) => ({ a, score: rankAlbum(a, wanted) + (year && String(a.release_date || "").startsWith(String(year)) ? 1 : 0) }))
-    .filter((x) => x.score >= 8) // title in the name AND it looks like a soundtrack/score
-    // A soundtrack cannot come out years before the film or show it is for. This is what keeps another work with the same
-    // word in its name away: "Lupin" (2021) is not "Lupin the Third" (1978-2013). One year of slack for early releases.
+    // A soundtrack cannot come out years before the film or show it is for ("Lupin" 2021 is not "Lupin the Third"). One year of
+    // slack for early releases. Deezer's search results often carry no release date at all, and then this does nothing.
     .filter((x) => {
       if (!year) return true;
       const y = parseInt(String(x.a.release_date || "").slice(0, 4), 10);
       return !Number.isInteger(y) || y >= Number(year) - 1;
     })
     .sort((x, y) => y.score - x.score || (y.a.nb_tracks || 0) - (x.a.nb_tracks || 0));
-  // 1. Albums that call themselves the original soundtrack. 2. Of those, the ones named after this title and nothing else
-  // ("Severance: Season 1 (...)" yes, "Life On Earth: Severance (...)" and "Carrie Pilby (...)" no). 3. If TMDB told us
-  // who composed it, the albums by that person (or a "Various Artists" compilation). 4. The ones released around the
-  // film's or show's year. Each step only narrows the list when something is left, so an unusual title never ends up empty.
+  const candidates = scored.filter((x) => x.score >= 8); // title in the name AND it looks like a soundtrack/score
+  const byComposer = (x) => composerNames.some((c) => norm(x.a.artist?.name).includes(c));
+  const isVarious = (x) => /\b(various|verschiedene|varios|varie|divers|artistes?)\b/.test(norm(x.a.artist?.name));
+
+  let pool;
+  // The album by the person TMDB lists as the composer is the strongest sign there is. It wins over everything else, including
+  // albums that look more like a plain "<title> (Soundtrack)": for "Lupin" that is how the Netflix series' albums by Mathieu
+  // Lamboley beat a "Lupin (Original TV Series Soundtrack)" compilation and 25 "Lupin the Third" albums. Their names are often
+  // loose ("Lupin: Part 4 (Bande originale ...)"), so any album with the title in its name counts. Compilations of songs by
+  // various artists still follow them.
+  const composed = composerNames.length ? scored.filter((x) => x.score >= 5 && byComposer(x)) : [];
+  if (composed.length) {
+    composed.sort((x, y) => x.a.title.localeCompare(y.a.title, undefined, { numeric: true }));
+    pool = [...composed, ...candidates.filter((x) => isVarious(x) && !composed.includes(x))];
+  } else {
+    // 1. Albums that call themselves the original soundtrack. 2. Of those, the ones named after this title and nothing else
+    // ("Severance: Season 1 (...)" yes, "Life On Earth: Severance (...)" and "Carrie Pilby (...)" no). 3. The ones released around the
+    // film's or show's year. Each step only narrows the list when something is left, so an unusual title never ends up empty.
+    const official = candidates.filter((x) => isOfficial(x.a));
+    pool = official.length ? official : candidates;
+    const narrow = (fn) => { const f = pool.filter(fn); if (f.length) pool = f; };
+    narrow((x) => isTitleAlbum(x.a, wanted));
+    if (year) {
+      narrow((x) => {
+        const y = parseInt(String(x.a.release_date || "").slice(0, 4), 10);
+        return Number.isInteger(y) && y >= year - 1 && y <= year + 2;
+      });
+    }
+  }
   // Only when there are no official albums (older or obscure titles) do the looser matches show up, and then just the best few.
-  const official = candidates.filter((x) => isOfficial(x.a));
-  let pool = official.length ? official : candidates;
-  const narrow = (fn) => { const f = pool.filter(fn); if (f.length) pool = f; };
-  narrow((x) => isTitleAlbum(x.a, wanted));
-  if (composerNames.length) {
-    const byComposer = (x) => composerNames.some((c) => norm(x.a.artist?.name).includes(c));
-    if (pool.some(byComposer)) pool = pool.filter((x) => byComposer(x) || norm(x.a.artist?.name) === "various artists");
-  }
-  if (year) {
-    const near = (x) => {
-      const y = parseInt(String(x.a.release_date || "").slice(0, 4), 10);
-      return Number.isInteger(y) && y >= year - 1 && y <= year + 2;
-    };
-    narrow(near);
-  }
-  return pool.slice(0, official.length ? 5 : 3).map(({ a }) => ({
+  const limit = composed.length || candidates.some((x) => isOfficial(x.a)) ? 5 : 3;
+  return pool.slice(0, limit).map(({ a }) => ({
     id: String(a.id),
     title: a.title,
     artist: a.artist?.name || "",
@@ -241,6 +251,101 @@ function logSearch(titles, year, composers, source, found) {
   })();
 }
 
+// ---- choosing the right albums ----
+// Rules on album names kept breaking on the next title ("Pt. 1", "Part 4", "Bande originale", "Vol. 2"...). So the choice is made
+// by a model that knows the productions, from a list of albums the music services really returned. It can only pick from that
+// list (it answers with numbers, anything else is thrown away), and when it is not sure it picks nothing. The rules in
+// pickAlbums stay as the fallback for when the model is not reachable.
+const AI_MODEL = process.env.GROQ_ALBUMS_MODEL || process.env.GROQ_SONGS_MODEL || "openai/gpt-oss-120b";
+const MAX_CANDIDATES = 25;
+
+// Albums that could be about this title: its name is in the album's name, or the album is by the composer. Best ones first.
+function albumCandidates(found, wanted, composerNames) {
+  const byId = new Map();
+  for (const a of found) if (a && a.id && !byId.has(a.id)) byId.set(a.id, a);
+  const byComposer = (a) => composerNames.some((c) => norm(a.artist?.name).includes(c));
+  return [...byId.values()]
+    .map((a) => ({ a, score: rankAlbum(a, wanted), comp: byComposer(a) }))
+    .filter((x) => x.score >= 5 || (x.comp && x.score >= 1))
+    .sort((x, y) => Number(y.comp) - Number(x.comp) || y.score - x.score || (y.a.nb_tracks || 0) - (x.a.nb_tracks || 0))
+    .slice(0, MAX_CANDIDATES)
+    .map((x) => x.a);
+}
+
+// Deezer's search results carry no release date. One lookup per candidate fills it in (and the real track count).
+async function withReleaseDates(list) {
+  await Promise.allSettled(list.map(async (a) => {
+    if (a.release_date || isItunesId(a.id)) return;
+    const full = await deezer(`/album/${a.id}`);
+    if (full && full.release_date) a.release_date = full.release_date;
+    if (full && full.nb_tracks) a.nb_tracks = full.nb_tracks;
+  }));
+  return list;
+}
+
+// Returns an array of the picked candidates (possibly empty = "none of these"), or null when the model could not be asked.
+async function aiPickAlbums(list, titles, year, composers) {
+  if (!process.env.GROQ_API_KEY || !list.length) return null;
+  const lines = list.map((a, i) => `${i + 1} | ${a.title} | ${a.artist?.name || "?"} | ${String(a.release_date || "?").slice(0, 4)} | ${a.nb_tracks || "?"} tracks`).join("\n");
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), 20000);
+  try {
+    const res = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+      method: "POST",
+      signal: ctrl.signal,
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${process.env.GROQ_API_KEY}` },
+      body: JSON.stringify({
+        model: AI_MODEL,
+        temperature: 0,
+        max_tokens: 3000, // this model writes a reasoning trace first
+        response_format: { type: "json_object" },
+        messages: [
+          {
+            role: "system",
+            content:
+              "You match music albums to a TV series or film. You get the production and a numbered list of albums found on music services. " +
+              "Pick the albums that are the official soundtrack or score of THAT production: the release made for it (original score, original " +
+              "series/motion picture soundtrack, music from it, any season, part or volume of it, in any language). Do NOT pick albums of a " +
+              "different production that shares the name or part of it (another film, a remake, an anime, a different series), compilations " +
+              "not made for it, covers, karaoke or tribute albums. Use the year and the composer as evidence. When you are not sure an album " +
+              "belongs to this production, leave it out; an empty answer is better than a wrong one. Order the picks the way a listener would " +
+              "start: the main or first release first, then later seasons, parts or volumes in order. At most 6. " +
+              'Answer as JSON: {"picks":[numbers from the list]}, or {"picks":[]} if none fit.',
+          },
+          { role: "user", content: `Production: ${titles.join(" / ")}${year ? ` (${year})` : ""}\nComposer: ${composers.join(", ") || "unknown"}\n\nAlbums (number | name | artist | year | tracks):\n${lines}` },
+        ],
+      }),
+    });
+    if (!res.ok) throw new Error(`Groq ${res.status}`);
+    const data = await res.json();
+    const parsed = JSON.parse(data.choices?.[0]?.message?.content || "");
+    if (!parsed || !Array.isArray(parsed.picks)) return null;
+    const seen = new Set();
+    const out = [];
+    for (const n of parsed.picks) {
+      const i = Number(n) - 1;
+      if (Number.isInteger(i) && list[i] && !seen.has(i)) { seen.add(i); out.push(list[i]); }
+    }
+    return out.slice(0, 6);
+  } catch (e) {
+    console.error("soundtrack album pick failed:", e.message);
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+const toResult = (a) => ({
+  id: String(a.id),
+  title: a.title,
+  artist: a.artist?.name || "",
+  cover: cleanCover(a.cover_medium) || cleanCover(a.cover) || null,
+  trackCount: a.nb_tracks || null,
+});
+
+// A person (through /admin/soundtrack-set) can pin the right albums for a title. That wins over everything and does not expire.
+const overrideKey = (title, year) => `override:${norm(title || "")}:${year || ""}`;
+
 // For /admin/soundtrack-debug: the same search as findAlbums, uncached, showing every album Deezer returned and what the ranking
 // did with it. Used to see why a title gets the wrong album.
 async function debugAlbums(titles, year, composers = []) {
@@ -256,8 +361,13 @@ async function debugAlbums(titles, year, composers = []) {
   const errors = [];
   settled.forEach((r, i) => { if (r.status === "fulfilled") for (const a of r.value.data || []) { if (a && a.id && !byId.has(a.id)) byId.set(a.id, a); } else errors.push(`${qs[i]}: ${r.reason?.message}`); });
   const kept = new Set(pickAlbums([...byId.values()], wanted, year, composerNames).map((a) => a.id));
+  const cands = await withReleaseDates(albumCandidates([...byId.values()], wanted, composerNames));
+  const picked = await aiPickAlbums(cands, titles, year, composers);
+  const aiIds = new Set((picked || []).map((a) => String(a.id)));
   return {
     wanted, year, composers: composerNames, queries: qs, errors,
+    ai: picked === null ? "unavailable (no GROQ_API_KEY or the call failed): the plain rules are used" : (picked.length ? picked.map(toResult) : "picked nothing"),
+    candidates: cands.map((a) => ({ id: a.id, title: a.title, artist: a.artist?.name, released: a.release_date, tracks: a.nb_tracks, picked: aiIds.has(String(a.id)) })),
     albums: [...byId.values()].map((a) => ({
       id: a.id, title: a.title, artist: a.artist?.name, released: a.release_date, tracks: a.nb_tracks, type: a.record_type,
       score: rankAlbum(a, wanted), official: isOfficial(a), titleAlbum: isTitleAlbum(a, wanted), kept: kept.has(String(a.id)),
@@ -265,12 +375,35 @@ async function debugAlbums(titles, year, composers = []) {
   };
 }
 
+// Pins albums (Deezer ids) for a title; they are what findAlbums returns for it from then on. Empty list = remove the pin.
+async function pinAlbums(titles, year, ids) {
+  const keys = titles.map((t) => overrideKey(t, year));
+  if (!ids.length) {
+    try { await getPool().query("delete from soundtrack_cache where key = any($1)", [keys]); } catch { /* nothing pinned */ }
+    cache.clear();
+    return [];
+  }
+  const albums = [];
+  for (const id of ids) {
+    const a = await deezer(`/album/${id}`);
+    if (a && a.id) albums.push(toResult(a));
+  }
+  if (!albums.length) throw httpError(404, "None of those albums exist");
+  for (const key of keys) await dbCacheSet(key, albums);
+  cache.clear();
+  return albums;
+}
+
 async function findAlbums(titles, year, composers = []) {
   const wanted = [...new Set(titles.map(norm).filter(Boolean).flatMap((t) => [t, withoutArticle(t)].filter(Boolean)))];
   if (!wanted.length) return [];
   const composerNames = composers.map(norm).filter((c) => c.length > 2);
-  // v2: lookups stored before the release-year guard, the composer search and the second source held wrong albums (Lupin III for Lupin).
-  const key = `albums:v2:${wanted.join("|")}:${year || ""}:${composerNames.join("|")}`;
+  // v3: albums are chosen by the model now (v2 and older held wrong albums, e.g. Lupin III for Lupin).
+  for (const t of titles) {
+    const pinned = await dbCacheGet(overrideKey(t, year), 36500);
+    if (Array.isArray(pinned) && pinned.length) return pinned;
+  }
+  const key = `albums:v3:${wanted.join("|")}:${year || ""}:${composerNames.join("|")}`;
   const cached = cacheGet(key);
   if (cached) return cached;
   const stored = await dbCacheGet(key, DB_DAYS);
@@ -295,8 +428,15 @@ async function findAlbums(titles, year, composers = []) {
   const deezerDown = settled.every((s) => s.status === "rejected");
   const found = [];
   for (const s of settled) if (s.status === "fulfilled") found.push(...(s.value.data || []));
-  let ranked = deezerDown ? [] : pickAlbums(found, wanted, year, composerNames);
-  let source = ranked.length ? "deezer" : "none";
+  let source = "none";
+  let ranked = [];
+  let aiFailed = false;
+  if (!deezerDown) {
+    const list = await withReleaseDates(albumCandidates(found, wanted, composerNames));
+    const picked = await aiPickAlbums(list, titles, year, composers);
+    if (picked) { ranked = picked.map(toResult); source = ranked.length ? "deezer+ai" : "none"; }
+    else { aiFailed = true; ranked = pickAlbums(found, wanted, year, composerNames); if (ranked.length) source = "deezer"; }
+  }
 
   // Second source: iTunes, when Deezer found nothing usable or could not be reached. Same ranking, same filters.
   let itunesFailed = false;
@@ -308,14 +448,16 @@ async function findAlbums(titles, year, composers = []) {
     itunesFailed = results.every((r) => r.status === "rejected");
     const items = [];
     for (const r of results) if (r.status === "fulfilled") for (const x of r.value.results || []) { const a = itunesAlbum(x); if (a) items.push(a); }
-    ranked = pickAlbums(items, wanted, year, composerNames);
-    if (ranked.length) source = "itunes";
+    const picked = await aiPickAlbums(albumCandidates(items, wanted, composerNames), titles, year, composers);
+    if (picked) { ranked = picked.map(toResult); if (ranked.length) source = "itunes+ai"; }
+    else { aiFailed = true; ranked = pickAlbums(items, wanted, year, composerNames); if (ranked.length) source = "itunes"; }
   }
 
   if (deezerDown && itunesFailed) throw httpError(502, "Music service unavailable");
   // Found albums are kept for everybody. "Nothing found" is only remembered briefly, and not at all when part of the search failed.
   const partial = deezerDown || itunesFailed || settled.some((x) => x.status === "rejected");
-  if (ranked.length) { cacheSet(key, ranked, SEARCH_TTL_MS); await dbCacheSet(key, ranked); }
+  if (ranked.length && aiFailed) cacheSet(key, ranked, 60 * 60 * 1000); // chosen by the plain rules: kept an hour, then asked again
+  else if (ranked.length) { cacheSet(key, ranked, SEARCH_TTL_MS); await dbCacheSet(key, ranked); }
   else if (!partial) cacheSet(key, ranked, 60 * 60 * 1000);
   if (!partial || ranked.length) logSearch(titles, year, composers, source, ranked.length);
   return ranked;
@@ -683,4 +825,4 @@ function mountSoundtracks(app, { requireAuth, asyncHandler }) {
   }));
 }
 
-module.exports = { mountSoundtracks, findAlbums, albumTracks, debugAlbums, rankAlbum, featuredSongs };
+module.exports = { mountSoundtracks, findAlbums, pinAlbums, albumTracks, debugAlbums, rankAlbum, featuredSongs };

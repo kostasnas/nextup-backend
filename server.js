@@ -3239,6 +3239,19 @@ app.get("/admin/soundtrack-debug", asyncHandler(async (req, res) => {
   res.json({ commit: (process.env.RENDER_GIT_COMMIT || "").slice(0, 7) || null, ...(await require("./soundtracks").debugAlbums(titles, Number.isInteger(year) ? year : null, composers)) });
 }));
 
+// Pin the right albums for a title when the automatic choice is wrong. Deezer album ids come from /admin/soundtrack-debug.
+// Example: /admin/soundtrack-set?secret=...&title=Lupin&year=2021&ids=194504862,234039352   (no ids = remove the pin)
+app.get("/admin/soundtrack-set", asyncHandler(async (req, res) => {
+  if (!process.env.CRON_SECRET || (req.headers["x-cron-secret"] || req.query.secret) !== process.env.CRON_SECRET) {
+    return res.status(401).json({ error: "Unauthorized" });
+  }
+  const titles = [req.query.title, req.query.original_title].filter(Boolean).map(String);
+  if (!titles.length) return res.status(400).json({ error: "title is required" });
+  const year = parseInt(req.query.year, 10);
+  const ids = String(req.query.ids || "").split(",").map((x) => x.trim()).filter((x) => /^\d{1,13}$/.test(x)).slice(0, 8);
+  res.json({ pinned: await require("./soundtracks").pinAlbums(titles, Number.isInteger(year) ? year : null, ids) });
+}));
+
 app.get("/notifications/send-daily-upcoming", dailyMaintenanceHandler);
 app.post("/notifications/send-daily-upcoming", dailyMaintenanceHandler);
 
