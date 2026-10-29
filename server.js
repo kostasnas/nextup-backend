@@ -196,7 +196,7 @@ app.get("/", async (req, res) => {
   }
 });
 
-const { getWatchProviders, getShowWatchProviders, getMovieWatchProviders, getShowBackdrop, getShowPoster, getMovieDetails, getTopShows, getTrending, getGenres, getPersonDetails } = require("./discover");
+const { getWatchProviders, getShowWatchProviders, getMovieWatchProviders, getShowBackdrop, getShowPoster, getMovieDetails, getTopShows, getPersonalTopShows, getTrending, getGenres, getPersonDetails } = require("./discover");
 const { getRottenTomatoesRating } = require("./rottenTomatoes");
 const { getMovieCommunityRating } = require("./movieRatings");
 const { getFriendsActivityFeed, getFriendsSummary } = require("./feed");
@@ -936,6 +936,18 @@ app.get("/gifs/trending", requireAuth, asyncHandler(async (req, res) => {
     "GIF trending fetch failed", res);
 }));
 
+
+// Same list, picked from what the signed-in user watches (falls back to the generic list for new users).
+app.get("/discover/for-you", requireAuth, asyncHandler(async (req, res) => {
+  const region = (req.query.region || "US").toUpperCase();
+  const providerId = req.query.provider_id || null;
+  const { data, error } = await supabase
+    .from("user_watchlist").select("status, shows(tmdb_id)")
+    .eq("user_id", req.userId).order("created_at", { ascending: false }).limit(500);
+  if (error) throw error;
+  const rows = (data || []).filter((r) => r.shows?.tmdb_id).map((r) => ({ status: r.status, tmdbId: r.shows.tmdb_id }));
+  res.json(await getPersonalTopShows({ userId: req.userId, region, providerId, rows }));
+}));
 
 app.get("/discover/top-shows", asyncHandler(async (req, res) => {
   const region = (req.query.region || "US").toUpperCase();

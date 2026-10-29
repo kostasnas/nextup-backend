@@ -163,16 +163,69 @@ async function getMovieDetails(movieId) {
  * with a subscription.
  */
 async function getTopShows({ region = "US", providerId = null } = {}) {
-  const cacheKey = `top:${region}:${providerId || "all"}`;
+  const cacheKey = `top2:${region}:${providerId || "all"}`; // top2: platform picks are now best-rated, not most popular
   const cached = getCached(cacheKey);
   if (cached) return cached;
 
   const data = providerId
-    ? await tmdbGet(`/discover/tv?watch_region=${region}&with_watch_providers=${providerId}&watch_monetization_type=flatrate&sort_by=popularity.desc`)
+    ? await tmdbGet(`/discover/tv?watch_region=${region}&with_watch_providers=${providerId}&watch_monetization_type=flatrate&sort_by=vote_average.desc&vote_count.gte=500`)
     : await tmdbGet(`/tv/popular`);
 
   const shows = (data.results || []).slice(0, 20);
   setCached(cacheKey, shows);
+  return shows;
+}
+
+/**
+ * "Top shows for you": picks by what this person already watches.
+ * Takes the genres of their most recently added watching/completed shows, asks TMDB discover for well-rated shows in
+ * those genres (on the chosen platform if there is one), drops everything already on their lists and ranks what is
+ * left by how many of their favourite genres it matches. Someone with fewer than 3 such shows gets the generic list.
+ * `rows`: [{ status, tmdbId }] for every show on the user's lists, newest first.
+ */
+const FOR_YOU_TTL_MS = 30 * 60 * 1000; // short: the lists change as they track more
+async function getPersonalTopShows({ userId, region = "US", providerId = null, rows = [] }) {
+  const cacheKey = `foryou:${userId}:${region}:${providerId || "all"}`;
+  const hit = cache.get(cacheKey);
+  if (hit && hit.expiresAt > Date.now()) return hit.data;
+
+  const owned = new Set(rows.map((r) => r.tmdbId));
+  const seeds = rows.filter((r) => r.status === "watching" || r.status === "completed").slice(0, 8);
+  if (seeds.length < 3) return getTopShows({ region, providerId });
+
+  // Genres per seed show (cached per show — they do not change).
+  const genreLists = await Promise.all(seeds.map(async (r) => {
+    const key = `tvgenres:${r.tmdbId}`;
+    let g = getCached(key);
+    if (!g) {
+      try {
+        const d = await tmdbGet(`/tv/${r.tmdbId}`);
+        g = (d.genres || []).map((x) => x.id);
+        setCached(key, g);
+      } catch { g = []; }
+    }
+    return g;
+  }));
+  const weight = new Map();
+  for (const g of genreLists) for (const id of g) weight.set(id, (weight.get(id) || 0) + 1);
+  const top = [...weight.entries()].sort((a, b) => b[1] - a[1]).slice(0, 3);
+  if (top.length === 0) return getTopShows({ region, providerId });
+
+  const provider = providerId ? `&watch_region=${region}&with_watch_providers=${providerId}&watch_monetization_type=flatrate` : "";
+  const base = `/discover/tv?with_genres=${top.map(([id]) => id).join("|")}&sort_by=popularity.desc&vote_average.gte=7&vote_count.gte=300${provider}`;
+  const pages = await Promise.all([1, 2, 3].map((p) => tmdbGet(`${base}&page=${p}`).catch(() => ({ results: [] }))));
+  const seen = new Set();
+  const scored = [];
+  pages.forEach((pg, pi) => (pg.results || []).forEach((show, i) => {
+    if (owned.has(show.id) || seen.has(show.id)) return;
+    seen.add(show.id);
+    const match = (show.genre_ids || []).reduce((n, id) => n + (weight.get(id) || 0), 0);
+    scored.push({ show, match, order: pi * 100 + i });
+  }));
+  scored.sort((a, b) => b.match - a.match || a.order - b.order);
+  const shows = scored.slice(0, 20).map((x) => x.show);
+  if (shows.length === 0) return getTopShows({ region, providerId });
+  cache.set(cacheKey, { data: shows, expiresAt: Date.now() + FOR_YOU_TTL_MS });
   return shows;
 }
 
@@ -250,4 +303,4 @@ async function getPersonDetails(personId) {
   return person;
 }
 
-module.exports = { getWatchProviders, getShowWatchProviders, getMovieWatchProviders, getShowBackdrop, getShowPoster, getMovieDetails, getTopShows, getTrending, getGenres, getPersonDetails };
+module.exports = { getWatchProviders, getShowWatchProviders, getMovieWatchProviders, getShowBackdrop, getShowPoster, getMovieDetails, getTopShows, getPersonalTopShows, getTrending, getGenres, getPersonDetails };
