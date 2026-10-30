@@ -850,7 +850,7 @@ function mountSoundtracks(app, { requireAuth, asyncHandler }) {
     const token = String(req.params.token || "");
     if (!/^[A-Za-z0-9_-]{8,40}$/.test(token)) throw httpError(404, "Not found");
     const { rows } = await getPool().query(
-      `select t.kind, t.tmdb_id, t.media_title, t.track_title, t.track_artist
+      `select t.kind, t.tmdb_id, t.media_title, t.poster_path, t.track_title, t.track_artist, t.cover_url
          from user_soundtrack_links l join user_saved_tracks t on t.user_id = l.user_id
         where l.token = $1 order by t.created_at desc`,
       [token]
@@ -860,8 +860,8 @@ function mountSoundtracks(app, { requireAuth, asyncHandler }) {
     const groups = new Map();
     for (const r of rows) {
       const key = `${r.kind}:${r.tmdb_id}`;
-      if (!groups.has(key)) groups.set(key, { kind: r.kind, title: r.media_title, tracks: [] });
-      groups.get(key).tracks.push({ title: r.track_title, artist: r.track_artist || "" });
+      if (!groups.has(key)) groups.set(key, { kind: r.kind, title: r.media_title, posterPath: r.poster_path || null, tracks: [] });
+      groups.get(key).tracks.push({ title: r.track_title, artist: r.track_artist || "", cover: r.cover_url || null });
     }
     res.set("Cache-Control", "no-store");
     res.json({ titles: [...groups.values()] });
