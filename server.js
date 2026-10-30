@@ -2858,12 +2858,15 @@ app.delete("/account", requireAuth, asyncHandler(async (req, res) => {
   } catch (e) {
     console.error(`Import history cleanup failed for ${userId} (non-fatal):`, e.message);
   }
-  try {
-    await supabase.storage.from("avatars").remove([
-      `${userId}/avatar.jpg`, `${userId}/avatar.jpeg`, `${userId}/avatar.png`, `${userId}/avatar.webp`,
-    ]);
-  } catch (e) {
-    console.error(`Avatar cleanup failed for ${userId} (non-fatal):`, e.message);
+  // Every uploaded file lives under "<userId>/" in its bucket: the avatar and the pictures attached to comments.
+  // (Deleting the rows does not remove storage objects, so they are listed and removed here.)
+  for (const bucket of ["avatars", "comment-images"]) {
+    try {
+      const { data: files } = await supabase.storage.from(bucket).list(userId, { limit: 1000 });
+      if (files?.length) await supabase.storage.from(bucket).remove(files.map((f) => `${userId}/${f.name}`));
+    } catch (e) {
+      console.error(`${bucket} cleanup failed for ${userId} (non-fatal):`, e.message);
+    }
   }
 
   const { error } = await supabase.auth.admin.deleteUser(userId);
