@@ -949,6 +949,19 @@ app.get("/discover/for-you", requireAuth, asyncHandler(async (req, res) => {
   res.json(await getPersonalTopShows({ userId: req.userId, region, providerId, rows }));
 }));
 
+// Remote on/off switches for features (see the app's lib/flags.js). Rows live in the feature_flags table; anything not
+// listed counts as ON in the app. Cached for a minute so a switch flips quickly without hitting the database per request.
+let flagsCache = { at: 0, data: {} };
+app.get("/config/flags", asyncHandler(async (req, res) => {
+  if (Date.now() - flagsCache.at > 60 * 1000) {
+    const { data, error } = await supabase.from("feature_flags").select("key, enabled");
+    // If the table is missing or unreachable, keep the last known list (empty at first = everything on).
+    flagsCache = { at: Date.now(), data: error ? flagsCache.data : Object.fromEntries((data || []).map((r) => [r.key, r.enabled])) };
+  }
+  res.set("Cache-Control", "public, max-age=30");
+  res.json(flagsCache.data);
+}));
+
 app.get("/discover/top-shows", asyncHandler(async (req, res) => {
   const region = (req.query.region || "US").toUpperCase();
   const providerId = req.query.provider_id || null;
