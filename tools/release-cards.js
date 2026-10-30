@@ -160,6 +160,15 @@
       var v = plat.value.trim();
       item.platforms = v ? v.split(/\s*,\s*/).filter(Boolean) : [];
       redraw(canvas, item);
+      // The platform hashtag follows what is typed (it was left on TMDB's first provider before).
+      var newTag = (item.platforms[0] || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase().replace(/[^a-z0-9]/g, "");
+      if (item.platformTag !== undefined && item.category !== "movies" && newTag !== item.platformTag) {
+        var tc = ta.value;
+        if (item.platformTag && tc.indexOf("#" + item.platformTag) !== -1) tc = tc.replace("#" + item.platformTag, newTag ? "#" + newTag : "").replace(/ +$/gm, "");
+        else if (newTag) tc = tc.replace(/\s*$/, " #" + newTag);
+        ta.value = tc;
+        item.platformTag = newTag;
+      }
       var newWhere = item.platforms.length ? ui.whereCaption + item.platforms.join(", ") + "." : "";
       var c = ta.value;
       var at = item.captionHead ? c.indexOf(item.captionHead) : -1;
@@ -193,6 +202,32 @@
       synLabel.appendChild(syn);
       synLabel.appendChild(document.createTextNode("Προσθήκη περίληψης στο caption"));
       el.appendChild(synLabel);
+    }
+
+    // TMDB's date is sometimes the broadcaster's and not the streaming premiere: this switches the card to "out now"
+    // (no date to be wrong), and back.
+    if (item.outNow) {
+      var orig = {
+        kind: item.kind, kindTag: item.kindTag, kindLabel: item.kindLabel, when: item.when, date: item.date,
+        daysFromToday: item.daysFromToday, dateLong: item.dateLong, captionHead: item.captionHead,
+      };
+      var nowLabel = document.createElement("label");
+      nowLabel.className = "meta";
+      var nowCb = document.createElement("input");
+      nowCb.type = "checkbox";
+      nowCb.style.marginInlineEnd = "6px";
+      nowCb.addEventListener("change", function () {
+        var to = nowCb.checked ? item.outNow : orig;
+        var c = ta.value;
+        if (item.captionHead && c.indexOf(item.captionHead) === 0) ta.value = to.captionHead + c.slice(item.captionHead.length);
+        ["kind", "kindTag", "kindLabel", "when", "date", "daysFromToday", "dateLong", "captionHead"].forEach(function (k) { item[k] = to[k]; });
+        meta.textContent = item.categoryLabel + " · " + item.dateLong + " · " + score + " · δημοφιλία " + item.popularity;
+        redraw(canvas, item);
+        updateCount();
+      });
+      nowLabel.appendChild(nowCb);
+      nowLabel.appendChild(document.createTextNode("Βγήκε ήδη (OUT NOW): χωρίς ημερομηνία του TMDB"));
+      el.appendChild(nowLabel);
     }
 
     var count = document.createElement("div");

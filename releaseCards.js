@@ -46,6 +46,7 @@ const LANGS = {
       episode: ({ title, season, episode, when }) => `Novo episódio de ${title} ${when}: temporada ${season}, episódio ${episode}.`,
       premiere: ({ title, when }) => `${title} estreia ${when}.`,
       streaming: ({ title }) => `${title} já está disponível.`,
+      seasonOut: ({ title, season }) => `A temporada ${season} de ${title} já está disponível.`,
       movie: ({ title, when }) => `${title} estreia nos cinemas ${when}.`,
     },
     theatersIn: (m) => `Nos cinemas · ${m}`,
@@ -80,6 +81,7 @@ const LANGS = {
       episode: ({ title, season, episode, when }) => `Next episode of ${title} ${/^(today|tomorrow)/.test(when) ? when : `on ${when}`}: season ${season}, episode ${episode}.`,
       premiere: ({ title, when }) => `${title} premieres ${when}.`,
       streaming: ({ title }) => `${title} is out now.`,
+      seasonOut: ({ title, season }) => `Season ${season} of ${title} is out now.`,
       movie: ({ title, when }) => `${title} hits theaters ${when}.`,
     },
     theatersIn: (m) => `In theaters · ${m}`,
@@ -115,6 +117,7 @@ const LANGS = {
       episode: ({ title, season, episode, when }) => `${title}: yeni bölüm ${when} · ${season}. sezon, ${episode}. bölüm.`,
       premiere: ({ title, when }) => `${title} ${when} yayına başlıyor.`,
       streaming: ({ title }) => `${title} yayında.`,
+      seasonOut: ({ title, season }) => `${title} ${season}. sezon yayında.`,
       movie: ({ title, when }) => `${title} ${when} vizyona giriyor.`,
     },
     theatersIn: (m) => `Sinemalarda · ${m}`,
@@ -321,8 +324,21 @@ function toItem(detail, category, today, ev, L = LANGS.pt) {
 
   const args = { title, when, kind: ev.kind, season: ev.season, episode: ev.episode, L };
   const cp = captionParts({ ...args, platforms, overview: detail.overview, tags, trending: category.key === "trending", category: category.key });
+  // The same card as "already out": TMDB's date is sometimes the broadcaster's and not the streaming premiere (Dexter:
+  // Resurrection S2 is on Paramount+ two days before TMDB's date), so the page lets you switch a card to "out now".
+  let outNow = null;
+  if (ev.kind !== "streaming" && ev.kind !== "movie") {
+    const outArgs = { title, when: "", kind: ev.kind === "season" ? "seasonOut" : "streaming", season: ev.season, episode: ev.episode, L };
+    const outCp = captionParts({ ...outArgs, platforms, overview: detail.overview, tags, trending: category.key === "trending", category: category.key });
+    outNow = {
+      kind: "streaming", kindTag: L.kinds.streaming.tag, kindLabel: L.kinds.streaming.label, when: "", date: today, daysFromToday: 0,
+      dateLong: longDate(today, L), captionHead: captionHead(outArgs), caption: `${outCp.head}${outCp.tail}`,
+    };
+  }
   return {
     id: detail.id,
+    outNow,
+    platformTag,
     title,
     kind: ev.kind,
     kindTag: L.kinds[ev.kind].tag,
