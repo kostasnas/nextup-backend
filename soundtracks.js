@@ -825,6 +825,48 @@ function mountSoundtracks(app, { requireAuth, asyncHandler }) {
     res.status(201).json({ ok: true });
   }));
 
+  // A link to a page with my saved songs (each opens in Spotify / YouTube Music). One token per person, reused; deleting it
+  // turns the link off. The page itself is public, so the token is the only thing protecting it.
+  app.post("/soundtrack/link", requireAuth, guard(async (req, res) => {
+    const pool = getPool();
+    const { rows } = await pool.query("select token from user_soundtrack_links where user_id = $1", [req.userId]);
+    if (rows[0]) return res.json({ token: rows[0].token });
+    const token = require("crypto").randomBytes(12).toString("base64url");
+    await pool.query(
+      "insert into user_soundtrack_links (user_id, token) values ($1, $2) on conflict (user_id) do nothing",
+      [req.userId, token]
+    );
+    const { rows: again } = await pool.query("select token from user_soundtrack_links where user_id = $1", [req.userId]);
+    res.json({ token: again[0].token });
+  }));
+
+  app.delete("/soundtrack/link", requireAuth, guard(async (req, res) => {
+    await getPool().query("delete from user_soundtrack_links where user_id = $1", [req.userId]);
+    res.json({ ok: true });
+  }));
+
+  // What the public page shows: song and artist, grouped by title. No names, no ids of the person.
+  app.get("/public/soundtrack/:token", guard(async (req, res) => {
+    const token = String(req.params.token || "");
+    if (!/^[A-Za-z0-9_-]{8,40}$/.test(token)) throw httpError(404, "Not found");
+    const { rows } = await getPool().query(
+      `select t.kind, t.tmdb_id, t.media_title, t.track_title, t.track_artist
+         from user_soundtrack_links l join user_saved_tracks t on t.user_id = l.user_id
+        where l.token = $1 order by t.created_at desc`,
+      [token]
+    );
+    const chk = rows.length ? true : (await getPool().query("select 1 from user_soundtrack_links where token = $1", [token])).rowCount > 0;
+    if (!chk) throw httpError(404, "Not found");
+    const groups = new Map();
+    for (const r of rows) {
+      const key = `${r.kind}:${r.tmdb_id}`;
+      if (!groups.has(key)) groups.set(key, { kind: r.kind, title: r.media_title, tracks: [] });
+      groups.get(key).tracks.push({ title: r.track_title, artist: r.track_artist || "" });
+    }
+    res.set("Cache-Control", "no-store");
+    res.json({ titles: [...groups.values()] });
+  }));
+
   app.delete("/soundtrack/saved/:kind/:tmdbId/:trackId", requireAuth, guard(async (req, res) => {
     const kind = kindOf(req.params.kind);
     const tmdbId = parseInt(req.params.tmdbId, 10);
