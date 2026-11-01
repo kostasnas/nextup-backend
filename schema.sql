@@ -174,3 +174,9 @@ alter table app_feedback enable row level security;
 -- Run in the Supabase SQL editor, then open /admin/backfill-show-meta?secret=... until remaining is 0.
 alter table shows add column if not exists genres text[];
 alter table shows add column if not exists first_air_year integer;
+
+-- Movie franchises (1 Nov 2026), see migrations/movie_collections.sql
+alter table movies add column if not exists collection_id integer;
+alter table movies add column if not exists collection_name text;
+alter table movies add column if not exists collection_checked_at timestamptz;
+create index if not exists movies_collection_idx on movies (collection_id) where collection_id is not null;

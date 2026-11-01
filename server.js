@@ -25,6 +25,7 @@ const { getComments, getCommentCountsForShow, addComment, deleteComment, toggleC
 const { forEachConcurrent } = require("./concurrency");
 const MOVIE_IMPORT_CONCURRENCY = 12;
 const { getMovieWatchlist, setMovieStatus, updateMovieEntry, removeMovie } = require("./movies");
+const { fillMovieCollection, getSagas } = require("./movieCollections");
 const { getFavoriteCharacters, addFavoriteCharacter, removeFavoriteCharacter, getCharacterVoteCounts } = require("./favoriteCharacters");
 const { buildAccountExport, buildExportZip } = require("./accountExport");
 const { mountReleaseCards } = require("./releaseCards");
@@ -538,10 +539,17 @@ app.get("/movies", requireAuth, asyncHandler(async (req, res) => {
   res.json(list);
 }));
 
+// "Your sagas" on the Movies tab: the franchises the person has movies from, with how many they watched.
+app.get("/movies/sagas", requireAuth, asyncHandler(async (req, res) => {
+  res.json(await getSagas(supabase, req.userId));
+}));
+
 app.post("/movies/watchlist", requireAuth, asyncHandler(async (req, res) => {
   const { tmdb_id, title, poster_path, release_date, runtime, overview, status } = req.body;
   if (!tmdb_id || !title || !status) return res.status(400).json({ error: "tmdb_id, title, and status are required" });
   const result = await setMovieStatus(supabase, req.userId, { tmdb_id, title, poster_path, release_date, runtime, overview }, status);
+  // Learn which franchise this movie belongs to (best effort, after the answer is sent; imports do not go through here).
+  fillMovieCollection(supabase, { id: result.movieId, tmdb_id }).catch(() => {});
   res.json(result);
 }));
 
@@ -3497,6 +3505,20 @@ app.get("/admin/season-diff-result", asyncHandler(async (req, res) => {
   res.json({ running: seasonScan.running, progress: `${seasonScan.done}/${seasonScan.total}`, failed: seasonScan.failed,
     finishedAt: seasonScan.finishedAt, count: seasonScan.onlyInDb.length, onlyInDb: seasonScan.onlyInDb });
 }));
+
+// Fills the franchise of movies stored before the collection columns existed (migrations/movie_collections.sql).
+// 60 movies per call; repeat the URL until "remaining" is 0. Secret via x-cron-secret header or ?secret=.
+const backfillMovieCollectionsHandler = asyncHandler(async (req, res) => {
+  if (!adminSecretOk(req)) return res.status(401).json({ error: "Unauthorized" });
+  const { data: rows, error } = await supabase.from("movies").select("id, tmdb_id").is("collection_checked_at", null).limit(60);
+  if (error) throw error;
+  let updated = 0, failed = 0;
+  await forEachConcurrent(rows || [], 6, async (m) => { (await fillMovieCollection(supabase, m)) ? updated++ : failed++; });
+  const { count } = await supabase.from("movies").select("id", { count: "exact", head: true }).is("collection_checked_at", null);
+  res.json({ checked: (rows || []).length, updated, failed, remaining: count ?? null });
+});
+app.get("/admin/backfill-movie-collections", backfillMovieCollectionsHandler);
+app.post("/admin/backfill-movie-collections", backfillMovieCollectionsHandler);
 
 app.get("/admin/backfill-show-meta", backfillShowMetaHandler);
 app.post("/admin/backfill-show-meta", backfillShowMetaHandler);
