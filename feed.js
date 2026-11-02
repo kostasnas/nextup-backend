@@ -107,27 +107,23 @@ async function getFriendsSummary(supabase, userId) {
   const friendIds = friends.map((f) => f.userId);
   const pool = getPool();
 
-  const [episodeRows, movieRows] = await Promise.all([
-    pool.query(
-      `select user_id, max(watched_at) as last_at
-       from watched_episodes
-       where user_id = any($1::uuid[])
-       group by user_id`,
-      [friendIds]
-    ),
-    pool.query(
-      `select user_id, max(watched_at) as last_at
-       from user_movie_watchlist
-       where user_id = any($1::uuid[]) and status = 'watched' and watched_at is not null
-       group by user_id`,
-      [friendIds]
-    ),
-  ]);
+  // One lookup per friend of their single newest watch. With the (user_id, watched_at desc) indexes
+  // (migrations/feed_last_activity_indexes.sql) each max() is a one-row index probe; the old group-by
+  // read every episode of every friend (~7,000 rows for a friend who imported a history) just to
+  // find one date.
+  const { rows } = await pool.query(
+    `select f.id as user_id,
+            (select max(watched_at) from watched_episodes where user_id = f.id) as ep_at,
+            (select max(watched_at) from user_movie_watchlist
+               where user_id = f.id and status = 'watched' and watched_at is not null) as mv_at
+       from unnest($1::uuid[]) as f(id)`,
+    [friendIds]
+  );
 
   const lastActivityByUser = {};
-  for (const r of [...episodeRows.rows, ...movieRows.rows]) {
-    const prev = lastActivityByUser[r.user_id];
-    if (!prev || new Date(r.last_at) > new Date(prev)) lastActivityByUser[r.user_id] = r.last_at;
+  for (const r of rows) {
+    const times = [r.ep_at, r.mv_at].filter(Boolean).map((t) => new Date(t));
+    if (times.length) lastActivityByUser[r.user_id] = new Date(Math.max(...times)).toISOString();
   }
 
   return friends
