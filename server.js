@@ -414,6 +414,15 @@ app.get("/movies/:id/rotten-tomatoes", asyncHandler(async (req, res) => {
 
 // Scenera's own aggregate rating for a movie — public, no auth
 // needed, movie-side equivalent of /shows/:id/community-rating above.
+// Public emotion tally for a movie (counts per reaction across all users).
+app.get("/movies/:id/emotion-counts", asyncHandler(async (req, res) => {
+  const { rows } = await getPool().query(
+    `select umw.reaction, count(*)::int as count
+       from user_movie_watchlist umw join movies m on m.id = umw.movie_id
+      where m.tmdb_id = $1 and umw.reaction is not null group by umw.reaction`, [req.params.id]);
+  res.json(Object.fromEntries(rows.map((r) => [r.reaction, r.count])));
+}));
+
 app.get("/movies/:id/community-rating", asyncHandler(async (req, res) => {
   const rating = await getMovieCommunityRating(req.params.id);
   res.json(rating);
@@ -554,8 +563,9 @@ app.post("/movies/watchlist", requireAuth, asyncHandler(async (req, res) => {
 }));
 
 app.patch("/movies/watchlist/:movieId", requireAuth, asyncHandler(async (req, res) => {
-  const { status, rating, is_favorite, watched_at } = req.body;
+  const { status, rating, is_favorite, watched_at, reaction } = req.body;
   const updates = {};
+  if (reaction !== undefined) updates.reaction = reaction;
   if (status !== undefined) updates.status = status;
   if (rating !== undefined) updates.rating = rating;
   if (is_favorite !== undefined) updates.is_favorite = is_favorite;
