@@ -10,6 +10,20 @@ const { getShowDetails } = require("./tmdbMatcher");
 
 let initialized = false;
 
+
+// A long list of ids inside one .in() makes the request URL too long (past roughly 16 KB the
+// call fails with "fetch failed"), and the old code ignored that error, so a big enough batch
+// quietly meant nobody got notified. Always go through these helpers for id lists.
+async function selectInChunks(ids, buildQuery, size = 100) {
+  const out = [];
+  for (let i = 0; i < ids.length; i += size) {
+    const { data, error } = await buildQuery(ids.slice(i, i + size));
+    if (error) throw error;
+    if (data) out.push(...data);
+  }
+  return out;
+}
+
 function ensureInitialized() {
   if (initialized) return;
   const raw = process.env.FIREBASE_SERVICE_ACCOUNT;
@@ -38,7 +52,9 @@ async function pruneDeadTokens(supabase, tokens, result) {
       if (!r.success && r.error?.code === "messaging/registration-token-not-registered" && tokens[i]) dead.push(tokens[i]);
     });
     if (dead.length) {
-      await supabase.from("push_tokens").delete().in("token", dead);
+      for (let i = 0; i < dead.length; i += 20) {
+        await supabase.from("push_tokens").delete().in("token", dead.slice(i, i + 20)); // FCM tokens are ~160 chars each
+      }
       console.log(`Pruned ${dead.length} dead push token(s)`);
     }
     return dead.length;
@@ -86,11 +102,9 @@ async function sendDailyUpcomingNotifications(supabase) {
   // Filter out episodes the user already marked watched (import jobs
   // can occasionally pre-mark same-day episodes), then group by user.
   const episodeIds = rows.map((r) => r.id);
-  const { data: alreadyWatched } = await supabase
-    .from("watched_episodes")
-    .select("user_id, episode_id")
-    .in("episode_id", episodeIds);
-  const watchedSet = new Set((alreadyWatched || []).map((w) => `${w.user_id}:${w.episode_id}`));
+  const alreadyWatched = await selectInChunks(episodeIds, (g) =>
+    supabase.from("watched_episodes").select("user_id, episode_id").in("episode_id", g));
+  const watchedSet = new Set(alreadyWatched.map((w) => `${w.user_id}:${w.episode_id}`));
 
   const byUser = new Map(); // user_id -> Map(title -> poster_path)
   for (const row of rows) {
@@ -104,10 +118,11 @@ async function sendDailyUpcomingNotifications(supabase) {
   if (byUser.size === 0) return { notifiedUsers: 0, episodesConsidered: rows.length };
 
   const userIds = Array.from(byUser.keys());
-  const { data: tokenRows } = await supabase.from("push_tokens").select("user_id, token").in("user_id", userIds);
+  const tokenRows = await selectInChunks(userIds, (g) =>
+    supabase.from("push_tokens").select("user_id, token").in("user_id", g));
 
   const tokensByUser = new Map();
-  for (const t of tokenRows || []) {
+  for (const t of tokenRows) {
     if (!tokensByUser.has(t.user_id)) tokensByUser.set(t.user_id, []);
     tokensByUser.get(t.user_id).push(t.token);
   }
@@ -218,18 +233,21 @@ async function checkUpcomingPremieres(supabase) {
     // Only flip users who are STILL up_to_date at this exact moment —
     // avoids clobbering a status they may have changed manually
     // in between the query above and this update.
-    await supabase
-      .from("user_watchlist")
-      .update({ status: "watching", updated_at: new Date().toISOString() })
-      .in("user_id", userIds)
-      .eq("show_id", show.id)
-      .eq("status", "up_to_date");
+    for (let i = 0; i < userIds.length; i += 100) {
+      await supabase
+        .from("user_watchlist")
+        .update({ status: "watching", updated_at: new Date().toISOString() })
+        .in("user_id", userIds.slice(i, i + 100))
+        .eq("show_id", show.id)
+        .eq("status", "up_to_date");
+    }
 
     showsPromoted++;
 
-    const { data: tokenRows } = await supabase.from("push_tokens").select("user_id, token").in("user_id", userIds);
+    const tokenRows = await selectInChunks(userIds, (g) =>
+      supabase.from("push_tokens").select("user_id, token").in("user_id", g));
     const tokensByUser = new Map();
-    for (const t of tokenRows || []) {
+    for (const t of tokenRows) {
       if (!tokensByUser.has(t.user_id)) tokensByUser.set(t.user_id, []);
       tokensByUser.get(t.user_id).push(t.token);
     }
