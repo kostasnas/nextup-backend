@@ -14,39 +14,40 @@
 // (via the daily cron) keeps everyone's statuses honest going forward.
 
 const { getShowDetails } = require("./tmdbMatcher");
+const { getPool } = require("./db");
 
 async function reconcileWatchingStatuses(supabase) {
-  const { data: rows, error } = await supabase
-    .from("user_watchlist")
-    .select("user_id, show_id, shows(tmdb_id, title)")
-    .eq("status", "watching");
-  if (error) throw error;
-  if (!rows || rows.length === 0) return { checked: 0, updated: 0 };
-
+  const pool = getPool();
   const today = new Date().toISOString().slice(0, 10);
+
+  const { rows: [{ total }] } = await pool.query(
+    `select count(*)::int as total from user_watchlist where status = 'watching'`
+  );
+  if (!total) return { checked: 0, updated: 0 };
+
+  // One SQL query finds every (user, show) that is "watching" but has every
+  // aired episode already watched. The old version fetched each show's
+  // episode ids and sent them back in a huge .in(...) list through the REST
+  // API, which failed ("fetch failed") for long shows (Grey's Anatomy, Law &
+  // Order, The Simpsons, Naruto...) so those were never reconciled.
+  const { rows } = await pool.query(
+    `select w.user_id, w.show_id, s.tmdb_id, s.title
+       from user_watchlist w
+       join shows s on s.id = w.show_id
+      where w.status = 'watching'
+        and exists (select 1 from episodes e where e.show_id = w.show_id and e.air_date <= $1)
+        and not exists (
+          select 1 from episodes e
+           where e.show_id = w.show_id and e.air_date <= $1
+             and not exists (select 1 from watched_episodes we where we.user_id = w.user_id and we.episode_id = e.id)
+        )`,
+    [today]
+  );
+
   let updated = 0;
 
-  for (const row of rows) {
-    if (!row.shows) continue;
-
-    const { data: airedEpisodes, error: epErr } = await supabase
-      .from("episodes")
-      .select("id")
-      .eq("show_id", row.show_id)
-      .lte("air_date", today);
-    if (epErr) { console.error(`Episode lookup failed for ${row.shows.title}:`, epErr.message); continue; }
-
-    const airedIds = (airedEpisodes || []).map((e) => e.id);
-    if (airedIds.length === 0) continue; // nothing aired yet — leave as watching
-
-    const { count: watchedCount, error: watchedErr } = await supabase
-      .from("watched_episodes")
-      .select("id", { count: "exact", head: true })
-      .eq("user_id", row.user_id)
-      .in("episode_id", airedIds);
-    if (watchedErr) { console.error(`Watched-count lookup failed for ${row.shows.title}:`, watchedErr.message); continue; }
-
-    if (watchedCount < airedIds.length) continue; // genuinely still has something to watch
+  for (const r of rows) {
+    const row = { user_id: r.user_id, show_id: r.show_id, shows: { tmdb_id: r.tmdb_id, title: r.title } };
 
     // Fully caught up — figure out where it belongs by asking TMDB
     // whether the series itself has actually ended.
@@ -66,7 +67,7 @@ async function reconcileWatchingStatuses(supabase) {
     }
   }
 
-  return { checked: rows.length, updated };
+  return { checked: total, updated };
 }
 
 module.exports = { reconcileWatchingStatuses };
