@@ -49,7 +49,8 @@
     <label>Γλώσσα: <select id="lang"><option value="pt" selected>Português (Brasil)</option><option value="en">English</option><option value="tr">Türkçe</option></select></label>
     <label>Αγορά (ταινίες): <select id="market"><option value="auto" selected>Ίδια με τη γλώσσα</option><option value="eu">Ευρώπη</option><option value="us">ΗΠΑ</option><option value="br">Βραζιλία</option><option value="gb">Αγγλία</option><option value="pt">Πορτογαλία</option><option value="mx">Μεξικό</option><option value="tr">Τουρκία</option></select></label>
     <label>Ημέρες: <select id="days"><option>7</option><option selected>10</option><option>14</option><option>21</option><option>30</option></select></label>
-    <label>Ταξινόμηση: <select id="sort"><option value="popularity" selected>Δημοφιλία</option><option value="rating">Βαθμολογία</option><option value="date">Ημερομηνία</option></select></label>
+    <label>Ταξινόμηση: <select id="sort"><option value="popularity" selected>Δημοφιλία</option><option value="rating">Βαθμολογία</option><option value="votes">Ψήφοι</option><option value="date">Ημερομηνία</option></select></label>
+    <label>Ελάχιστες ψήφοι: <input id="minVotes" type="number" min="0" step="10" value="0" style="width:80px; font:inherit; border-radius:8px; border:1px solid var(--line); background:var(--panel); color:var(--text); padding:6px 8px;"></label>
     <button id="reload">Ανανέωση</button>
   </div>
   <div class="filters" id="kinds" style="margin-bottom:8px"></div>

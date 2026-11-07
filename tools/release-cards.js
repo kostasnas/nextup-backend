@@ -48,6 +48,9 @@
   document.getElementById("reload").addEventListener("click", function () { searchItems = null; qEl.value = ""; load(); });
   daysEl.addEventListener("change", load);
   document.getElementById("sort").addEventListener("change", function (e) { sortKey = e.target.value; if (data) render(); });
+  // Hide titles with fewer TMDB votes than this (a high rating on a handful of votes is not reliable).
+  var minVotes = 0;
+  document.getElementById("minVotes").addEventListener("input", function (e) { minVotes = Math.max(0, parseInt(e.target.value, 10) || 0); if (data) render(); });
 
   function load() {
     statusEl.textContent = "Φόρτωση…";
@@ -93,10 +96,11 @@
     grid.innerHTML = "";
     var searching = searchItems !== null;
     var items = (searching ? searchItems : data.items).filter(function (it) {
-      return searching || ((activeCategory === "all" || it.category === activeCategory) && (activeKind === "all" || it.kind === activeKind || (activeKind === "movie_world" && it.kind === "movie" && it.worldPremiere) || (activeKind === "today" && it.kind !== "streaming" && it.date === data.today) || (activeKind === "tomorrow" && it.kind !== "streaming" && data.today && it.date === nextDay(data.today))));
+      return searching || ((it.votes || 0) >= minVotes && (activeCategory === "all" || it.category === activeCategory) && (activeKind === "all" || it.kind === activeKind || (activeKind === "movie_world" && it.kind === "movie" && it.worldPremiere) || (activeKind === "today" && it.kind !== "streaming" && it.date === data.today) || (activeKind === "tomorrow" && it.kind !== "streaming" && data.today && it.date === nextDay(data.today))));
     });
     if (!searching) items.sort(function (a, b) {
       if (sortKey === "rating") return (b.rating || 0) - (a.rating || 0) || b.popularity - a.popularity;
+      if (sortKey === "votes") return (b.votes || 0) - (a.votes || 0) || b.popularity - a.popularity;
       if (sortKey === "date") return a.date.localeCompare(b.date) || b.popularity - a.popularity;
       return b.popularity - a.popularity;
     });
