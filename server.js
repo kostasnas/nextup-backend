@@ -19,6 +19,7 @@ const { reportImportIssue } = require("./importAlert");
 const { parseImdbRatingsExport } = require("./imdbParser");
 const { matchShows, searchShow, searchMovie, matchMovie, findByImdbId } = require("./tmdbMatcher");
 const { syncShowProgress, fetchAllEpisodes, cacheEpisodes, fetchShowMeta, fetchSeasonList } = require("./episodeSync");
+const { getOrCreateInviteCode, findInviterByCode } = require("./invites");
 const { sendFriendRequest, listFriends, acceptFriendRequest, declineFriendRequest, removeFriend, getFriendFavorites, getFriendWatching } = require("./friends");
 const { sendMessage, getMessages, deleteMessage, markDelivered } = require("./messages");
 const { getComments, getCommentCountsForShow, addComment, deleteComment, toggleCommentLike, getEpisodeContext, getMovieComments, addMovieComment, getMovieContext, getMovieCommentCount } = require("./episodeComments");
@@ -37,7 +38,7 @@ const { syncAllTraktUsers } = require("./traktSync");
 const { findUserByEmail, findUserByUsername, getSignupRank, getPioneerNumber, getStatsRows, getPool } = require("./db");
 const { buildOverview } = require("./statsOverview");
 const { getShowCommunityRating } = require("./showRatings");
-const { createNotification, listNotifications, getUnreadCount, markAllRead, markRead } = require("./notifications");
+const { createNotification, notifyEpisodeWatchersOfComment, notifyMovieWatchersOfComment, listNotifications, getUnreadCount, markAllRead, markRead } = require("./notifications");
 const { runSmokeTest: runCommsSmokeTest } = require("./commsuni");
 const { pollNotifications: pollCommsNotifications } = require("./commsFeed");
 const { mountComms } = require("./commsBoard");
@@ -817,6 +818,17 @@ app.post("/episodes/:id/comments", requireAuth, asyncHandler(async (req, res) =>
       .catch((e) => console.error("Failed to create comment-reply notification:", e.message));
   }
 
+  // A new top-level comment: tell people who already watched this episode (no comment text,
+  // to avoid spoilers; see notifications.js). Fire-and-forget, never blocks or fails the post.
+  if (!comment.parent_id) {
+    getEpisodeContext(req.params.id)
+      .then((ctx) => {
+        const where = ctx ? `${ctx.show_title} S${ctx.season_number}E${ctx.episode_number}` : "an episode";
+        return notifyEpisodeWatchersOfComment(req.params.id, req.userId, where);
+      })
+      .catch((e) => console.error("Failed to notify watchers of a new comment:", e.message));
+  }
+
   res.json(comment);
 }));
 
@@ -849,6 +861,13 @@ app.post("/movies/:tmdbId/comments", requireAuth, asyncHandler(async (req, res) 
         });
       })
       .catch((e) => console.error("Failed to create movie comment-reply notification:", e.message));
+  }
+
+  // A new top-level movie comment: tell people who marked the movie watched (no comment text).
+  if (!comment.parent_id) {
+    getMovieContext(req.params.tmdbId, title)
+      .then((ctx) => notifyMovieWatchersOfComment(req.params.tmdbId, req.userId, ctx?.title || "a movie"))
+      .catch((e) => console.error("Failed to notify watchers of a new movie comment:", e.message));
   }
 
   res.json(comment);
@@ -2771,6 +2790,25 @@ app.get("/shows/:tmdbId/full-progress", requireAuth, asyncHandler(async (req, re
     lastWatchedAt,
     showStatus,
   });
+}));
+
+// Invite a friend: my own short invite code (created on first use).
+app.get("/invite/code", requireAuth, asyncHandler(async (req, res) => {
+  res.json({ code: await getOrCreateInviteCode(req.userId) });
+}));
+
+// For a freshly signed-up person who came through an invite link: the inviter's name (never id/email).
+app.get("/invite/inviter", requireAuth, asyncHandler(async (req, res) => {
+  const inviter = await findInviterByCode(String(req.query.code || "").toLowerCase());
+  if (!inviter || inviter.id === req.userId) return res.json({ inviter: null });
+  res.json({ inviter: { name: inviter.name } });
+}));
+
+// The person tapped "Add as friend" on that prompt: sends a normal friend request to the inviter.
+app.post("/invite/accept", requireAuth, asyncHandler(async (req, res) => {
+  const inviter = await findInviterByCode(String(req.body?.code || "").toLowerCase());
+  if (!inviter) return res.json({ ok: true });
+  res.json(await sendFriendRequest(supabase, req.userId, { id: inviter.id }));
 }));
 
 app.post("/friends/request", requireAuth, asyncHandler(async (req, res) => {
