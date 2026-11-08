@@ -198,7 +198,7 @@ app.get("/", async (req, res) => {
   }
 });
 
-const { getWatchProviders, getShowWatchProviders, getMovieWatchProviders, getShowBackdrop, getShowPoster, getMovieDetails, getTopShows, getPersonalTopShows, peekPersonalTopShows, getTrending, getGenres, getPersonDetails } = require("./discover");
+const { getWatchProviders, getShowWatchProviders, getMovieWatchProviders, getShowBackdrop, getShowPoster, getMovieDetails, getTopShows, getPersonalTopShows, peekPersonalTopShows, getWatchProviderGroups, getTrending, getGenres, getPersonDetails } = require("./discover");
 const { getRottenTomatoesRating } = require("./rottenTomatoes");
 const { getMovieCommunityRating } = require("./movieRatings");
 const { getFriendsActivityFeed, getFriendsSummary } = require("./feed");
@@ -219,12 +219,14 @@ app.get("/discover/watch-providers", asyncHandler(async (req, res) => {
 // reasoning as above).
 app.get("/shows/:id/watch-providers", asyncHandler(async (req, res) => {
   const region = (req.query.region || "US").toUpperCase();
+  if (req.query.groups) return res.json(await getWatchProviderGroups("tv", req.params.id, region));
   const providers = await getShowWatchProviders(req.params.id, region);
   res.json(providers);
 }));
 
 app.get("/movies/:id/watch-providers", asyncHandler(async (req, res) => {
   const region = (req.query.region || "US").toUpperCase();
+  if (req.query.groups) return res.json(await getWatchProviderGroups("movie", req.params.id, region));
   const providers = await getMovieWatchProviders(req.params.id, region);
   res.json(providers);
 }));

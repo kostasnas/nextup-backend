@@ -82,6 +82,27 @@ async function getShowWatchProviders(showId, region = "US") {
   return providers;
 }
 
+// Every way to watch one title in a region, grouped: subscription ("flatrate"), free (free + ad-supported), rent, buy.
+// Used by the title pages so a film that is only on rent/buy (or still in cinemas) does not look like "nowhere to watch".
+// The flat lists above stay as they are (they feed the Explore badges and filters, which care about subscriptions only).
+async function getWatchProviderGroups(type, id, region = "US") {
+  const cacheKey = `providergroups:${type}:${id}:${region}`;
+  const cached = getCached(cacheKey);
+  if (cached) return cached;
+  const data = await tmdbGet(`/${type === "movie" ? "movie" : "tv"}/${id}/watch/providers`);
+  const r = data.results?.[region] || {};
+  const map = (list) => (list || []).map((p) => ({ id: p.provider_id, name: p.provider_name, logoPath: p.logo_path }));
+  const seen = new Set();
+  const dedupe = (list) => list.filter((p) => (seen.has(p.id) ? false : (seen.add(p.id), true)));
+  const flatrate = dedupe(map(r.flatrate));
+  const free = dedupe([...map(r.free), ...map(r.ads)]);
+  const rent = dedupe(map(r.rent));
+  const buy = dedupe(map(r.buy));
+  const groups = { flatrate, free, rent, buy };
+  setCached(cacheKey, groups);
+  return groups;
+}
+
 async function getMovieWatchProviders(movieId, region = "US") {
   const cacheKey = `movieproviders:${movieId}:${region}`;
   const cached = getCached(cacheKey);
@@ -309,4 +330,4 @@ async function getPersonDetails(personId) {
   return person;
 }
 
-module.exports = { getWatchProviders, getShowWatchProviders, getMovieWatchProviders, getShowBackdrop, getShowPoster, getMovieDetails, getTopShows, getPersonalTopShows, peekPersonalTopShows, getTrending, getGenres, getPersonDetails };
+module.exports = { getWatchProviders, getShowWatchProviders, getMovieWatchProviders, getShowBackdrop, getShowPoster, getMovieDetails, getTopShows, getPersonalTopShows, peekPersonalTopShows, getWatchProviderGroups, getTrending, getGenres, getPersonDetails };
