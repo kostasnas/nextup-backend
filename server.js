@@ -571,6 +571,7 @@ app.patch("/movies/watchlist/:movieId", requireAuth, asyncHandler(async (req, re
   if (rating !== undefined) updates.rating = rating;
   if (is_favorite !== undefined) updates.is_favorite = is_favorite;
   if (watched_at !== undefined) updates.watched_at = watched_at;
+  else if (status !== undefined && status !== "watched") updates.watched_at = null;
   const result = await updateMovieEntry(supabase, req.userId, req.params.movieId, updates);
   res.json(result);
 }));

@@ -60,6 +60,8 @@ async function setMovieStatus(supabase, userId, tmdbMovie, status, watchedAt = n
   // instead of every import landing on "today". Existing callers
   // that don't pass one keep the old behavior exactly.
   if (status === "watched") payload.watched_at = watchedAt || new Date().toISOString();
+  // Moving a movie back to planned/watching clears its watch date, so it does not keep looking watched.
+  else payload.watched_at = null;
 
   const { error } = await supabase
     .from("user_movie_watchlist")
