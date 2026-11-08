@@ -184,6 +184,12 @@ async function getTopShows({ region = "US", providerId = null } = {}) {
  * `rows`: [{ status, tmdbId }] for every show on the user's lists, newest first.
  */
 const FOR_YOU_TTL_MS = 30 * 60 * 1000; // short: the lists change as they track more
+// Already-computed list for this person, if any: lets the route answer without first reading their whole watchlist.
+function peekPersonalTopShows({ userId, region = "US", providerId = null }) {
+  const hit = cache.get(`foryou:${userId}:${region}:${providerId || "all"}`);
+  return hit && hit.expiresAt > Date.now() ? hit.data : null;
+}
+
 async function getPersonalTopShows({ userId, region = "US", providerId = null, rows = [] }) {
   const cacheKey = `foryou:${userId}:${region}:${providerId || "all"}`;
   const hit = cache.get(cacheKey);
@@ -303,4 +309,4 @@ async function getPersonDetails(personId) {
   return person;
 }
 
-module.exports = { getWatchProviders, getShowWatchProviders, getMovieWatchProviders, getShowBackdrop, getShowPoster, getMovieDetails, getTopShows, getPersonalTopShows, getTrending, getGenres, getPersonDetails };
+module.exports = { getWatchProviders, getShowWatchProviders, getMovieWatchProviders, getShowBackdrop, getShowPoster, getMovieDetails, getTopShows, getPersonalTopShows, peekPersonalTopShows, getTrending, getGenres, getPersonDetails };

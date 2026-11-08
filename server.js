@@ -198,7 +198,7 @@ app.get("/", async (req, res) => {
   }
 });
 
-const { getWatchProviders, getShowWatchProviders, getMovieWatchProviders, getShowBackdrop, getShowPoster, getMovieDetails, getTopShows, getPersonalTopShows, getTrending, getGenres, getPersonDetails } = require("./discover");
+const { getWatchProviders, getShowWatchProviders, getMovieWatchProviders, getShowBackdrop, getShowPoster, getMovieDetails, getTopShows, getPersonalTopShows, peekPersonalTopShows, getTrending, getGenres, getPersonDetails } = require("./discover");
 const { getRottenTomatoesRating } = require("./rottenTomatoes");
 const { getMovieCommunityRating } = require("./movieRatings");
 const { getFriendsActivityFeed, getFriendsSummary } = require("./feed");
@@ -979,6 +979,9 @@ app.get("/gifs/trending", requireAuth, asyncHandler(async (req, res) => {
 app.get("/discover/for-you", requireAuth, asyncHandler(async (req, res) => {
   const region = (req.query.region || "US").toUpperCase();
   const providerId = req.query.provider_id || null;
+  // Switching platforms back and forth asks for lists already computed: answer those straight away.
+  const ready = peekPersonalTopShows({ userId: req.userId, region, providerId });
+  if (ready) return res.json(ready);
   const { data, error } = await supabase
     .from("user_watchlist").select("status, shows(tmdb_id)")
     .eq("user_id", req.userId).order("created_at", { ascending: false }).limit(500);
