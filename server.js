@@ -1041,6 +1041,7 @@ async function processImport(userId, files) {
     `Movies: ${movies.length} found (best-effort — see importParser.js caveat).`
   );
 
+  await assertNoImportRunning(userId);
   const { data: job, error: jobError } = await supabase
     .from("import_jobs")
     .insert({ user_id: userId, source: "tvtime", status: "matching", total_records: stats.totalShows })
@@ -1172,6 +1173,7 @@ app.post("/import/tvtime-zip", requireAuth, uploadZip.single("export_zip"), asyn
 const { parseSceneraZip } = require("./sceneraParser");
 async function processSceneraImport(userId, buffer) {
   const { shows, movies, stats } = parseSceneraZip(buffer);
+  await assertNoImportRunning(userId);
   const { data: job, error: jobError } = await supabase
     .from("import_jobs")
     .insert({ user_id: userId, source: "scenera", status: "matching", total_records: stats.totalShows })
@@ -1386,6 +1388,7 @@ async function processBingersImport(userId, files) {
     `${movies.length} movies (${stats.watchedMovies} watched).`
   );
 
+  await assertNoImportRunning(userId);
   const { data: job, error: jobError } = await supabase
     .from("import_jobs")
     .insert({ user_id: userId, source: "bingers", status: "matching", total_records: stats.totalShows })
@@ -1501,6 +1504,7 @@ async function processMovieParadiseImport(userId, files) {
     `Comments: ${stats.importableComments}/${stats.totalComments} importable (not yet wired up — v1 scope).`
   );
 
+  await assertNoImportRunning(userId);
   const { data: job, error: jobError } = await supabase
     .from("import_jobs")
     .insert({ user_id: userId, source: "movie_paradise", status: "matching", total_records: stats.totalShows })
@@ -1621,6 +1625,7 @@ async function processSimklImport(userId, files) {
     `${movies.length} movies (${stats.watchedMovies} watched).`
   );
 
+  await assertNoImportRunning(userId);
   const { data: job, error: jobError } = await supabase
     .from("import_jobs")
     .insert({ user_id: userId, source: "simkl", status: "matching", total_records: stats.totalShows })
@@ -1730,6 +1735,7 @@ async function processSofaTimeImport(userId, files) {
     `${movies.length} movies (${stats.watchedMovies} watched).`
   );
 
+  await assertNoImportRunning(userId);
   const { data: job, error: jobError } = await supabase
     .from("import_jobs")
     .insert({ user_id: userId, source: "sofa_time", status: "matching", total_records: stats.totalShows })
@@ -1843,6 +1849,7 @@ async function processTraktImport(userId, files) {
     `${movies.length} movies (${stats.watchedMovies} watched).`
   );
 
+  await assertNoImportRunning(userId);
   const { data: job, error: jobError } = await supabase
     .from("import_jobs")
     .insert({ user_id: userId, source: "trakt", status: "matching", total_records: stats.totalShows })
@@ -1949,6 +1956,7 @@ const LETTERBOXD_FILES = ["diary.csv", "watched.csv", "watchlist.csv", "ratings.
 async function processLetterboxdImport(userId, files) {
   const { movies, stats } = parseLetterboxdExport(files);
 
+  await assertNoImportRunning(userId);
   const { data: job, error: jobError } = await supabase
     .from("import_jobs")
     .insert({ user_id: userId, source: "letterboxd", status: "matching", total_records: stats.totalMovies })
@@ -2037,6 +2045,7 @@ app.post("/import/letterboxd-zip", requireAuth, uploadZip.single("export_zip"), 
 async function processImdbImport(userId, fileContent) {
   const { shows, movies, stats } = parseImdbRatingsExport(fileContent);
 
+  await assertNoImportRunning(userId);
   const { data: job, error: jobError } = await supabase
     .from("import_jobs")
     .insert({ user_id: userId, source: "imdb", status: "matching", total_records: stats.totalShows + stats.totalMovies })
@@ -2131,6 +2140,27 @@ app.post("/import/imdb-csv", requireAuth, uploadCsv.single("ratings_csv"), async
   reportImportIssue(supabase, sendPushToUser, req.userId, "IMDb", result);
   res.json(result);
 }));
+
+// One import at a time per person: a second tap (or an automatic retry of the upload) while the
+// first is still being processed would run the same import twice. Jobs stuck in "matching" for
+// longer than this (e.g. the server restarted mid-import) no longer count, so nobody is locked out.
+const IMPORT_RUNNING_WINDOW_MS = 15 * 60 * 1000;
+async function assertNoImportRunning(userId) {
+  const since = new Date(Date.now() - IMPORT_RUNNING_WINDOW_MS).toISOString();
+  const { data, error } = await supabase
+    .from("import_jobs")
+    .select("id")
+    .eq("user_id", userId)
+    .eq("status", "matching")
+    .gt("created_at", since)
+    .limit(1);
+  if (error) return; // never block an import because of a failed check
+  if (data && data.length > 0) {
+    const e = new Error("An import is already running. Please wait for it to finish.");
+    e.status = 409;
+    throw e;
+  }
+}
 
 async function upsertShowProgress(userId, show, jobId, extras = {}) {
   const tmdbId = show.match.tmdbId;
