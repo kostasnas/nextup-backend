@@ -2242,6 +2242,30 @@ app.get("/import/pending", requireAuth, asyncHandler(async (req, res) => {
   res.json({ jobs: rows.map((r) => ({ jobId: r.job_id, remaining: r.remaining })) });
 }));
 
+// Progress of the FIRST import step (upload + matching), which the upload request itself only answers
+// once everything is done. The app asks this every few seconds while it waits: how many of the
+// show titles have been saved so far. doneShows is null for sources that only import movies (nothing
+// to count per job there), so the app just shows the elapsed wait for those.
+app.get("/import/active", requireAuth, asyncHandler(async (req, res) => {
+  const since = new Date(Date.now() - IMPORT_RUNNING_WINDOW_MS).toISOString();
+  const { data: job } = await supabase
+    .from("import_jobs")
+    .select("id, source, total_records, created_at")
+    .eq("user_id", req.userId)
+    .eq("status", "matching")
+    .gt("created_at", since)
+    .order("created_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  if (!job) return res.json({ active: false });
+  let doneShows = null;
+  if (job.source !== "letterboxd") {
+    const { rows } = await getPool().query("select count(*)::int as n from import_job_shows where import_job_id = $1", [job.id]);
+    doneShows = rows[0].n;
+  }
+  res.json({ active: true, jobId: job.id, source: job.source, total: job.total_records, doneShows, startedAt: job.created_at });
+}));
+
 app.get("/import/status/:jobId", requireAuth, asyncHandler(async (req, res) => {
   const job = await getOwnedJob(req.params.jobId, req.userId);
   res.json(job);
