@@ -6,6 +6,7 @@
 // Rule: alert when at least IMPORT_ALERT_MIN titles (shows + movies) did not match (default 5 — a
 // couple of misses is easy to add by hand), or when nothing matched at all. At most one alert per
 // person and source per hour, so repeated retries (e.g. five uploads in a row) don't flood.
+const { savePendingTitles } = require("./pendingTitles");
 const MIN_UNMATCHED = Math.max(1, parseInt(process.env.IMPORT_ALERT_MIN || "5", 10) || 5);
 const COOLDOWN_MS = 60 * 60 * 1000;
 const lastAlert = new Map(); // `${userId}:${source}` -> timestamp
@@ -38,6 +39,8 @@ async function saveUnmatchedMovies(supabase, jobId, list) {
 function reportImportIssue(supabase, sendPushToUser, userId, source, result) {
   try {
     saveUnmatchedMovies(supabase, result?.jobId, result?.unmatchedMovies).catch((e) => console.error("Saving unmatched movies failed:", e.message));
+    // Titles TMDB doesn't have yet are kept for the person and retried weekly (see pendingTitles.js).
+    savePendingTitles(supabase, userId, source, result).catch((e) => console.error("Saving pending titles failed:", e.message));
     const s = summarize(result);
     if (!shouldAlert(s)) return;
     const adminId = process.env.ADMIN_USER_ID || "47d65eeb-e49b-4854-a5e4-64b468541886";

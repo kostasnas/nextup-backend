@@ -1528,8 +1528,9 @@ async function processMovieParadiseImport(userId, files) {
   }
 
   let matchedCount = 0;
+  const unmatchedShowTitles = []; // shows left out for lack of a real TMDB id (retried later, see pendingTitles.js)
   for (const show of shows) {
-    if (!(show.match.tmdbId > 0)) continue; // still no real TMDB id: not imported (counted as unmatched)
+    if (!(show.match.tmdbId > 0)) { unmatchedShowTitles.push(show.title); continue; } // still no real TMDB id: not imported (counted as unmatched)
     matchedCount++;
     await upsertShowProgress(userId, show, job.id, {
       episodeLog: show.episodeLog && show.episodeLog.length > 0 ? show.episodeLog : null,
@@ -1584,6 +1585,7 @@ async function processMovieParadiseImport(userId, files) {
     movieMatchedCount,
     movieUnmatchedCount,
     unmatchedMovies,
+    unmatchedShowTitles,
     totalMovies: stats.totalMovies,
     commentsNote: stats.totalComments > 0
       ? `${stats.totalComments} comment(s) found in your export but not imported yet — comment/GIF import is still being built.`
@@ -2991,6 +2993,11 @@ require("./finishImports").mountFinishImports(app, {
   supabase, asyncHandler, syncShowProgress, forEachConcurrent,
   // sendPushToUser is required further down this file; looked up only when an alert is actually sent.
   sendAlert: (title, body) => sendPushToUser(supabase, process.env.ADMIN_USER_ID || "47d65eeb-e49b-4854-a5e4-64b468541886", { title, body: String(body).slice(0, 160) }),
+});
+// Titles an import could not find on TMDB are retried weekly and added to Planned (see pendingTitles.js).
+require("./pendingTitles").mountPendingTitles({
+  supabase, forEachConcurrent, searchMovie, searchShow,
+  sendPushToUser: (...args) => sendPushToUser(...args), // required further down this file
 });
 // Custom lists (needs migrations/user_lists.sql) + the public /l/:slug page.
 require("./lists").mountLists(app, { supabase, requireAuth, asyncHandler });
