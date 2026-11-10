@@ -167,6 +167,56 @@ function mountComms(app, { requireAuth, asyncHandler }) {
       return tvdbId ? `movie/tvdb-${tvdbId}` : null;
     });
   }));
+
+  // The movie page's "Comments (N)" button: everything on the shared board (all sources), not just ours.
+  // The total is the sum of the per-source counts; remembered for 5 minutes so opening movies does not spend our API quota.
+  const movieTotals = new Map();
+  app.get("/comms/movies/:tmdbId/comments/count", requireAuth, asyncHandler(async (req, res) => {
+    if (!/^\d{1,9}$/.test(req.params.tmdbId)) return res.status(400).json({ error: "invalid movie id" });
+    if (!isConfigured() || !process.env.COMMS_ACTOR_SECRET) return res.json({ count: null });
+    const tmdbId = Number(req.params.tmdbId);
+    const hit = movieTotals.get(tmdbId);
+    if (hit && Date.now() - hit.at < 5 * 60 * 1000) return res.json({ count: hit.count });
+    const tvdbId = await tvdbIdForMovie(tmdbId);
+    if (!tvdbId) return res.json({ count: null });
+    const r = await commsRequest(`/entities/movie/tvdb-${tvdbId}/comments?limit=1&include=source_counts`, { actorId: actorIdFor(req.userId) });
+    if (r.status === 404) return res.json({ count: 0 });
+    if (!r.ok) return res.json({ count: null });
+    const count = (r.data?.sourceCounts || []).reduce((n, x) => n + (Number(x.count) || 0), 0);
+    if (movieTotals.size > 2000) movieTotals.clear();
+    movieTotals.set(tmdbId, { at: Date.now(), count });
+    res.json({ count });
+  }));
+
+  // The comment pills on a season's episodes: everything on the shared board for each episode, not just ours.
+  // One upstream read per episode (a few at a time), each remembered for 10 minutes. Query: episodes=1,2,3...
+  const episodeTotals = new Map();
+  app.get("/comms/shows/:tmdbId/seasons/:season/comment-counts", requireAuth, asyncHandler(async (req, res) => {
+    if (!/^\d{1,9}$/.test(req.params.tmdbId) || !/^\d{1,3}$/.test(req.params.season)) return res.status(400).json({ error: "invalid show or season" });
+    if (!isConfigured() || !process.env.COMMS_ACTOR_SECRET) return res.json({ counts: {} });
+    const nums = [...new Set(String(req.query.episodes || "").split(",").filter((x) => /^\d{1,4}$/.test(x)).map(Number))].slice(0, 60);
+    if (nums.length === 0) return res.json({ counts: {} });
+    const tmdbId = Number(req.params.tmdbId);
+    const season = Number(req.params.season);
+    const tvdbId = await tvdbIdForShow(tmdbId);
+    if (!tvdbId) return res.json({ counts: {} });
+    const actorId = actorIdFor(req.userId);
+    const counts = {};
+    const one = async (n) => {
+      const key = `${tvdbId}-${season}-${n}`;
+      const hit = episodeTotals.get(key);
+      if (hit && Date.now() - hit.at < 10 * 60 * 1000) { counts[n] = hit.count; return; }
+      const r = await commsRequest(`/entities/episode/tvdb-${tvdbId}-s${season}e${n}/comments?limit=1&include=source_counts`, { actorId });
+      if (r.status !== 404 && !r.ok) return; // leave this one out; the app keeps what it has
+      const count = r.status === 404 ? 0 : (r.data?.sourceCounts || []).reduce((t, x) => t + (Number(x.count) || 0), 0);
+      if (episodeTotals.size > 5000) episodeTotals.clear();
+      episodeTotals.set(key, { at: Date.now(), count });
+      counts[n] = count;
+    };
+    for (let i = 0; i < nums.length; i += 4) await Promise.all(nums.slice(i, i + 4).map((n) => one(n).catch(() => {})));
+    res.set("Cache-Control", "private, no-store");
+    res.json({ counts });
+  }));
 }
 
 module.exports = { mountComms, tvdbIdForShow };
