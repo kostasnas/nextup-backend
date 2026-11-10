@@ -1508,8 +1508,24 @@ async function processMovieParadiseImport(userId, files) {
     .single();
   if (jobError) throw jobError;
 
+  // The export sometimes carries ids that were never TMDB ids (negative numbers for entries of its own).
+  // Such a row can never get episodes, so look the title up on TMDB instead; if there is no exact
+  // title match the show is left out rather than saved as a dead entry.
+  const normTitle = (t) => String(t || "").toLowerCase().replace(/[^\p{L}\p{N}]+/gu, " ").trim();
+  for (const show of shows) {
+    if (show.match.tmdbId > 0) continue;
+    try {
+      const results = await searchShow(show.title);
+      const hit = (results || []).find((r) => normTitle(r.name) === normTitle(show.title) || normTitle(r.original_name) === normTitle(show.title));
+      if (hit) show.match.tmdbId = hit.id;
+    } catch (e) {
+      console.error(`Movie Paradise import: title lookup failed for "${show.title}":`, e.message);
+    }
+  }
+
   let matchedCount = 0;
   for (const show of shows) {
+    if (!(show.match.tmdbId > 0)) continue; // still no real TMDB id: not imported (counted as unmatched)
     matchedCount++;
     await upsertShowProgress(userId, show, job.id, {
       episodeLog: show.episodeLog && show.episodeLog.length > 0 ? show.episodeLog : null,
