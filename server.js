@@ -2715,8 +2715,23 @@ app.get("/shows/:tmdbId/full-progress", requireAuth, asyncHandler(async (req, re
     Date.now() - new Date(showRow.episodes_synced_at).getTime() < EPISODE_SYNC_TTL_MS;
   const neverSynced = !showRow.episodes_synced_at;
 
-  let cached, showStatus;
+  // A show can be "never synced" yet already have its episode list: imports write the whole list
+  // (not only the watched ones). Serve that straight away and sync with TMDB in the background,
+  // instead of making the first open wait on TMDB (ticks stayed dimmed for several seconds).
+  let preloadedEpisodes = null;
   if (neverSynced) {
+    const { data: pre, error: preErr } = await supabase
+      .from("episodes")
+      .select("id, season_number, episode_number")
+      .eq("show_id", showRow.id)
+      .order("season_number", { ascending: true })
+      .order("episode_number", { ascending: true });
+    if (preErr) throw preErr;
+    if (pre && pre.length > 0) preloadedEpisodes = pre;
+  }
+
+  let cached, showStatus;
+  if (neverSynced && !preloadedEpisodes) {
     // Nothing cached at all yet for this show, for ANY user — there's
     // no stale-but-usable data to fall back on, so this one request
     // has to actually wait on TMDB. Every other view of this same show,
@@ -2738,17 +2753,21 @@ app.get("/shows/:tmdbId/full-progress", requireAuth, asyncHandler(async (req, re
     // been synced once. If it's due for a refresh (still-airing show
     // past the TTL), kick that off in the background: it updates the
     // cache for next time but never blocks this response.
-    const { data: existingEpisodes, error: epErr } = await supabase
-      .from("episodes")
-      .select("id, season_number, episode_number")
-      .eq("show_id", showRow.id)
-      .order("season_number", { ascending: true })
-      .order("episode_number", { ascending: true });
-    if (epErr) throw epErr;
+    let existingEpisodes = preloadedEpisodes;
+    if (!existingEpisodes) {
+      const { data, error: epErr } = await supabase
+        .from("episodes")
+        .select("id, season_number, episode_number")
+        .eq("show_id", showRow.id)
+        .order("season_number", { ascending: true })
+        .order("episode_number", { ascending: true });
+      if (epErr) throw epErr;
+      existingEpisodes = data;
+    }
     cached = existingEpisodes || [];
     showStatus = showRow.status;
 
-    if (!isFinished && !syncedRecently) {
+    if (neverSynced || (!isFinished && !syncedRecently)) {
       fetchAllEpisodes(tmdbId)
         .then(async (fetched) => {
           await cacheEpisodes(supabase, showRow.id, fetched.episodes);
