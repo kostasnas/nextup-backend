@@ -1026,6 +1026,10 @@ app.get("/discover/genres", asyncHandler(async (req, res) => {
   res.json(genres);
 }));
 
+// Fallback for phones that cannot reach api.themoviedb.org directly (see tmdbProxy.js).
+const { tmdbProxy } = require("./tmdbProxy");
+app.get("/tmdb/*", asyncHandler(tmdbProxy));
+
 app.get("/health-full", asyncHandler(async (req, res) => {
   const { error } = await supabase.from("shows").select("id").limit(1);
   if (error) throw error;
