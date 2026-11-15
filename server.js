@@ -1028,7 +1028,9 @@ app.get("/discover/genres", asyncHandler(async (req, res) => {
 
 // Fallback for phones that cannot reach api.themoviedb.org directly (see tmdbProxy.js).
 const { tmdbProxy } = require("./tmdbProxy");
+const { tvmazeCast } = require("./tvmazeCast");
 app.get("/tmdb/*", asyncHandler(tmdbProxy));
+app.get("/tvmaze/cast", asyncHandler(tvmazeCast));
 
 app.get("/health-full", asyncHandler(async (req, res) => {
   const { error } = await supabase.from("shows").select("id").limit(1);
