@@ -17,6 +17,7 @@
 // data.kind = 'achievement', data.key = the badge key; the app shows it in the person's language).
 // "Seen" badges are kept in auth metadata (badges_seen).
 const { getPool } = require("./db");
+const { resolveTimeZone } = require("./timezones");
 
 const BADGES_START = process.env.BADGES_START || "2026-10-21T00:00:00Z";
 
@@ -111,7 +112,12 @@ async function readMetrics(userId) {
   const pool = getPool();
   const withComms = await hasTable("comms_write_log");
   const one = async (sql, params = [userId]) => (await pool.query(sql, params)).rows[0] || {};
-  const [counts, friends, comments, imports, user, days, taste] = await Promise.all([
+  // The person's row first (a quick lookup by id): its time zone is needed by the days query below.
+  const user = await one(`select raw_user_meta_data->>'badge_shared_at' as shared_at, raw_user_meta_data->'badges_seen' as seen,
+                                 raw_user_meta_data->'acquisition'->>'tz' as tz_reported
+                            from auth.users where id = $1`);
+  const tz = await resolveTimeZone(user.tz_reported);
+  const [counts, friends, comments, imports, days, taste] = await Promise.all([
     one(`select (select count(*)::int from watched_episodes where user_id = $1) as episodes,
                 (select count(*)::int from watched_episodes where user_id = $1 and reaction is not null) as reactions,
                 (select count(*)::int from user_watchlist where user_id = $1) as shows_added,
@@ -121,14 +127,9 @@ async function readMetrics(userId) {
     one(`select (select count(*)::int from episode_comments where user_id = $1)
               ${withComms ? "+ (select count(*)::int from comms_write_log where user_id = $1 and kind in ('comment','reply'))" : ""} as n`),
     one("select count(*)::int as n from import_jobs where user_id = $1 and status = 'completed' and coalesce(matched_records, 0) > 0"),
-    one(`select raw_user_meta_data->>'badge_shared_at' as shared_at, raw_user_meta_data->'badges_seen' as seen,
-                coalesce((select name from pg_timezone_names where name = raw_user_meta_data->'acquisition'->>'tz' limit 1), 'UTC') as tz
-           from auth.users where id = $1`),
     // Days (the person's local days) with any activity since BADGES_START.
     pool.query(
-      `with u as (select coalesce((select name from pg_timezone_names where name = raw_user_meta_data->'acquisition'->>'tz' limit 1), 'UTC') as tz
-                    from auth.users where id = $1),
-            acts as (
+      `with acts as (
               select watched_at as ts from watched_episodes where user_id = $1
               union all select created_at from user_watchlist where user_id = $1
               union all select watched_at from user_movie_watchlist where user_id = $1 and watched_at is not null
@@ -136,9 +137,9 @@ async function readMetrics(userId) {
               union all select created_at from episode_comments where user_id = $1
               ${withComms ? "union all select created_at from comms_write_log where user_id = $1 and kind in ('comment','reply')" : ""}
             )
-       select distinct (a.ts at time zone u.tz)::date::text as d
-         from acts a, u where a.ts >= $2::timestamptz order by d`,
-      [userId, BADGES_START]
+       select distinct (a.ts at time zone $3::text)::date::text as d
+         from acts a where a.ts >= $2::timestamptz order by d`,
+      [userId, BADGES_START, tz]
     ),
     readTaste(userId),
   ]);

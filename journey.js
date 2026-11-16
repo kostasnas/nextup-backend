@@ -9,6 +9,7 @@
 // are the in-app notification for each badge (also what stops it being sent twice) and
 // user_metadata.season1_reward_at once the reward was granted.
 const { getPool } = require("./db");
+const { resolveTimeZone } = require("./timezones");
 
 const EPISODES = 5;
 const WINDOW_DAYS = 7;
@@ -33,10 +34,15 @@ async function hasTable(name) {
 // first WINDOW_DAYS days, plus the window itself.
 async function readActivity(userId) {
   const withComms = await hasTable("comms_write_log");
-  const { rows } = await getPool().query(
+  const pool = getPool();
+  // The time zone name is checked once per name and remembered (see timezones.js): looking it up in
+  // Postgres on every request was very slow.
+  const { rows: who } = await pool.query("select raw_user_meta_data->'acquisition'->>'tz' as tz from auth.users where id = $1", [userId]);
+  const tz = await resolveTimeZone(who[0]?.tz);
+  const { rows } = await pool.query(
     `with u as (
        select id, created_at,
-              coalesce((select name from pg_timezone_names where name = raw_user_meta_data->'acquisition'->>'tz' limit 1), 'UTC') as tz,
+              $3::text as tz,
               raw_user_meta_data->>'season1_reward_at' as reward_at
          from auth.users where id = $1
      ), s as (
@@ -57,7 +63,7 @@ async function readActivity(userId) {
                from (select (a.ts at time zone s.tz)::date::text as d from acts a where a.ts is not null) x
               where x.d between s.start_day::text and (s.start_day + ${WINDOW_DAYS - 1})::text) as days
        from s`,
-    [userId, SEASON_START]
+    [userId, SEASON_START, tz]
   );
   return rows[0] || null;
 }
