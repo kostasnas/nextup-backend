@@ -166,7 +166,7 @@ async function insertComment(supabase, target, userId, content, imageUrl, parent
 async function deleteComment(supabase, commentId, userId) {
   const { data: comment, error } = await supabase
     .from("episode_comments")
-    .select("user_id")
+    .select("user_id, episode_id, movie_tmdb_id")
     .eq("id", commentId)
     .single();
   if (error || !comment) {
@@ -182,6 +182,21 @@ async function deleteComment(supabase, commentId, userId) {
 
   const { error: deleteError } = await supabase.from("episode_comments").delete().eq("id", commentId);
   if (deleteError) throw deleteError;
+
+  // "New comment on ..." notifications must not point at an empty thread: when this was the last top-level
+  // comment of the episode / movie, remove the notifications that are still unread. Never fails the delete.
+  try {
+    const pool = getPool();
+    if (comment.episode_id) {
+      const { rows } = await pool.query("select 1 from episode_comments where episode_id = $1 and parent_id is null limit 1", [comment.episode_id]);
+      if (rows.length === 0) await pool.query("delete from notifications where type = 'comment_new' and read = false and data->>'episodeId' = $1", [String(comment.episode_id)]);
+    } else if (comment.movie_tmdb_id) {
+      const { rows } = await pool.query("select 1 from episode_comments where movie_tmdb_id = $1 and parent_id is null limit 1", [comment.movie_tmdb_id]);
+      if (rows.length === 0) await pool.query("delete from notifications where type = 'comment_new' and read = false and data->>'movieId' = $1", [String(comment.movie_tmdb_id)]);
+    }
+  } catch (e) {
+    console.error("Cleaning up comment notifications failed:", e.message);
+  }
 
   return { ok: true };
 }
