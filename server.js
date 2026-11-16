@@ -38,7 +38,7 @@ const { syncAllTraktUsers } = require("./traktSync");
 const { findUserByEmail, findUserByUsername, getSignupRank, getPioneerNumber, getStatsRows, getPool } = require("./db");
 const { buildOverview } = require("./statsOverview");
 const { getShowCommunityRating } = require("./showRatings");
-const { createNotification, notifyEpisodeWatchersOfComment, notifyMovieWatchersOfComment, listNotifications, getUnreadCount, markAllRead, markRead } = require("./notifications");
+const { createNotification, syncImportReviewNotification, notifyEpisodeWatchersOfComment, notifyMovieWatchersOfComment, listNotifications, getUnreadCount, markAllRead, markRead } = require("./notifications");
 const { runSmokeTest: runCommsSmokeTest } = require("./commsuni");
 const { pollNotifications: pollCommsNotifications } = require("./commsFeed");
 const { mountComms } = require("./commsBoard");
@@ -2388,6 +2388,7 @@ app.post("/import/unmatched/:rowId/dismiss", requireAuth, asyncHandler(async (re
   if (error || !row) return res.status(404).json({ error: "Unmatched row not found" });
   if (row.import_jobs.user_id !== req.userId) return res.status(403).json({ error: "Not your import job" });
   await supabase.from("import_unmatched").update({ resolved: true }).eq("id", req.params.rowId);
+  await syncImportReviewNotification(req.userId);
   res.json({ ok: true });
 }));
 
@@ -2410,6 +2411,7 @@ app.post("/import/unmatched/:rowId/resolve", requireAuth, asyncHandler(async (re
 
   await supabase.from("import_unmatched").update({ resolved_tmdb_id: tmdbId, resolved: true }).eq("id", req.params.rowId);
   await upsertShowProgress(req.userId, { title: row.raw_title, match: { tmdbId }, episodesSeenCount: 0, isArchived: false }, row.import_job_id, {});
+  await syncImportReviewNotification(req.userId);
   res.json({ ok: true });
 }));
 
@@ -2457,6 +2459,7 @@ app.post("/admin/import/:jobId/rematch", asyncHandler(async (req, res) => {
       status: remaining.length ? "needs_review" : "completed",
     }).eq("id", job.id);
   }
+  if (converted.length) await syncImportReviewNotification(job.user_id);
   res.json({ converted, remaining });
 }));
 

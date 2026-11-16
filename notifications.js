@@ -19,6 +19,47 @@ async function createNotification(supabase, userId, { type, title, body, data })
   if (error) throw error;
 }
 
+/**
+ * Keeps the "some imported titles need a check" line in step with reality. Counts every title of this person's
+ * imports that still waits (the same ones the review screen in Settings > Import lists). Nothing waiting: the
+ * line is removed, so it disappears by itself once the last title is added, skipped or found later by the weekly
+ * retry. Something waiting: one unread line carries the current count (a new one is written when the count
+ * changed or when it was already read). Inbox only, no push. Written in English; the app shows it in the
+ * person's language (see NotificationsScreen). Never throws: a notification must not break an import.
+ */
+async function syncImportReviewNotification(userId) {
+  if (!userId) return 0;
+  try {
+    const pool = getPool();
+    const { rows } = await pool.query(
+      `select count(*)::int as n
+         from import_unmatched u join import_jobs j on j.id = u.import_job_id
+        where j.user_id = $1 and u.resolved = false`,
+      [userId]
+    );
+    const n = rows[0]?.n || 0;
+    if (n === 0) {
+      await pool.query("delete from notifications where user_id = $1 and type = 'import_review'", [userId]);
+      return 0;
+    }
+    const cur = await pool.query(
+      "select id, read, (data->>'count')::int as count from notifications where user_id = $1 and type = 'import_review' order by id desc limit 1",
+      [userId]
+    );
+    const last = cur.rows[0];
+    if (last && last.count === n) return n; // same count: leave it (read or not) so it does not nag again
+    await pool.query("delete from notifications where user_id = $1 and type = 'import_review'", [userId]);
+    await pool.query(
+      "insert into notifications (user_id, type, title, body, data) values ($1, 'import_review', $2, $3, $4::jsonb)",
+      [userId, "Some imported titles need a check", `${n} titles need a quick check`, JSON.stringify({ kind: "import_review", count: n })]
+    );
+    return n;
+  } catch (e) {
+    console.error("syncImportReviewNotification failed:", e.message);
+    return 0;
+  }
+}
+
 // At most this many people get a "new comment" notification per comment, so one
 // comment on a very popular title can never write thousands of rows in one request.
 const NEW_COMMENT_MAX_RECIPIENTS = 200;
@@ -121,4 +162,4 @@ async function markRead(supabase, userId, notificationId) {
   return { ok: true };
 }
 
-module.exports = { createNotification, notifyEpisodeWatchersOfComment, notifyMovieWatchersOfComment, listNotifications, getUnreadCount, markAllRead, markRead };
+module.exports = { createNotification, syncImportReviewNotification, notifyEpisodeWatchersOfComment, notifyMovieWatchersOfComment, listNotifications, getUnreadCount, markAllRead, markRead };

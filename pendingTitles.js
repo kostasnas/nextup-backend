@@ -7,6 +7,7 @@
 // so a similar-sounding title never lands on someone's list by mistake; and a title the person already
 // has in their lists is never touched, only closed quietly.
 // Needs migrations/pending_titles.sql; until the table exists everything here just logs and skips.
+const { syncImportReviewNotification } = require("./notifications");
 const RETRY_AFTER_MS = 6 * 24 * 60 * 60 * 1000;
 const SWEEP_EVERY_MS = 24 * 60 * 60 * 1000;
 const BATCH = 100;
@@ -119,6 +120,15 @@ function mountPendingTitles({ supabase, sendPushToUser, searchMovie, searchShow,
             return;
           }
           await supabase.from("pending_titles").update({ last_attempt_at: now, attempts: (row.attempts || 0) + 1, resolved_at: now, resolved_note: found.added ? "added" : "already on list" }).eq("id", row.id);
+          // The title is on their list now, so it must also leave the import review screen and the "need a check" line.
+          try {
+            const { data: open } = await supabase.from("import_unmatched").select("id, raw_title, import_jobs!inner(user_id)").eq("import_jobs.user_id", row.user_id).eq("resolved", false).limit(1000);
+            const ids = (open || []).filter((u) => norm(u.raw_title) === norm(row.title)).map((u) => u.id);
+            if (ids.length) {
+              await supabase.from("import_unmatched").update({ resolved: true }).in("id", ids);
+              await syncImportReviewNotification(row.user_id);
+            }
+          } catch (e) { console.error("pending titles: closing review rows failed:", e.message); }
           if (found.added) {
             out.added++;
             Promise.resolve(sendPushToUser(supabase, row.user_id, {
