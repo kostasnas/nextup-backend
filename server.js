@@ -2363,6 +2363,34 @@ app.post("/import/:jobId/sync-episodes", requireAuth, asyncHandler(async (req, r
   });
 }));
 
+// Titles from this person's imports that still wait for a decision, so the review screen can be opened again later
+// (not only right after an import). Oldest 100 first.
+app.get("/import/unmatched-open", requireAuth, asyncHandler(async (req, res) => {
+  const { rows } = await getPool().query(
+    `select u.id, u.raw_title, u.candidate_tmdb_ids, u.import_job_id
+       from import_unmatched u
+       join import_jobs j on j.id = u.import_job_id
+      where j.user_id = $1 and u.resolved = false
+      order by j.created_at desc, u.id
+      limit 100`,
+    [req.userId]
+  );
+  res.json({ rows });
+}));
+
+// "Skip" in the review screen: the title stops being offered (nothing is added).
+app.post("/import/unmatched/:rowId/dismiss", requireAuth, asyncHandler(async (req, res) => {
+  const { data: row, error } = await supabase
+    .from("import_unmatched")
+    .select("id, import_jobs!inner(user_id)")
+    .eq("id", req.params.rowId)
+    .single();
+  if (error || !row) return res.status(404).json({ error: "Unmatched row not found" });
+  if (row.import_jobs.user_id !== req.userId) return res.status(403).json({ error: "Not your import job" });
+  await supabase.from("import_unmatched").update({ resolved: true }).eq("id", req.params.rowId);
+  res.json({ ok: true });
+}));
+
 app.get("/import/:jobId/unmatched", requireAuth, asyncHandler(async (req, res) => {
   await getOwnedJob(req.params.jobId, req.userId);
   const { data, error } = await supabase.from("import_unmatched").select("*").eq("import_job_id", req.params.jobId);
