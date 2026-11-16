@@ -49,8 +49,9 @@ function reportImportIssue(supabase, sendPushToUser, userId, source, result) {
     const now = Date.now();
     if (now - (lastAlert.get(key) || 0) < COOLDOWN_MS) return;
     lastAlert.set(key, now);
-    const body = `${source}: ${s.unmatched} of ${s.total} didn't match (${s.matched} did). User ${String(userId).slice(0, 8)}, job ${String(result?.jobId || "?").slice(0, 8)}`;
-    Promise.resolve(sendPushToUser(supabase, adminId, { title: "Import issue", body: body.slice(0, 160) }))
+    const head = `${source}: ${s.unmatched} of ${s.total} didn't match. User ${String(userId).slice(0, 8)}, job ${String(result?.jobId || "?").slice(0, 8)}`;
+    const sample = Array.isArray(result?.unmatchedTitleSample) && result.unmatchedTitleSample.length ? ` — ${result.unmatchedTitleSample.join("; ")}` : "";
+    Promise.resolve(sendPushToUser(supabase, adminId, { title: "Import issue", body: (head + sample).slice(0, 240) }))
       .catch((e) => console.error("Import alert push failed:", e.message));
   } catch (e) {
     console.error("Import alert failed:", e.message);

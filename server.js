@@ -17,7 +17,7 @@ const { parseTraktExport } = require("./traktParser");
 const { parseLetterboxdExport } = require("./letterboxdParser");
 const { reportImportIssue } = require("./importAlert");
 const { parseImdbRatingsExport } = require("./imdbParser");
-const { matchShows, searchShow, searchMovie, matchMovie, findByImdbId } = require("./tmdbMatcher");
+const { matchShows, searchShow, searchMovie, matchMovie, matchMovieStrict, findByImdbId } = require("./tmdbMatcher");
 const { syncShowProgress, fetchAllEpisodes, cacheEpisodes, fetchShowMeta, fetchSeasonList } = require("./episodeSync");
 const { getOrCreateInviteCode, findInviterByCode } = require("./invites");
 const { sendFriendRequest, listFriends, acceptFriendRequest, declineFriendRequest, removeFriend, getFriendFavorites, getFriendWatching } = require("./friends");
@@ -1059,6 +1059,7 @@ async function processImport(userId, files) {
 
   let matchedCount = 0;
   let unmatchedCount = 0;
+  const unmatchedShows = [];
 
   for (const show of matched) {
     if (show.match.status === "matched") {
@@ -1068,12 +1069,7 @@ async function processImport(userId, files) {
         emotionLog: emotionLogByShow[show.title] || null,
       });
     } else {
-      unmatchedCount++;
-      await supabase.from("import_unmatched").insert({
-        import_job_id: job.id,
-        raw_title: show.title,
-        candidate_tmdb_ids: show.match.candidates.map((c) => c.id),
-      });
+      unmatchedShows.push(show); // handled after the movies (it may be a film, see below)
     }
   }
 
@@ -1100,6 +1096,34 @@ async function processImport(userId, files) {
     }
   });
 
+  // TV Time keeps some films in the show list ("The Terminator", "A Silent Voice"...). A "show" TMDB has no
+  // show for is tried as a film (near-exact title only) and, if it is one, goes to the person's watched movies.
+  let convertedToMovies = 0;
+  const unmatchedShowTitles = [];
+  for (const show of unmatchedShows) {
+    try {
+      const film = await matchMovieStrict(show.title);
+      if (film) {
+        await setMovieStatus(supabase, userId, {
+          tmdb_id: film.id, title: film.title, poster_path: film.poster_path,
+          release_date: film.release_date || null, runtime: null, overview: film.overview || null,
+        }, "watched");
+        matchedCount++;
+        convertedToMovies++;
+        continue;
+      }
+    } catch (e) {
+      console.error(`Import: film fallback failed for "${show.title}":`, e.message);
+    }
+    unmatchedCount++;
+    unmatchedShowTitles.push(show.title);
+    await supabase.from("import_unmatched").insert({
+      import_job_id: job.id,
+      raw_title: show.title,
+      candidate_tmdb_ids: (show.match.candidates || []).map((c) => c.id),
+    });
+  }
+
   await supabase
     .from("import_jobs")
     .update({
@@ -1113,6 +1137,7 @@ async function processImport(userId, files) {
   return {
     jobId: job.id, matchedCount, unmatchedCount, totalShows: stats.totalShows, watchingCandidates, warning: stats.warning,
     movieMatchedCount, movieUnmatchedCount, totalMovies: stats.totalMovies, unmatchedMovies,
+    convertedToMovies, unmatchedTitleSample: unmatchedShowTitles.slice(0, 6),
   };
 }
 
@@ -2358,6 +2383,45 @@ app.post("/import/unmatched/:rowId/resolve", requireAuth, asyncHandler(async (re
   await supabase.from("import_unmatched").update({ resolved_tmdb_id: tmdbId, resolved: true }).eq("id", req.params.rowId);
   await upsertShowProgress(req.userId, { title: row.raw_title, match: { tmdbId }, episodesSeenCount: 0, isArchived: false }, row.import_job_id, {});
   res.json({ ok: true });
+}));
+
+// Admin: re-tries a finished import's leftover titles with the film fallback (shared-secret protected, same
+// pattern as the cron endpoints). Titles that are films go to that person's watched movies and the row is closed.
+app.post("/admin/import/:jobId/rematch", asyncHandler(async (req, res) => {
+  if (!process.env.CRON_SECRET || req.headers["x-cron-secret"] !== process.env.CRON_SECRET) {
+    return res.status(401).json({ error: "Unauthorized" });
+  }
+  const { data: job, error: jobErr } = await supabase.from("import_jobs").select("id, user_id, matched_records, unmatched_records").eq("id", req.params.jobId).single();
+  if (jobErr || !job) return res.status(404).json({ error: "Import job not found" });
+  const { data: rows, error: rowsErr } = await supabase.from("import_unmatched").select("id, raw_title").eq("import_job_id", job.id).eq("resolved", false);
+  if (rowsErr) throw rowsErr;
+  const converted = [];
+  const remaining = [];
+  for (const row of rows || []) {
+    try {
+      const film = await matchMovieStrict(row.raw_title);
+      if (film) {
+        await setMovieStatus(supabase, job.user_id, {
+          tmdb_id: film.id, title: film.title, poster_path: film.poster_path,
+          release_date: film.release_date || null, runtime: null, overview: film.overview || null,
+        }, "watched");
+        await supabase.from("import_unmatched").update({ resolved: true }).eq("id", row.id);
+        converted.push(`${row.raw_title} -> ${film.title} (${(film.release_date || "").slice(0, 4)})`);
+        continue;
+      }
+    } catch (e) {
+      console.error(`Rematch: "${row.raw_title}" failed:`, e.message);
+    }
+    remaining.push(row.raw_title);
+  }
+  if (converted.length) {
+    await supabase.from("import_jobs").update({
+      matched_records: (job.matched_records || 0) + converted.length,
+      unmatched_records: remaining.length,
+      status: remaining.length ? "needs_review" : "completed",
+    }).eq("id", job.id);
+  }
+  res.json({ converted, remaining });
 }));
 
 const aiChatRateLimiter = rateLimit({

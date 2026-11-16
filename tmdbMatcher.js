@@ -421,6 +421,22 @@ async function matchMovie(title, year) {
   return { status: "needs_review", candidates: scored.slice(0, 5) };
 }
 
+/**
+ * For a "show" that has no TMDB show: is it actually a film? (TV Time keeps some films, like
+ * "The Terminator" or "A Silent Voice", in the show list.) Strict on purpose: the title must match
+ * almost exactly, because a wrong film marked as watched is worse than one title left for review.
+ * Returns the TMDB movie or null.
+ */
+const MOVIE_FALLBACK_MIN_SCORE = 0.92;
+async function matchMovieStrict(title) {
+  const candidates = await searchMovie(title);
+  if (!candidates.length) return null;
+  const best = candidates
+    .map((c) => ({ ...c, score: Math.max(similarity(title, c.title || ""), c.original_title ? similarity(title, c.original_title) : 0) }))
+    .sort((a, b) => b.score - a.score)[0];
+  return best.score >= MOVIE_FALLBACK_MIN_SCORE ? best : null;
+}
+
 async function matchShows(tvTimeShows, { concurrency = 5 } = {}) {
   const results = [];
   for (let i = 0; i < tvTimeShows.length; i += concurrency) {
@@ -433,4 +449,4 @@ async function matchShows(tvTimeShows, { concurrency = 5 } = {}) {
   return results;
 }
 
-module.exports = { searchShow, searchMovie, getShowDetails, findShowByTvdbId, matchShow, matchShows, matchMovie, findByImdbId, similarity, normalizeTitle, alternativeTitleVariants, looseTitleVariants, cleanQuery };
+module.exports = { searchShow, searchMovie, getShowDetails, findShowByTvdbId, matchShow, matchShows, matchMovie, matchMovieStrict, findByImdbId, similarity, normalizeTitle, alternativeTitleVariants, looseTitleVariants, cleanQuery };
