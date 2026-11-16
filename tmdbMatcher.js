@@ -431,7 +431,12 @@ const MOVIE_FALLBACK_MIN_SCORE = 0.92;
 async function matchMovieStrict(title) {
   const candidates = await searchMovie(title);
   if (!candidates.length) return null;
-  const best = candidates
+  // Only released films: one with no release date, or a future one, can't have been watched (and is usually
+  // a placeholder entry that merely shares its name with a show).
+  const today = new Date().toISOString().slice(0, 10);
+  const released = candidates.filter((c) => c.release_date && c.release_date <= today);
+  if (!released.length) return null;
+  const best = released
     .map((c) => ({ ...c, score: Math.max(similarity(title, c.title || ""), c.original_title ? similarity(title, c.original_title) : 0) }))
     .sort((a, b) => b.score - a.score)[0];
   return best.score >= MOVIE_FALLBACK_MIN_SCORE ? best : null;
