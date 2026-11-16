@@ -17,7 +17,7 @@ const { parseTraktExport } = require("./traktParser");
 const { parseLetterboxdExport } = require("./letterboxdParser");
 const { reportImportIssue } = require("./importAlert");
 const { parseImdbRatingsExport } = require("./imdbParser");
-const { matchShows, searchShow, searchMovie, matchMovie, matchMovieStrict, findByImdbId } = require("./tmdbMatcher");
+const { matchShows, matchShow, searchShow, searchMovie, matchMovie, matchMovieStrict, findByImdbId } = require("./tmdbMatcher");
 const { syncShowProgress, fetchAllEpisodes, cacheEpisodes, fetchShowMeta, fetchSeasonList } = require("./episodeSync");
 const { getOrCreateInviteCode, findInviterByCode } = require("./invites");
 const { sendFriendRequest, listFriends, acceptFriendRequest, declineFriendRequest, removeFriend, getFriendFavorites, getFriendWatching } = require("./friends");
@@ -2399,6 +2399,14 @@ app.post("/admin/import/:jobId/rematch", asyncHandler(async (req, res) => {
   const remaining = [];
   for (const row of rows || []) {
     try {
+      // First as a show (the matcher has been improved since the import ran), then as a film.
+      const show = await matchShow(row.raw_title);
+      if (show.status === "matched") {
+        await upsertShowProgress(job.user_id, { title: row.raw_title, match: { tmdbId: show.tmdbId }, episodesSeenCount: 0, isArchived: false }, job.id, {});
+        await supabase.from("import_unmatched").update({ resolved: true, resolved_tmdb_id: show.tmdbId }).eq("id", row.id);
+        converted.push(`${row.raw_title} -> show ${show.tmdbId}`);
+        continue;
+      }
       const film = await matchMovieStrict(row.raw_title);
       if (film) {
         await setMovieStatus(supabase, job.user_id, {

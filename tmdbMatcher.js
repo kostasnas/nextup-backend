@@ -62,6 +62,19 @@ function cleanQuery(title) {
     .trim();
 }
 
+/**
+ * For titles with a typo ("Darling in the FrankXX" for "DARLING in the FRANXX"): TMDB's search finds nothing
+ * for a misspelt word, so also search without the last word(s). The candidates are still scored against the
+ * ORIGINAL title, so only a near-identical name can be accepted.
+ */
+function prefixTitleVariants(title) {
+  const words = cleanQuery(title).split(" ").filter(Boolean);
+  const out = [];
+  if (words.length >= 3) out.push(words.slice(0, -1).join(" "));
+  if (words.length >= 4) out.push(words.slice(0, -2).join(" "));
+  return out.filter((v) => v.length >= 6);
+}
+
 const LEADING_ARTICLE = /^(the|a|an|el|la|los|las|lo|o|os|as|um|uma|le|les|l'|der|die|das|il)\s+/i;
 
 /**
@@ -87,8 +100,16 @@ function looseTitleVariants(title) {
   const punctNoArticle = punct.replace(LEADING_ARTICLE, "").trim();
   if (punctNoArticle && punctNoArticle !== punct) variants.add(punctNoArticle);
 
+  // Romanised Japanese carries macrons ("Sajō", "Yūsha"): TMDB lists the same name as "Sajo" or "Sajou".
+  if (/[āēīōūĀĒĪŌŪ]/.test(base)) {
+    const plain = base.normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+    if (plain !== base) variants.add(plain);
+    const doubled = base.replace(/[ōŌ]/g, "ou").replace(/[ūŪ]/g, "uu").replace(/[āĀ]/g, "aa").replace(/[ēĒ]/g, "ee").replace(/[īĪ]/g, "ii");
+    if (doubled !== base && doubled !== plain) variants.add(doubled);
+  }
+
   variants.delete(title);
-  return Array.from(variants).filter((v) => v.length >= 3).slice(0, 3);
+  return Array.from(variants).filter((v) => v.length >= 3).slice(0, 5);
 }
 
 /**
@@ -247,6 +268,7 @@ async function getShowDetails(tmdbId) {
  */
 function normalizeTitle(str) {
   return str
+    .normalize("NFD").replace(/[\u0300-\u036f]/g, "") // "Sajō" compares as "Sajo", not "Saj"
     .toLowerCase()
     .replace(/\s*\([^)]*\)\s*$/, "") // strip any trailing parenthetical, not just years — "(US)", "(IL)", "(2018)" all need to go for fair comparison
     .replace(/[^\w\s]/g, "")
@@ -348,6 +370,18 @@ async function matchShow(tvTimeTitle, tvdbId = null) {
         ...variantCandidates.map((c) => ({ ...c, score: titleScore(variant, c) })),
       ]);
       if (scored[0]?.score >= CONFIDENCE_THRESHOLD) break; // good enough, stop trying more variants
+    }
+  }
+
+  // Still nothing confident: maybe a typo (the misspelt word made the search return nothing).
+  if (!scored.length || scored[0].score < CONFIDENCE_THRESHOLD) {
+    for (const variant of prefixTitleVariants(tvTimeTitle)) {
+      const variantCandidates = await searchShow(variant);
+      scored = dedupeByBestScore([
+        ...scored,
+        ...variantCandidates.map((c) => ({ ...c, score: titleScore(tvTimeTitle, c) })), // vs the ORIGINAL title
+      ]);
+      if (scored[0]?.score >= CONFIDENCE_THRESHOLD) break;
     }
   }
 
