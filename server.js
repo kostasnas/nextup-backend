@@ -2517,34 +2517,27 @@ async function isUserPro(userId) {
 app.get("/widget/next-up", requireAuth, asyncHandler(async (req, res) => {
   const today = new Date().toISOString().slice(0, 10);
 
-  // Watched status is embedded per-candidate-episode below (scoped to
-  // this user via .eq("watched_episodes.user_id", ...)) rather than
-  // fetched as one big watched_episodes list for the whole account.
-  // Supabase's API caps any single .select() at 1000 rows by default;
-  // a long-time user's full watched history easily exceeds that, and
-  // the truncated result silently made already-watched episodes look
-  // unwatched again (this is what caused the stale/wrong widget data
-  // bug — see "next up"/"ready to watch" reports from 2026-09-27).
-  const { data: rows, error } = await supabase
-    .from("episodes")
-    .select(`
-      id, air_date, show_id,
-      shows!inner(id, tmdb_id, title, poster_path,
-        user_watchlist!inner(user_id, status)
-      ),
-      watched_episodes(user_id)
-    `)
-    .gte("air_date", today)
-    .eq("shows.user_watchlist.user_id", req.userId)
-    .in("shows.user_watchlist.status", ["watching", "up_to_date"])
-    .eq("watched_episodes.user_id", req.userId)
-    .order("air_date", { ascending: true })
-    .limit(20); // small buffer since we still filter already-watched ones below
-  if (error) throw error;
-
+  // One direct query instead of the embedded Supabase select: that one joined every future episode of every
+  // show the person tracks and timed out ("canceling statement due to statement timeout", Sentry NODE-EXPRESS-9)
+  // for people with many shows. Here the database starts from this person's tracked shows, takes only
+  // episodes not yet watched by them (so nothing is capped at 1000 rows) and stops at the first one.
+  const { rows: nextRows } = await getPool().query(
+    `select e.id, e.air_date, e.show_id, s.tmdb_id, s.title, s.poster_path
+       from user_watchlist w
+       join episodes e on e.show_id = w.show_id
+       join shows s on s.id = w.show_id
+      where w.user_id = $1
+        and w.status in ('watching', 'up_to_date')
+        and e.air_date >= $2
+        and not exists (select 1 from watched_episodes we where we.episode_id = e.id and we.user_id = $1)
+      order by e.air_date asc
+      limit 1`,
+    [req.userId, today]
+  );
+  const row = nextRows[0];
+  if (!row) return res.json({ hasNext: false });
+  const next = { id: row.id, air_date: row.air_date instanceof Date ? row.air_date.toISOString().slice(0, 10) : row.air_date, show_id: row.show_id, shows: { tmdb_id: row.tmdb_id, title: row.title, poster_path: row.poster_path } };
   const isWatched = (r) => Array.isArray(r.watched_episodes) && r.watched_episodes.length > 0;
-  const next = (rows || []).find((r) => !isWatched(r));
-  if (!next) return res.json({ hasNext: false });
 
   // Progress-bar data for Widget 1: of this show's episodes that have
   // already aired, how many has the user watched. "currentEpisode" is
