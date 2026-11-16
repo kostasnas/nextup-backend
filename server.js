@@ -2367,27 +2367,46 @@ app.post("/import/:jobId/sync-episodes", requireAuth, asyncHandler(async (req, r
 // (not only right after an import). Oldest 100 first.
 app.get("/import/unmatched-open", requireAuth, asyncHandler(async (req, res) => {
   const { rows } = await getPool().query(
-    `select u.id, u.raw_title, u.candidate_tmdb_ids, u.import_job_id
-       from import_unmatched u
-       join import_jobs j on j.id = u.import_job_id
-      where j.user_id = $1 and u.resolved = false
-      order by j.created_at desc, u.id
-      limit 100`,
+    `select * from (
+       select distinct on (lower(u.raw_title)) u.id, u.raw_title, u.candidate_tmdb_ids, u.import_job_id
+         from import_unmatched u
+         join import_jobs j on j.id = u.import_job_id
+        where j.user_id = $1 and u.resolved = false
+        order by lower(u.raw_title), j.created_at desc, u.id
+     ) t
+     order by t.raw_title
+     limit 100`,
     [req.userId]
   );
   res.json({ rows });
 }));
 
+// The same title often sits in several of one person's imports (they imported more than once). Handling it once
+// closes all of them, so it is not offered again.
+async function closeSameTitleRows(userId, rawTitle, tmdbId) {
+  try {
+    await getPool().query(
+      `update import_unmatched u set resolved = true, resolved_tmdb_id = coalesce($3::int, u.resolved_tmdb_id)
+         from import_jobs j
+        where j.id = u.import_job_id and j.user_id = $1 and u.resolved = false and lower(u.raw_title) = lower($2)`,
+      [userId, rawTitle, tmdbId == null ? null : Number(tmdbId)]
+    );
+  } catch (e) {
+    console.error("closeSameTitleRows failed:", e.message);
+  }
+}
+
 // "Skip" in the review screen: the title stops being offered (nothing is added).
 app.post("/import/unmatched/:rowId/dismiss", requireAuth, asyncHandler(async (req, res) => {
   const { data: row, error } = await supabase
     .from("import_unmatched")
-    .select("id, import_jobs!inner(user_id)")
+    .select("id, raw_title, import_jobs!inner(user_id)")
     .eq("id", req.params.rowId)
     .single();
   if (error || !row) return res.status(404).json({ error: "Unmatched row not found" });
   if (row.import_jobs.user_id !== req.userId) return res.status(403).json({ error: "Not your import job" });
   await supabase.from("import_unmatched").update({ resolved: true }).eq("id", req.params.rowId);
+  await closeSameTitleRows(req.userId, row.raw_title, null);
   await syncImportReviewNotification(req.userId);
   res.json({ ok: true });
 }));
@@ -2411,6 +2430,7 @@ app.post("/import/unmatched/:rowId/resolve", requireAuth, asyncHandler(async (re
 
   await supabase.from("import_unmatched").update({ resolved_tmdb_id: tmdbId, resolved: true }).eq("id", req.params.rowId);
   await upsertShowProgress(req.userId, { title: row.raw_title, match: { tmdbId }, episodesSeenCount: 0, isArchived: false }, row.import_job_id, {});
+  await closeSameTitleRows(req.userId, row.raw_title, tmdbId);
   await syncImportReviewNotification(req.userId);
   res.json({ ok: true });
 }));

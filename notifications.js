@@ -32,7 +32,7 @@ async function syncImportReviewNotification(userId) {
   try {
     const pool = getPool();
     const { rows } = await pool.query(
-      `select count(*)::int as n
+      `select count(distinct lower(u.raw_title))::int as n
          from import_unmatched u join import_jobs j on j.id = u.import_job_id
         where j.user_id = $1 and u.resolved = false`,
       [userId]
