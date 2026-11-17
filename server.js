@@ -75,7 +75,7 @@ app.use(helmet());
 // "Failed to fetch" instead of the real error.
 app.use(cors({
   origin: (origin, callback) => {
-    if (!origin || ALLOWED_ORIGINS.includes(origin)) return callback(null, true);
+    if (!origin || ALLOWED_ORIGINS.includes(origin) || PREVIEW_ORIGIN.test(origin)) return callback(null, true);
     // Refuse quietly: the browser blocks the request anyway, and throwing here sent every crawler's visit to Sentry as an error.
     return callback(null, false);
   },
@@ -112,6 +112,9 @@ app.use(rateLimit({
 // origin — added once that build started making real browser fetches
 // here, which (unlike the Android WebView) are actually subject to
 // CORS enforcement.
+// Vercel branch previews of the web app (e.g. scenera-web-git-christmas-preview-...vercel.app).
+// Pinned to this team's slug, so only previews of our own project match.
+const PREVIEW_ORIGIN = /^https:\/\/scenera-web-git-[a-z0-9-]+-kostas-projects-76455284\.vercel\.app$/;
 const ALLOWED_ORIGINS = ["https://localhost", "http://localhost:5173", "null", "https://scenera-web.vercel.app", "https://scenera.online", "https://www.scenera.online"];
 
 app.use(express.json());
