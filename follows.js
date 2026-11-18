@@ -69,7 +69,7 @@ async function readVisibleUser(viewerId, targetId) {
 async function getPublicProfile(viewerId, targetId) {
   const u = await readVisibleUser(viewerId, targetId);
   const pool = getPool();
-  const [counts, fav, rel, friend] = await Promise.all([
+  const [counts, fav, rel, friend, grant] = await Promise.all([
     pool.query(
       `select (select count(*)::int from follows where followed_id = $1) as followers,
               (select count(*)::int from follows where follower_id = $1) as following`,
@@ -93,6 +93,7 @@ async function getPublicProfile(viewerId, targetId) {
         where (requester_id = $1 and recipient_id = $2) or (requester_id = $2 and recipient_id = $1) limit 1`,
       [viewerId, targetId]
     ),
+    pool.query("select 1 from follow_activity_grants where owner_id = $1 and follower_id = $2", [targetId, viewerId]),
   ]);
   const tier = pioneerTier(u.pioneer_number);
   const conn = friend.rows[0] || null;
@@ -111,6 +112,7 @@ async function getPublicProfile(viewerId, targetId) {
       following: rel.rows[0].following,
       followsYou: rel.rows[0].follows_you,
       friendStatus: conn ? conn.status : null, // "accepted" | "pending" | null
+      canSeeActivity: grant.rows.length > 0, // the person lets the viewer see their activity
     },
   };
 }
@@ -140,6 +142,7 @@ async function follow(supabase, viewerId, targetId) {
 
 async function unfollow(viewerId, targetId) {
   await getPool().query("delete from follows where follower_id = $1 and followed_id = $2", [viewerId, targetId]);
+  await getPool().query("delete from follow_activity_grants where owner_id = $2 and follower_id = $1", [viewerId, targetId]);
   return { ok: true, following: false };
 }
 
@@ -154,7 +157,8 @@ async function listFollows(viewerId, targetId, kind, offset) {
             u.raw_user_meta_data->>'avatar_url' as avatar_url,
             (u.raw_user_meta_data->>'public_profile') = 'true' as is_public,
             up.username,
-            exists(select 1 from follows v where v.follower_id = $2 and v.followed_id = u.id) as viewer_following
+            exists(select 1 from follows v where v.follower_id = $2 and v.followed_id = u.id) as viewer_following,
+            exists(select 1 from follow_activity_grants g where g.owner_id = $1 and g.follower_id = u.id) as shares_activity
        from follows f
        join auth.users u on u.id = f.${other}
        left join user_profiles up on up.user_id = u.id
@@ -176,6 +180,7 @@ async function listFollows(viewerId, targetId, kind, offset) {
       username: r.username || null,
       isPublic: !!r.is_public,
       viewerFollowing: r.viewer_following,
+      sharesActivity: mine && kind === "followers" ? r.shares_activity : undefined,
       isSelf: r.id === viewerId,
     })),
     hasMore: rows.length === LIST_LIMIT,
@@ -190,6 +195,10 @@ async function block(viewerId, targetId) {
   await pool.query("insert into user_blocks (blocker_id, blocked_id) values ($1, $2) on conflict do nothing", [viewerId, targetId]);
   await pool.query(
     "delete from follows where (follower_id = $1 and followed_id = $2) or (follower_id = $2 and followed_id = $1)",
+    [viewerId, targetId]
+  );
+  await pool.query(
+    "delete from follow_activity_grants where (owner_id = $1 and follower_id = $2) or (owner_id = $2 and follower_id = $1)",
     [viewerId, targetId]
   );
   return { ok: true, blocked: true };
@@ -217,6 +226,66 @@ async function report(viewerId, targetId, reason) {
   return { ok: true };
 }
 
+// The owner lets one of their followers see their activity (or takes it back).
+async function setActivityShare(ownerId, followerId, share) {
+  if (ownerId === followerId) throw httpError(400, "Not allowed");
+  const pool = getPool();
+  if (share) {
+    const f = await pool.query("select 1 from follows where follower_id = $1 and followed_id = $2", [followerId, ownerId]);
+    if (f.rows.length === 0) throw httpError(404, "Not a follower");
+    await pool.query("insert into follow_activity_grants (owner_id, follower_id) values ($1, $2) on conflict do nothing", [ownerId, followerId]);
+  } else {
+    await pool.query("delete from follow_activity_grants where owner_id = $1 and follower_id = $2", [ownerId, followerId]);
+  }
+  return { ok: true, sharing: !!share };
+}
+
+const LIVE_HOURS = 48;
+
+// What a follower sees of someone who allowed it: titles of their shows and movies, and the latest
+// episode or movie if it was watched in the last 48 hours. No ratings, counts, notes or comments.
+async function getActivity(viewerId, ownerId) {
+  if (viewerId !== ownerId) {
+    await readVisibleUser(viewerId, ownerId);
+    const g = await getPool().query("select 1 from follow_activity_grants where owner_id = $1 and follower_id = $2", [ownerId, viewerId]);
+    const f = await getPool().query("select 1 from follows where follower_id = $2 and followed_id = $1", [ownerId, viewerId]);
+    if (g.rows.length === 0 || f.rows.length === 0) throw httpError(403, "Activity is not shared");
+  }
+  const pool = getPool();
+  const [shows, movies, ep, mv] = await Promise.all([
+    pool.query(
+      `select s.tmdb_id, s.title, s.poster_path from user_watchlist w join shows s on s.id = w.show_id
+        where w.user_id = $1 and w.status in ('watching', 'completed') order by w.created_at desc nulls last limit 60`,
+      [ownerId]
+    ),
+    pool.query(
+      `select m.tmdb_id, m.title, m.poster_path from user_movie_watchlist w join movies m on m.id = w.movie_id
+        where w.user_id = $1 and w.status = 'watched' order by w.watched_at desc nulls last limit 60`,
+      [ownerId]
+    ),
+    pool.query(
+      `select we.watched_at, s.tmdb_id, s.title, s.poster_path, e.season_number, e.episode_number
+         from watched_episodes we join episodes e on e.id = we.episode_id join shows s on s.id = e.show_id
+        where we.user_id = $1 and we.watched_at > now() - interval '${LIVE_HOURS} hours' order by we.watched_at desc limit 1`,
+      [ownerId]
+    ),
+    pool.query(
+      `select w.watched_at, m.tmdb_id, m.title, m.poster_path from user_movie_watchlist w join movies m on m.id = w.movie_id
+        where w.user_id = $1 and w.status = 'watched' and w.watched_at > now() - interval '${LIVE_HOURS} hours' order by w.watched_at desc limit 1`,
+      [ownerId]
+    ),
+  ]);
+  const e = ep.rows[0], m = mv.rows[0];
+  let live = null;
+  if (e && (!m || new Date(e.watched_at) >= new Date(m.watched_at))) {
+    live = { kind: "episode", tmdbId: e.tmdb_id, title: e.title, posterPath: e.poster_path, season: e.season_number, episode: e.episode_number, at: e.watched_at };
+  } else if (m) {
+    live = { kind: "movie", tmdbId: m.tmdb_id, title: m.title, posterPath: m.poster_path, at: m.watched_at };
+  }
+  const map = (r) => ({ tmdbId: r.tmdb_id, title: r.title, posterPath: r.poster_path });
+  return { live, shows: shows.rows.map(map), movies: movies.rows.map(map) };
+}
+
 function mountFollows(app, { supabase, requireAuth, asyncHandler }) {
   const guard = (fn) =>
     asyncHandler(async (req, res) => {
@@ -234,6 +303,10 @@ function mountFollows(app, { supabase, requireAuth, asyncHandler }) {
   app.delete("/users/:id/follow", requireAuth, guard((req) => unfollow(req.userId, checkId(req.params.id))));
   app.get("/users/:id/followers", requireAuth, guard((req) => listFollows(req.userId, checkId(req.params.id), "followers", Math.max(0, parseInt(req.query.offset, 10) || 0))));
   app.get("/users/:id/following", requireAuth, guard((req) => listFollows(req.userId, checkId(req.params.id), "following", Math.max(0, parseInt(req.query.offset, 10) || 0))));
+  app.get("/users/:id/activity", requireAuth, guard((req) => getActivity(req.userId, checkId(req.params.id))));
+  // Owner (the signed-in person) lets follower :id see their activity (POST) or stops that (DELETE).
+  app.post("/users/:id/activity-share", requireAuth, guard((req) => setActivityShare(req.userId, checkId(req.params.id), true)));
+  app.delete("/users/:id/activity-share", requireAuth, guard((req) => setActivityShare(req.userId, checkId(req.params.id), false)));
   app.post("/users/:id/block", requireAuth, guard((req) => block(req.userId, checkId(req.params.id))));
   app.delete("/users/:id/block", requireAuth, guard((req) => unblock(req.userId, checkId(req.params.id))));
   app.post("/users/:id/report", requireAuth, guard((req) => report(req.userId, checkId(req.params.id), req.body?.reason)));
