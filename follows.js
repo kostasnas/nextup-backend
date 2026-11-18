@@ -4,7 +4,8 @@
 // Rules:
 //  - A profile is public only when the person turned on "Public profile" (auth metadata public_profile, off by
 //    default; needs a username). Only public profiles can be opened or followed by people who are not friends.
-//  - A public profile shows: name, @username, Pioneer ticket, follower/following counts and favourite shows.
+//  - A public profile shows: name, @username, Pioneer ticket and follower/following counts. Favourites and recent
+//    watches are only shared with followers the owner approved (see getActivity).
 //    Never: email, stats, journey, what they are watching, lists, chats.
 //  - Block works both ways: neither person can open, follow or list the other, and any follow between them is removed.
 //  - Turning the profile private keeps existing follows but hides the profile (and the lists of that person).
@@ -69,18 +70,10 @@ async function readVisibleUser(viewerId, targetId) {
 async function getPublicProfile(viewerId, targetId) {
   const u = await readVisibleUser(viewerId, targetId);
   const pool = getPool();
-  const [counts, fav, rel, friend, grant] = await Promise.all([
+  const [counts, rel, friend, grant] = await Promise.all([
     pool.query(
       `select (select count(*)::int from follows where followed_id = $1) as followers,
               (select count(*)::int from follows where follower_id = $1) as following`,
-      [targetId]
-    ),
-    pool.query(
-      `select s.tmdb_id, s.title, s.poster_path
-         from user_watchlist w join shows s on s.id = w.show_id
-        where w.user_id = $1 and w.is_favorite = true
-        order by w.created_at desc
-        limit 12`,
       [targetId]
     ),
     pool.query(
@@ -106,7 +99,6 @@ async function getPublicProfile(viewerId, targetId) {
     ticket: tier ? { number: u.pioneer_number, tier, joined: u.created_at } : null,
     followers: counts.rows[0].followers,
     following: counts.rows[0].following,
-    favorites: fav.rows.map((r) => ({ tmdbId: r.tmdb_id, title: r.title, posterPath: r.poster_path })),
     viewer: {
       isSelf: viewerId === targetId,
       following: rel.rows[0].following,
