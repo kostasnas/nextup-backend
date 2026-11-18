@@ -8,7 +8,7 @@
 //    Never: email, stats, journey, what they are watching, lists, chats.
 //  - Block works both ways: neither person can open, follow or list the other, and any follow between them is removed.
 //  - Turning the profile private keeps existing follows but hides the profile (and the lists of that person).
-const { getPool } = require("./db");
+const { getPool, findUserByUsername } = require("./db");
 const { sendPushToUser } = require("./pushNotifications");
 const { createNotification } = require("./notifications");
 const { pioneerTier } = require("./friendProfile");
@@ -286,6 +286,19 @@ async function getActivity(viewerId, ownerId) {
   return { live, shows: shows.rows.map(map), movies: movies.rows.map(map) };
 }
 
+// "Add follower" by @username. Like the friend lookup, the answer is always the same, so it never reveals
+// whether an account exists or has a public profile.
+async function followByUsername(supabase, viewerId, username) {
+  const clean = String(username || "").trim().replace(/^@/, "");
+  if (clean && /^[A-Za-z0-9._-]{1,40}$/.test(clean)) {
+    const target = await findUserByUsername(clean);
+    if (target && target.id !== viewerId) {
+      try { await follow(supabase, viewerId, target.id); } catch (e) { if (!e.status) throw e; }
+    }
+  }
+  return { ok: true };
+}
+
 function mountFollows(app, { supabase, requireAuth, asyncHandler }) {
   const guard = (fn) =>
     asyncHandler(async (req, res) => {
@@ -298,6 +311,7 @@ function mountFollows(app, { supabase, requireAuth, asyncHandler }) {
       }
     });
 
+  app.post("/follow/by-username", requireAuth, guard((req) => followByUsername(supabase, req.userId, req.body?.username)));
   app.get("/users/:id/profile", requireAuth, guard((req) => getPublicProfile(req.userId, checkId(req.params.id))));
   app.post("/users/:id/follow", requireAuth, guard((req) => follow(supabase, req.userId, checkId(req.params.id))));
   app.delete("/users/:id/follow", requireAuth, guard((req) => unfollow(req.userId, checkId(req.params.id))));
