@@ -3110,6 +3110,7 @@ mountComms(app, { requireAuth, asyncHandler });
 mountCommsWrite(app, { requireAuth, asyncHandler });
 require("./journey").mountJourney(app, { requireAuth, asyncHandler });
 require("./friendProfile").mountFriendProfile(app, { supabase, requireAuth, asyncHandler });
+require("./follows").mountFollows(app, { supabase, requireAuth, asyncHandler });
 require("./badges").mountBadges(app, { requireAuth, asyncHandler });
 // Locked to the developer account while TMDB's answer on image use is pending (see scenes.js).
 require("./scenes").mountScenes(app, { supabase, requireAuth, asyncHandler });

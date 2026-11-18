@@ -128,21 +128,37 @@ function mountFriendProfile(app, { supabase, requireAuth, asyncHandler }) {
   // The person's own privacy setting.
   app.get("/profile/privacy", requireAuth, asyncHandler(async (req, res) => {
     const { rows } = await getPool().query(
-      "select (raw_user_meta_data->>'hide_stats_from_friends') = 'true' as hide from auth.users where id = $1",
+      `select (u.raw_user_meta_data->>'hide_stats_from_friends') = 'true' as hide,
+              (u.raw_user_meta_data->>'public_profile') = 'true' as is_public,
+              up.username
+         from auth.users u left join user_profiles up on up.user_id = u.id
+        where u.id = $1`,
       [req.userId]
     );
-    res.json({ hideStats: !!rows[0]?.hide });
+    res.json({ hideStats: !!rows[0]?.hide, publicProfile: !!rows[0]?.is_public, hasUsername: !!rows[0]?.username });
   }));
 
+  // Either field can be sent on its own. A public profile needs a @username (that is how people find and recognise it).
   app.post("/profile/privacy", requireAuth, asyncHandler(async (req, res) => {
-    if (typeof req.body?.hideStats !== "boolean") return res.status(400).json({ error: "hideStats (true/false) is required" });
-    await getPool().query(
+    const { hideStats, publicProfile } = req.body || {};
+    if (hideStats !== undefined && typeof hideStats !== "boolean") return res.status(400).json({ error: "hideStats must be true/false" });
+    if (publicProfile !== undefined && typeof publicProfile !== "boolean") return res.status(400).json({ error: "publicProfile must be true/false" });
+    if (hideStats === undefined && publicProfile === undefined) return res.status(400).json({ error: "hideStats or publicProfile is required" });
+    const pool = getPool();
+    if (publicProfile === true) {
+      const { rows } = await pool.query("select 1 from user_profiles where user_id = $1 and username is not null and username <> ''", [req.userId]);
+      if (rows.length === 0) return res.status(400).json({ error: "Choose a username first", code: "username_required" });
+    }
+    const patch = {};
+    if (hideStats !== undefined) patch.hide_stats_from_friends = hideStats;
+    if (publicProfile !== undefined) patch.public_profile = publicProfile;
+    await pool.query(
       `update auth.users
-          set raw_user_meta_data = coalesce(raw_user_meta_data, '{}'::jsonb) || jsonb_build_object('hide_stats_from_friends', $2::boolean)
+          set raw_user_meta_data = coalesce(raw_user_meta_data, '{}'::jsonb) || $2::jsonb
         where id = $1`,
-      [req.userId, req.body.hideStats]
+      [req.userId, JSON.stringify(patch)]
     );
-    res.json({ ok: true, hideStats: req.body.hideStats });
+    res.json({ ok: true, ...(hideStats !== undefined && { hideStats }), ...(publicProfile !== undefined && { publicProfile }) });
   }));
 }
 

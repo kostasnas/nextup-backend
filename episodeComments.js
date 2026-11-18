@@ -23,6 +23,7 @@ async function queryComments(column, value, userId) {
   const { rows } = await getPool().query(
     `select ec.id, ec.content, ec.created_at, ec.user_id, ec.image_url, ec.parent_id,
             au.raw_user_meta_data->>'display_name' as display_name,
+            coalesce((au.raw_user_meta_data->>'public_profile') = 'true', false) as author_public,
             count(cl.id)::int as like_count,
             bool_or(cl.user_id = $2) as liked_by_me
      from episode_comments ec
