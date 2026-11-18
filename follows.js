@@ -239,4 +239,10 @@ function mountFollows(app, { supabase, requireAuth, asyncHandler }) {
   app.post("/users/:id/report", requireAuth, guard((req) => report(req.userId, checkId(req.params.id), req.body?.reason)));
 }
 
-module.exports = { mountFollows };
+// For the invite flow: can the invited person follow this inviter (public profile)?
+async function isPublicUser(userId) {
+  const u = await readUser(userId);
+  return !!u?.is_public;
+}
+
+module.exports = { mountFollows, follow, isPublicUser };

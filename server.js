@@ -3023,7 +3023,7 @@ app.get("/invite/code", requireAuth, asyncHandler(async (req, res) => {
 app.get("/invite/inviter", requireAuth, asyncHandler(async (req, res) => {
   const inviter = await findInviterByCode(String(req.query.code || "").toLowerCase());
   if (!inviter || inviter.id === req.userId) return res.json({ inviter: null });
-  res.json({ inviter: { name: inviter.name } });
+  res.json({ inviter: { name: inviter.name, canFollow: await require("./follows").isPublicUser(inviter.id) } });
 }));
 
 // The person tapped "Add as friend" on that prompt: sends a normal friend request to the inviter.
@@ -3031,6 +3031,18 @@ app.post("/invite/accept", requireAuth, asyncHandler(async (req, res) => {
   const inviter = await findInviterByCode(String(req.body?.code || "").toLowerCase());
   if (!inviter) return res.json({ ok: true });
   res.json(await sendFriendRequest(supabase, req.userId, { id: inviter.id }));
+}));
+
+// "Follow only" on that prompt: follows the inviter without a friend request (needs their profile to be public).
+app.post("/invite/follow", requireAuth, asyncHandler(async (req, res) => {
+  const inviter = await findInviterByCode(String(req.body?.code || "").toLowerCase());
+  if (!inviter || inviter.id === req.userId) return res.json({ ok: true });
+  try {
+    res.json(await require("./follows").follow(supabase, req.userId, inviter.id));
+  } catch (e) {
+    if (e.status) return res.status(e.status).json({ error: e.message });
+    throw e;
+  }
 }));
 
 app.post("/friends/request", requireAuth, asyncHandler(async (req, res) => {
