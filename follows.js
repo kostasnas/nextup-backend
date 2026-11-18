@@ -248,12 +248,12 @@ async function getActivity(viewerId, ownerId) {
   const [favShows, favMovies, recentShows, recentMovies] = await Promise.all([
     pool.query(
       `select s.tmdb_id, s.title, s.poster_path from user_watchlist w join shows s on s.id = w.show_id
-        where w.user_id = $1 and w.is_favorite = true order by w.created_at desc nulls last limit 60`,
+        where w.user_id = $1 and w.is_favorite = true order by 2 limit 60`,
       [ownerId]
     ),
     pool.query(
       `select m.tmdb_id, m.title, m.poster_path from user_movie_watchlist w join movies m on m.id = w.movie_id
-        where w.user_id = $1 and w.is_favorite = true order by w.created_at desc nulls last limit 60`,
+        where w.user_id = $1 and w.is_favorite = true order by 2 limit 60`,
       [ownerId]
     ),
     pool.query(
