@@ -242,8 +242,9 @@ async function setActivityShare(ownerId, followerId, share) {
 
 const LIVE_HOURS = 48;
 
-// What a follower sees of someone who allowed it: titles of their shows and movies, and the latest
-// episode or movie if it was watched in the last 48 hours. No ratings, counts, notes or comments.
+// What a follower sees of someone who allowed it: their favourite shows and movies, plus what they watched in
+// the last 48 hours (one row per show, latest episode; and movies). Nothing else from their lists: no ratings,
+// counts, notes or comments.
 async function getActivity(viewerId, ownerId) {
   if (viewerId !== ownerId) {
     await readVisibleUser(viewerId, ownerId);
@@ -252,38 +253,43 @@ async function getActivity(viewerId, ownerId) {
     if (g.rows.length === 0 || f.rows.length === 0) throw httpError(403, "Activity is not shared");
   }
   const pool = getPool();
-  const [shows, movies, ep, mv] = await Promise.all([
+  const [favShows, favMovies, recentShows, recentMovies] = await Promise.all([
     pool.query(
       `select s.tmdb_id, s.title, s.poster_path from user_watchlist w join shows s on s.id = w.show_id
-        where w.user_id = $1 and w.status in ('watching', 'completed') order by w.created_at desc nulls last limit 60`,
+        where w.user_id = $1 and w.is_favorite = true order by w.created_at desc nulls last limit 60`,
       [ownerId]
     ),
     pool.query(
       `select m.tmdb_id, m.title, m.poster_path from user_movie_watchlist w join movies m on m.id = w.movie_id
-        where w.user_id = $1 and w.status = 'watched' order by w.watched_at desc nulls last limit 60`,
+        where w.user_id = $1 and w.is_favorite = true order by w.created_at desc nulls last limit 60`,
       [ownerId]
     ),
     pool.query(
-      `select we.watched_at, s.tmdb_id, s.title, s.poster_path, e.season_number, e.episode_number
+      `select distinct on (s.id) we.watched_at, s.tmdb_id, s.title, s.poster_path, e.season_number, e.episode_number
          from watched_episodes we join episodes e on e.id = we.episode_id join shows s on s.id = e.show_id
-        where we.user_id = $1 and we.watched_at > now() - interval '${LIVE_HOURS} hours' order by we.watched_at desc limit 1`,
+        where we.user_id = $1 and we.watched_at > now() - interval '${LIVE_HOURS} hours'
+        order by s.id, we.watched_at desc`,
       [ownerId]
     ),
     pool.query(
       `select w.watched_at, m.tmdb_id, m.title, m.poster_path from user_movie_watchlist w join movies m on m.id = w.movie_id
-        where w.user_id = $1 and w.status = 'watched' and w.watched_at > now() - interval '${LIVE_HOURS} hours' order by w.watched_at desc limit 1`,
+        where w.user_id = $1 and w.status = 'watched' and w.watched_at > now() - interval '${LIVE_HOURS} hours'
+        order by w.watched_at desc limit 20`,
       [ownerId]
     ),
   ]);
-  const e = ep.rows[0], m = mv.rows[0];
-  let live = null;
-  if (e && (!m || new Date(e.watched_at) >= new Date(m.watched_at))) {
-    live = { kind: "episode", tmdbId: e.tmdb_id, title: e.title, posterPath: e.poster_path, season: e.season_number, episode: e.episode_number, at: e.watched_at };
-  } else if (m) {
-    live = { kind: "movie", tmdbId: m.tmdb_id, title: m.title, posterPath: m.poster_path, at: m.watched_at };
-  }
   const map = (r) => ({ tmdbId: r.tmdb_id, title: r.title, posterPath: r.poster_path });
-  return { live, shows: shows.rows.map(map), movies: movies.rows.map(map) };
+  const byTime = (a, b) => new Date(b.at) - new Date(a.at);
+  return {
+    shows: {
+      recent: recentShows.rows.map((r) => ({ ...map(r), season: r.season_number, episode: r.episode_number, at: r.watched_at })).sort(byTime),
+      favorites: favShows.rows.map(map),
+    },
+    movies: {
+      recent: recentMovies.rows.map((r) => ({ ...map(r), at: r.watched_at })).sort(byTime),
+      favorites: favMovies.rows.map(map),
+    },
+  };
 }
 
 // "Add follower" by @username. Like the friend lookup, the answer is always the same, so it never reveals
