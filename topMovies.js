@@ -2,7 +2,7 @@
 // "My Top 10": one ranked list of up to 10 movies per year (year 0 = all time), like Letterboxd.
 //
 //   GET    /top-movies          my lists, newest year first, "all time" last
-//   PUT    /top-movies/:year    replace one list { items: [{ tmdbId, title, posterPath, releaseYear }], isPublic }
+//   PUT    /top-movies/:year    replace one list { items: [{ tmdbId, title, posterPath, releaseYear }], isPublic, label }
 //   DELETE /top-movies/:year    remove one list
 //   GET    /users/:id/top-movies  someone else's lists: only the ones they switched on for followers, and only
 //                                 for people who follow them (public profile, nobody blocked)
@@ -23,15 +23,17 @@ const cleanPoster = (p) => (typeof p === "string" && /^\/[A-Za-z0-9._-]{3,80}$/.
 
 function parseYear(v) {
   const y = parseInt(v, 10);
-  if (!Number.isInteger(y) || !(y === 0 || (y >= 1900 && y <= 2100))) throw httpError(400, "Invalid year");
+  if (!Number.isInteger(y) || !(y === 0 || (y >= 1900 && y <= 2100) || (y >= 190001 && y <= 210099))) throw httpError(400, "Invalid year");
   return y;
 }
+
+const sortVal = (key) => (key >= 10000 ? Math.floor(key / 100) : key);
 
 async function loadLists(userId, onlyPublic) {
   const pool = getPool();
   const [lists, items] = await Promise.all([
     pool.query(
-      `select year, is_public, updated_at from user_top_movie_lists where user_id = $1 ${onlyPublic ? "and is_public = true" : ""}`,
+      `select year, label, is_public, updated_at from user_top_movie_lists where user_id = $1 ${onlyPublic ? "and is_public = true" : ""}`,
       [userId]
     ),
     pool.query(
@@ -40,7 +42,7 @@ async function loadLists(userId, onlyPublic) {
     ),
   ]);
   const byYear = new Map();
-  for (const r of lists.rows) byYear.set(r.year, { year: r.year, isPublic: !!r.is_public, updatedAt: r.updated_at, items: [] });
+  for (const r of lists.rows) byYear.set(r.year, { year: r.year, label: r.label || null, isPublic: !!r.is_public, updatedAt: r.updated_at, items: [] });
   for (const r of items.rows) {
     const l = byYear.get(r.year);
     if (l) l.items.push({ tmdbId: r.tmdb_id, title: r.title, posterPath: r.poster_path, releaseYear: r.release_year });
@@ -48,7 +50,7 @@ async function loadLists(userId, onlyPublic) {
   // Newest year first, "all time" (0) last. Empty lists are kept for the owner and hidden from followers.
   return [...byYear.values()]
     .filter((l) => !onlyPublic || l.items.length > 0)
-    .sort((a, b) => (a.year === 0 ? 1 : b.year === 0 ? -1 : b.year - a.year));
+    .sort((a, b) => (a.year === 0 ? 1 : b.year === 0 ? -1 : sortVal(b.year) - sortVal(a.year) || b.year - a.year));
 }
 
 function mountTopMovies(app, { requireAuth, asyncHandler }) {
@@ -81,13 +83,14 @@ function mountTopMovies(app, { requireAuth, asyncHandler }) {
     }
     if (items.length > MAX_ITEMS) throw httpError(400, `A Top ${MAX_ITEMS} holds up to ${MAX_ITEMS} movies`);
     const isPublic = req.body?.isPublic === true;
+    const label = year !== 0 && typeof req.body?.label === "string" ? cleanTitle(req.body.label).slice(0, 12) || null : null;
     const client = await getPool().connect();
     try {
       await client.query("begin");
       await client.query(
-        `insert into user_top_movie_lists (user_id, year, is_public) values ($1, $2, $3)
-           on conflict (user_id, year) do update set is_public = excluded.is_public, updated_at = now()`,
-        [req.userId, year, isPublic]
+        `insert into user_top_movie_lists (user_id, year, is_public, label) values ($1, $2, $3, $4)
+           on conflict (user_id, year) do update set is_public = excluded.is_public, label = excluded.label, updated_at = now()`,
+        [req.userId, year, isPublic, label]
       );
       await client.query("delete from user_top_movies where user_id = $1 and year = $2", [req.userId, year]);
       for (let i = 0; i < items.length; i++) {
