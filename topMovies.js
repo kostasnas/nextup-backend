@@ -1,6 +1,7 @@
 // topMovies.js
 // "My Top 10": one ranked list of up to 10 movies per year (year 0 = all time), like Letterboxd.
 //
+//   (the same routes exist for series under /top-shows, tables user_top_show_*)
 //   GET    /top-movies          my lists, newest year first, "all time" last
 //   PUT    /top-movies/:year    replace one list { items: [{ tmdbId, title, posterPath, releaseYear }], isPublic, label }
 //   DELETE /top-movies/:year    remove one list
@@ -11,6 +12,12 @@
 const { getPool } = require("./db");
 
 const MAX_ITEMS = 10;
+
+// Movies and series use identical tables apart from their names.
+const KINDS = {
+  movies: { lists: "user_top_movie_lists", items: "user_top_movies", path: "top-movies" },
+  shows: { lists: "user_top_show_lists", items: "user_top_shows", path: "top-shows" },
+};
 
 function httpError(status, message) {
   const e = new Error(message);
@@ -29,15 +36,15 @@ function parseYear(v) {
 
 const sortVal = (key) => (key >= 10000 ? Math.floor(key / 100) : key);
 
-async function loadLists(userId, onlyPublic) {
+async function loadLists(K, userId, onlyPublic) {
   const pool = getPool();
   const [lists, items] = await Promise.all([
     pool.query(
-      `select year, label, is_public, updated_at from user_top_movie_lists where user_id = $1 ${onlyPublic ? "and is_public = true" : ""}`,
+      `select year, label, is_public, updated_at from ${K.lists} where user_id = $1 ${onlyPublic ? "and is_public = true" : ""}`,
       [userId]
     ),
     pool.query(
-      "select year, position, tmdb_id, title, poster_path, release_year from user_top_movies where user_id = $1 order by year, position",
+      `select year, position, tmdb_id, title, poster_path, release_year from ${K.items} where user_id = $1 order by year, position`,
       [userId]
     ),
   ]);
@@ -66,67 +73,69 @@ function mountTopMovies(app, { requireAuth, asyncHandler }) {
       }
     });
 
-  app.get("/top-movies", requireAuth, guard(async (req) => ({ lists: await loadLists(req.userId, false) })));
+  for (const K of Object.values(KINDS)) {
+    app.get(`/${K.path}`, requireAuth, guard(async (req) => ({ lists: await loadLists(K, req.userId, false) })));
 
-  app.put("/top-movies/:year", requireAuth, guard(async (req) => {
-    const year = parseYear(req.params.year);
-    const raw = Array.isArray(req.body?.items) ? req.body.items : [];
-    const seen = new Set();
-    const items = [];
-    for (const it of raw) {
-      const tmdbId = parseInt(it?.tmdbId, 10);
-      const title = cleanTitle(it?.title);
-      if (!Number.isInteger(tmdbId) || tmdbId <= 0 || !title || seen.has(tmdbId)) continue;
-      seen.add(tmdbId);
-      const ry = parseInt(it?.releaseYear, 10);
-      items.push({ tmdbId, title, posterPath: cleanPoster(it?.posterPath), releaseYear: Number.isInteger(ry) && ry > 1800 && ry < 2200 ? ry : null });
-    }
-    if (items.length > MAX_ITEMS) throw httpError(400, `A Top ${MAX_ITEMS} holds up to ${MAX_ITEMS} movies`);
-    const isPublic = req.body?.isPublic === true;
-    const label = year !== 0 && typeof req.body?.label === "string" ? cleanTitle(req.body.label).slice(0, 12) || null : null;
-    const client = await getPool().connect();
-    try {
-      await client.query("begin");
-      await client.query(
-        `insert into user_top_movie_lists (user_id, year, is_public, label) values ($1, $2, $3, $4)
-           on conflict (user_id, year) do update set is_public = excluded.is_public, label = excluded.label, updated_at = now()`,
-        [req.userId, year, isPublic, label]
-      );
-      await client.query("delete from user_top_movies where user_id = $1 and year = $2", [req.userId, year]);
-      for (let i = 0; i < items.length; i++) {
-        const it = items[i];
-        await client.query(
-          "insert into user_top_movies (user_id, year, position, tmdb_id, title, poster_path, release_year) values ($1, $2, $3, $4, $5, $6, $7)",
-          [req.userId, year, i + 1, it.tmdbId, it.title, it.posterPath, it.releaseYear]
-        );
+    app.put(`/${K.path}/:year`, requireAuth, guard(async (req) => {
+      const year = parseYear(req.params.year);
+      const raw = Array.isArray(req.body?.items) ? req.body.items : [];
+      const seen = new Set();
+      const items = [];
+      for (const it of raw) {
+        const tmdbId = parseInt(it?.tmdbId, 10);
+        const title = cleanTitle(it?.title);
+        if (!Number.isInteger(tmdbId) || tmdbId <= 0 || !title || seen.has(tmdbId)) continue;
+        seen.add(tmdbId);
+        const ry = parseInt(it?.releaseYear, 10);
+        items.push({ tmdbId, title, posterPath: cleanPoster(it?.posterPath), releaseYear: Number.isInteger(ry) && ry > 1800 && ry < 2200 ? ry : null });
       }
-      await client.query("commit");
-    } catch (e) {
-      await client.query("rollback").catch(() => {});
-      throw e;
-    } finally {
-      client.release();
-    }
-    return { ok: true };
-  }));
+      if (items.length > MAX_ITEMS) throw httpError(400, `A Top ${MAX_ITEMS} holds up to ${MAX_ITEMS} movies`);
+      const isPublic = req.body?.isPublic === true;
+      const label = year !== 0 && typeof req.body?.label === "string" ? cleanTitle(req.body.label).slice(0, 12) || null : null;
+      const client = await getPool().connect();
+      try {
+        await client.query("begin");
+        await client.query(
+          `insert into ${K.lists} (user_id, year, is_public, label) values ($1, $2, $3, $4)
+             on conflict (user_id, year) do update set is_public = excluded.is_public, label = excluded.label, updated_at = now()`,
+          [req.userId, year, isPublic, label]
+        );
+        await client.query(`delete from ${K.items} where user_id = $1 and year = $2`, [req.userId, year]);
+        for (let i = 0; i < items.length; i++) {
+          const it = items[i];
+          await client.query(
+            `insert into ${K.items} (user_id, year, position, tmdb_id, title, poster_path, release_year) values ($1, $2, $3, $4, $5, $6, $7)`,
+            [req.userId, year, i + 1, it.tmdbId, it.title, it.posterPath, it.releaseYear]
+          );
+        }
+        await client.query("commit");
+      } catch (e) {
+        await client.query("rollback").catch(() => {});
+        throw e;
+      } finally {
+        client.release();
+      }
+      return { ok: true };
+    }));
 
-  app.delete("/top-movies/:year", requireAuth, guard(async (req) => {
-    const year = parseYear(req.params.year);
-    await getPool().query("delete from user_top_movie_lists where user_id = $1 and year = $2", [req.userId, year]);
-    return { ok: true };
-  }));
+    app.delete(`/${K.path}/:year`, requireAuth, guard(async (req) => {
+      const year = parseYear(req.params.year);
+      await getPool().query(`delete from ${K.lists} where user_id = $1 and year = $2`, [req.userId, year]);
+      return { ok: true };
+    }));
 
-  // Someone else's Top 10: only for their followers, only the lists they switched on.
-  app.get("/users/:id/top-movies", requireAuth, guard(async (req) => {
-    const ownerId = String(req.params.id || "").toLowerCase();
-    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(ownerId)) throw httpError(404, "Profile not found");
-    if (ownerId === req.userId) return { lists: await loadLists(ownerId, false) };
-    const { readVisibleUser } = require("./follows");
-    await readVisibleUser(req.userId, ownerId); // 404 when the profile is private or blocked
-    const f = await getPool().query("select 1 from follows where follower_id = $1 and followed_id = $2", [req.userId, ownerId]);
-    if (f.rows.length === 0) return { lists: [] };
-    return { lists: await loadLists(ownerId, true) };
-  }));
+    // Someone else's Top 10: only for their followers, only the lists they switched on.
+    app.get(`/users/:id/${K.path}`, requireAuth, guard(async (req) => {
+      const ownerId = String(req.params.id || "").toLowerCase();
+      if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(ownerId)) throw httpError(404, "Profile not found");
+      if (ownerId === req.userId) return { lists: await loadLists(K, ownerId, false) };
+      const { readVisibleUser } = require("./follows");
+      await readVisibleUser(req.userId, ownerId); // 404 when the profile is private or blocked
+      const f = await getPool().query("select 1 from follows where follower_id = $1 and followed_id = $2", [req.userId, ownerId]);
+      if (f.rows.length === 0) return { lists: [] };
+      return { lists: await loadLists(K, ownerId, true) };
+    }));
+  }
 }
 
 module.exports = { mountTopMovies };
