@@ -330,4 +330,4 @@ async function isPublicUser(userId) {
   return !!u?.is_public;
 }
 
-module.exports = { mountFollows, follow, isPublicUser };
+module.exports = { mountFollows, follow, isPublicUser, readVisibleUser };
