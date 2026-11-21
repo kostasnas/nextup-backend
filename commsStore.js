@@ -37,6 +37,14 @@ function ensureTables() {
         body text,
         created_at timestamptz not null default now()
       );
+      create table if not exists comms_notice_acks (
+        user_id uuid not null,
+        version text not null,
+        age_confirmed boolean not null,
+        accepted_at timestamptz not null default now(),
+        primary key (user_id, version)
+      );
+      alter table comms_notice_acks enable row level security;
       alter table comms_profiles enable row level security;
       alter table comms_blocks enable row level security;
       alter table comms_suspensions enable row level security;
@@ -107,6 +115,19 @@ async function isSuspended(userId) {
   }
 }
 
+// Proof that the user saw the "before you post" notice and confirmed 16+ (CommsUni terms §A10.3). One row per notice version.
+async function hasNoticeAck(userId, version) {
+  await ensureTables();
+  const { rows } = await getPool().query("select 1 from comms_notice_acks where user_id = $1 and version = $2 and age_confirmed", [userId, version]);
+  return rows.length > 0;
+}
+async function recordNoticeAck(userId, version) {
+  await ensureTables();
+  await getPool().query(
+    `insert into comms_notice_acks (user_id, version, age_confirmed) values ($1,$2,true)
+     on conflict (user_id, version) do nothing`, [userId, version]);
+}
+
 async function logWrite(userId, kind, commentId, body) {
   try {
     await ensureTables();
@@ -118,4 +139,4 @@ async function logWrite(userId, kind, commentId, body) {
   }
 }
 
-module.exports = { ensureTables, getProfile, setProfile, blockedAuthorIds, listBlocks, addBlock, removeBlock, isSuspended, logWrite };
+module.exports = { ensureTables, getProfile, setProfile, blockedAuthorIds, listBlocks, addBlock, removeBlock, isSuspended, logWrite, hasNoticeAck, recordNoticeAck };

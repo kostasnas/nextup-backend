@@ -126,6 +126,9 @@ async function movieTitle(tmdbId) {
   } catch { return null; }
 }
 
+// Bump when the text of the "before you post" notice changes, so everyone sees it again.
+const NOTICE_VERSION = "v1";
+
 function mountCommsWrite(app, { requireAuth, asyncHandler }) {
   const ready = (req, res, next) => {
     if (!isConfigured() || !process.env.COMMS_ACTOR_SECRET) return fail(res, 503, "Comments are not available.");
@@ -147,7 +150,17 @@ function mountCommsWrite(app, { requireAuth, asyncHandler }) {
       shareIdentity: profile ? profile.share_identity : null,
       displayName: info?.display_name || null,
       suspended: await store.isSuspended(req.userId),
+      noticeVersion: NOTICE_VERSION,
+      noticeAccepted: await store.hasNoticeAck(req.userId, NOTICE_VERSION),
     });
+  }));
+
+  // The user saw the notice and ticked "I'm 16 or older" (§A10.3(a), §B9). Recorded with a timestamp.
+  app.put("/comms/me/notice", requireAuth, ready, asyncHandler(async (req, res) => {
+    if (req.body?.version !== NOTICE_VERSION) return fail(res, 409, "The notice has changed. Please read it again.", "notice_outdated");
+    if (req.body?.ageConfirmed !== true) return fail(res, 400, "Age confirmation is required.", "age_required");
+    await store.recordNoticeAck(req.userId, NOTICE_VERSION);
+    res.json({ noticeAccepted: true });
   }));
 
   app.put("/comms/me/identity", requireAuth, ready, notSuspended, asyncHandler(async (req, res) => {
@@ -177,6 +190,7 @@ function mountCommsWrite(app, { requireAuth, asyncHandler }) {
   // ---- posting --------------------------------------------------------
   async function post(req, res, { kind, path, extra }) {
     const key = idemKey(req, res); if (!key) return;
+    if (!(await store.hasNoticeAck(req.userId, NOTICE_VERSION))) return fail(res, 403, "Please read the notice and confirm your age before posting.", "notice_required");
     if (rateLimited(`post:${req.userId}`, 5, 60 * 1000) || rateLimited(`postday:${req.userId}`, 60, 24 * 60 * 60 * 1000)) {
       return fail(res, 429, "You're posting too fast. Take a breath and try again in a minute.", "slow_down");
     }
