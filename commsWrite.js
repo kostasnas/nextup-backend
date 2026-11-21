@@ -11,6 +11,7 @@ const { tvdbIdForMovie } = require("./tvdbMovie");
 const { throttle } = require("./tmdbThrottle");
 const { moderateComment, moderateImage } = require("./commsModeration");
 const store = require("./commsStore");
+const counts = require("./commsCounts");
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const LANG_RE = /^[a-z]{2,3}(-[a-z0-9]{2,8})?$/i;
@@ -222,6 +223,7 @@ function mountCommsWrite(app, { requireAuth, asyncHandler }) {
       if (p && p.author_id !== comment.userId) await store.setProfile(req.userId, { author_id: comment.userId });
     }
     await store.logWrite(req.userId, kind, comment?.id, mod.text || (image ? `[image] ${image.url}` : ""));
+    if (extra?.invalidate) extra.invalidate(); else counts.invalidateAll(); // keep the comment counts fresh after our own write
     res.status(201).json({ comment: comment ? { ...comment, mine: true } : null });
   }
 
@@ -235,7 +237,10 @@ function mountCommsWrite(app, { requireAuth, asyncHandler }) {
     await post(req, res, {
       kind: "comment",
       path: `/entities/episode/${ref}/comments`,
-      extra: { entity: { title: ctx.episode_title || `S${ctx.season_number}E${ctx.episode_number}`, showTitle: ctx.show_title } },
+      extra: {
+        entity: { title: ctx.episode_title || `S${ctx.season_number}E${ctx.episode_number}`, showTitle: ctx.show_title },
+        invalidate: () => counts.invalidateEpisode(tvdbId, ctx.season_number, ctx.episode_number),
+      },
     });
   }));
 
@@ -250,7 +255,7 @@ function mountCommsWrite(app, { requireAuth, asyncHandler }) {
     await post(req, res, {
       kind: "comment",
       path: `/entities/movie/tvdb-${tvdbId}/comments`,
-      extra: { entity: { title: title || `Movie ${tmdbId}` } },
+      extra: { entity: { title: title || `Movie ${tmdbId}` }, invalidate: () => counts.invalidateMovie(tmdbId) },
     });
   }));
 
@@ -264,6 +269,7 @@ function mountCommsWrite(app, { requireAuth, asyncHandler }) {
     const r = await commsRequest(`/comments/${req.params.id}`, { method: "DELETE", actorId: actorIdFor(req.userId) });
     if (!r.ok) return upstreamFail(res, r, "delete");
     await store.logWrite(req.userId, "delete", req.params.id);
+    counts.invalidateAll();
     res.json({ ok: true });
   }));
 

@@ -2,7 +2,8 @@
 // Poller for the CommsUni notification feed (GET /v1/feed/notifications): replies to and likes on our
 // users' Community comments, from any app. One poll for the whole key, then the events are fanned out
 // into the in-app inbox (notifications.js). In-app only, never a push, like the Scenera comment likes.
-// Mentions and visibility events are deliberately ignored for now.
+// Mentions are deliberately ignored for now. Visibility events remove the stored snippet for that comment id,
+// snippets also expire after 30 days, and events by authors the recipient blocked are skipped.
 //
 // Follows partner-feeds-guide: send the stored `since`, follow `nextCursor` (with the same `since`) until
 // `complete`, and store `nextSince` only from that last page. Events repeat between polls, so every event id
@@ -16,6 +17,18 @@ const PATH = "/feed/notifications";
 const MAX_PAGES = 40; // safety net for one run; the next run continues from the same `since`
 const MIN_GAP_MS = 31 * 1000; // the API refuses a cursor-less poll within 30 s of the last one
 const SEEN_KEEP_DAYS = 4;
+const SNIPPET_KEEP_DAYS = 30;
+
+// A visibility event that says the comment is visible again is not a reason to delete anything.
+const isRestored = (ev) => [ev.visibility, ev.state, ev.status, ev.comment?.visibility].some((v) => String(v || "").toLowerCase() === "visible");
+
+// Removes our stored copies (inbox rows) of a comment's text and the rows about it.
+async function removeSnippets(pool, commentId) {
+  await pool.query(
+    "delete from notifications where type in ('comms_reply','comms_like') and data->>'source' = 'commsuni' and data->>'commentId' = $1",
+    [String(commentId)]
+  );
+}
 
 let ready = null;
 function ensureTables(pool) {
@@ -114,6 +127,11 @@ async function pollNotifications(supabase, deps = {}) {
 
       const list = Array.isArray(res.data.events) ? res.data.events : [];
       events += list.length;
+      // Visibility events (a comment hidden or removed): drop the stored snippet for that comment id (terms §A8.3).
+      for (const ev of list) {
+        if (!ev || ev.kind !== "visibility" || !ev.commentId || isRestored(ev)) continue;
+        try { await removeSnippets(pool, ev.commentId); } catch (e) { failed = true; console.error("comms feed visibility failed:", ev.id, e.message); }
+      }
       const wanted = list.filter((ev) => ev && ev.id && (ev.kind === "reply" || ev.kind === "like") && ev.recipientAuthorId);
       if (wanted.length) {
         const ids = wanted.map((ev) => String(ev.id));
@@ -125,11 +143,16 @@ async function pollNotifications(supabase, deps = {}) {
             ...fresh.map((ev) => ev.actor?.id).filter(Boolean).map(String),
           ])];
           const owners = new Map((await pool.query("select user_id, author_id from comms_profiles where author_id = any($1)", [authorIds])).rows.map((r) => [r.author_id, r.user_id]));
+          const blocked = new Set((await pool.query(
+            "select user_id::text || ':' || author_id as k from comms_blocks where author_id = any($1)",
+            [fresh.map((ev) => ev.actor?.id).filter(Boolean).map(String)]
+          )).rows.map((r) => r.k));
           for (const ev of fresh) {
             try {
               const userId = owners.get(String(ev.recipientAuthorId));
-              // Not ours, or done by one of our own users (our app already handles that side).
-              const skip = !userId || (ev.actor?.id && owners.has(String(ev.actor.id)));
+              // Not ours, or done by one of our own users (our app already handles that side),
+              // or by an author the recipient has blocked.
+              const skip = !userId || (ev.actor?.id && owners.has(String(ev.actor.id))) || (ev.actor?.id && blocked.has(`${userId}:${ev.actor.id}`));
               const row = skip ? null : render(ev);
               if (row) {
                 await notify(supabase, userId, {
@@ -156,6 +179,8 @@ async function pollNotifications(supabase, deps = {}) {
           );
         }
         await pool.query(`delete from comms_feed_seen where seen_at < now() - interval '${SEEN_KEEP_DAYS} days'`).catch(() => {});
+        // Third-party text is kept at most 30 days (terms §A8.3).
+        await pool.query(`delete from notifications where type in ('comms_reply','comms_like') and created_at < now() - interval '${SNIPPET_KEEP_DAYS} days'`).catch(() => {});
         return { status: "ok", events, notified, advanced: !failed };
       }
       cursor = res.data.nextCursor;
