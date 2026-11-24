@@ -3519,7 +3519,7 @@ app.post("/ai/bonus", requireAuth, asyncHandler(async (req, res) => {
   res.json({ ok: true, bonusMessages: AI_BONUS_MESSAGES });
 }));
 
-const { sendDailyUpcomingNotifications, checkUpcomingPremieres, sendDailyEngagementNudge, sendPushToUser } = require("./pushNotifications");
+const { sendDailyUpcomingNotifications, checkUpcomingPremieres, sendDailyEngagementNudge, sendDayTwoNudge, sendNewUserCatchUp, sendPushToUser } = require("./pushNotifications");
 const { reconcileWatchingStatuses } = require("./statusReconciliation");
 
 // Triggers the full daily maintenance sweep:
@@ -3609,9 +3609,43 @@ const engagementNudgeHandler = asyncHandler(async (req, res) => {
   if (!process.env.CRON_SECRET || providedSecret !== process.env.CRON_SECRET) {
     return res.status(401).json({ error: "Unauthorized" });
   }
-  const result = await sendDailyEngagementNudge(supabase);
+  const result = await sendDailyEngagementNudge(supabase, { dry: req.query.dry === "1" });
   res.json(result);
 });
+
+// "Day two" nudge for brand-new accounts: people who signed up 24-48 hours
+// ago and have not opened the app since get a title-only "Did you watch
+// anything today?". Meant for its own once-a-day cron job (evening), same
+// shared secret as the other jobs. Add ?dry=1 to only count who would get
+// it, without sending anything.
+const dayTwoNudgeHandler = asyncHandler(async (req, res) => {
+  const providedSecret = req.headers["x-cron-secret"];
+  if (!process.env.CRON_SECRET || providedSecret !== process.env.CRON_SECRET) {
+    return res.status(401).json({ error: "Unauthorized" });
+  }
+  const result = await sendDayTwoNudge(supabase, { dry: req.query.dry === "1" });
+  res.json(result);
+});
+app.get("/notifications/send-day-two-nudge", dayTwoNudgeHandler);
+app.post("/notifications/send-day-two-nudge", dayTwoNudgeHandler);
+
+// One-off catch-up: everyone who signed up in the last `days` days (default
+// 10) and has not opened the app in the last 24 hours gets the playful
+// title-only push. Manual only. Body: { "days": 10, "dry": true } to count
+// without sending, or { "testUserId": "<uuid>" } to send it to one user only.
+app.post("/admin/send-newuser-nudge", asyncHandler(async (req, res) => {
+  const providedSecret = req.headers["x-cron-secret"];
+  if (!process.env.CRON_SECRET || providedSecret !== process.env.CRON_SECRET) {
+    return res.status(401).json({ error: "Unauthorized" });
+  }
+  const { days, dry, testUserId } = req.body || {};
+  const result = await sendNewUserCatchUp(supabase, {
+    days: days === undefined ? undefined : Number(days),
+    dry: dry === true,
+    testUserId: testUserId || null,
+  });
+  res.json(result);
+}));
 
 // Trakt auto-tracking sync — pulls new watch history for every
 // connected user since their last sync and applies it (see

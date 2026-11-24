@@ -7,6 +7,7 @@
 
 const admin = require("firebase-admin");
 const { getShowDetails } = require("./tmdbMatcher");
+const { getPool } = require("./db");
 
 let initialized = false;
 
@@ -299,7 +300,44 @@ const ENGAGEMENT_MESSAGES = [
   { title: "Your shows are waiting", body: "See what's ready to watch in Scenera." },
 ];
 
-async function sendDailyEngagementNudge(supabase) {
+// NEW USERS get a different, lighter touch than everyone else: an account
+// created in the last NEW_USER_DAYS days gets a playful, title-only push
+// (no body) instead of the regular reminder, and the day after sign-up
+// has its own "Did you watch anything today?" nudge (sendDayTwoNudge).
+// The goal of both is just to get them to open the app again. Old
+// accounts keep the regular reminders above, unchanged.
+const NEW_USER_DAYS = 10;
+const DAY_TWO_TITLE = "Did you watch anything today?";
+const PLAYFUL_TITLE = "The popcorn is getting cold \u{1F37F}";
+
+// Sends one notification (title, optional body) to a list of tokens, in
+// batches of 500 (the FCM per-call limit). Returns the usual counts.
+async function sendToTokens(supabase, tokens, { title, body }) {
+  let successCount = 0;
+  let failureCount = 0;
+  for (let i = 0; i < tokens.length; i += 500) {
+    const batch = tokens.slice(i, i + 500);
+    try {
+      const notification = body ? { title, body } : { title };
+      const result = await admin.messaging().sendEachForMulticast({
+        tokens: batch,
+        notification,
+        android: ANDROID_NOTIFICATION_STYLE,
+      });
+      successCount += result.successCount;
+      failureCount += result.failureCount;
+      await pruneDeadTokens(supabase, batch, result);
+    } catch (err) {
+      console.error("Nudge batch failed:", err.message);
+      failureCount += batch.length;
+    }
+  }
+  return { devicesTargeted: tokens.length, successCount, failureCount };
+}
+
+// dry: true only counts who WOULD get it and sends nothing, so a new job
+// can be checked against real data before it is switched on.
+async function sendDailyEngagementNudge(supabase, { dry = false } = {}) {
   ensureInitialized();
 
   // ONE reminder per absence: only people whose last app open was
@@ -312,30 +350,70 @@ async function sendDailyEngagementNudge(supabase) {
   const DAY_MS = 24 * 60 * 60 * 1000;
   const cutoffNewest = new Date(Date.now() - INACTIVE_AFTER_DAYS * DAY_MS).toISOString();
   const cutoffOldest = new Date(Date.now() - (INACTIVE_AFTER_DAYS + 1) * DAY_MS).toISOString();
-  const { data: tokenRows, error } = await supabase
-    .from("push_tokens")
-    .select("token")
-    .lt("updated_at", cutoffNewest)
-    .gte("updated_at", cutoffOldest);
-  if (error) throw error;
+  const { rows } = await getPool().query(
+    `select t.token, (u.created_at >= now() - ($3 || ' days')::interval) as is_new
+       from push_tokens t
+       left join auth.users u on u.id = t.user_id::uuid
+      where t.updated_at < $1::timestamptz and t.updated_at >= $2::timestamptz`,
+    [cutoffNewest, cutoffOldest, String(NEW_USER_DAYS)]
+  );
 
-  const tokens = [...new Set((tokenRows || []).map((t) => t.token))];
-  if (tokens.length === 0) return { devicesTargeted: 0 };
+  const newTokens = [...new Set(rows.filter((r) => r.is_new).map((r) => r.token))];
+  const oldTokens = [...new Set(rows.filter((r) => !r.is_new).map((r) => r.token))];
+  if (newTokens.length + oldTokens.length === 0) return { devicesTargeted: 0 };
+  if (dry) return { dry: true, newUserDevices: newTokens.length, regularDevices: oldTokens.length };
 
   const message = ENGAGEMENT_MESSAGES[Math.floor(Math.random() * ENGAGEMENT_MESSAGES.length)];
+  const regular = oldTokens.length ? await sendToTokens(supabase, oldTokens, message) : null;
+  const playful = newTokens.length ? await sendToTokens(supabase, newTokens, { title: PLAYFUL_TITLE }) : null;
+  return {
+    devicesTargeted: oldTokens.length + newTokens.length,
+    successCount: (regular?.successCount || 0) + (playful?.successCount || 0),
+    failureCount: (regular?.failureCount || 0) + (playful?.failureCount || 0),
+    regular,
+    newUsers: playful,
+  };
+}
 
-  try {
-    const result = await admin.messaging().sendEachForMulticast({
-      tokens,
-      notification: { title: message.title, body: message.body },
-      android: ANDROID_NOTIFICATION_STYLE,
-    });
-    await pruneDeadTokens(supabase, tokens, result);
-    return { devicesTargeted: tokens.length, successCount: result.successCount, failureCount: result.failureCount };
-  } catch (err) {
-    console.error("Daily engagement nudge failed:", err.message);
-    return { devicesTargeted: tokens.length, error: err.message };
+// The evening after sign-up: people who created their account 24-48 hours
+// ago and have not opened the app in the last 24 hours get a title-only
+// "Did you watch anything today?". Run once a day, each new account falls
+// into that window exactly once.
+async function sendDayTwoNudge(supabase, { dry = false } = {}) {
+  ensureInitialized();
+  const { rows } = await getPool().query(
+    `select distinct t.token
+       from push_tokens t
+       join auth.users u on u.id = t.user_id::uuid
+      where u.created_at >= now() - interval '48 hours'
+        and u.created_at <  now() - interval '24 hours'
+        and t.updated_at <  now() - interval '24 hours'`
+  );
+  const tokens = rows.map((r) => r.token);
+  if (dry || tokens.length === 0) return { dry, devicesTargeted: tokens.length };
+  return sendToTokens(supabase, tokens, { title: DAY_TWO_TITLE });
+}
+
+// One-off catch-up (manual, not scheduled): everyone who signed up in the
+// last `days` days and has not opened the app in the last 24 hours gets
+// the playful title-only push. testUserId sends it to that one user only
+// (to see how it looks on a real device), ignoring the other conditions.
+async function sendNewUserCatchUp(supabase, { days = NEW_USER_DAYS, dry = false, testUserId = null } = {}) {
+  ensureInitialized();
+  if (testUserId) {
+    return sendPushToUser(supabase, testUserId, { title: PLAYFUL_TITLE });
   }
+  const { rows } = await getPool().query(
+    `select distinct t.token
+       from push_tokens t
+       join auth.users u on u.id = t.user_id::uuid
+      where u.created_at >= now() - ($1 || ' days')::interval
+        and t.updated_at <  now() - interval '24 hours'`,
+    [String(Number.isFinite(days) && days > 0 ? Math.floor(days) : NEW_USER_DAYS)]
+  );
+  const tokens = rows.map((r) => r.token);
+  if (dry || tokens.length === 0) return { dry, devicesTargeted: tokens.length };
+  return sendToTokens(supabase, tokens, { title: PLAYFUL_TITLE });
 }
 
 /**
@@ -366,4 +444,4 @@ async function sendPushToUser(supabase, userId, { title, body, imageUrl, data })
   }
 }
 
-module.exports = { sendDailyUpcomingNotifications, checkUpcomingPremieres, sendDailyEngagementNudge, sendPushToUser, ensureInitialized, pruneDeadTokens };
+module.exports = { sendDailyUpcomingNotifications, checkUpcomingPremieres, sendDailyEngagementNudge, sendDayTwoNudge, sendNewUserCatchUp, sendPushToUser, ensureInitialized, pruneDeadTokens };
