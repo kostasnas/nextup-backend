@@ -396,12 +396,16 @@ async function sendDayTwoNudge(supabase, { dry = false } = {}) {
 
 // One-off catch-up (manual, not scheduled): everyone who signed up in the
 // last `days` days and has not opened the app in the last 24 hours gets
-// the playful title-only push. testUserId sends it to that one user only
-// (to see how it looks on a real device), ignoring the other conditions.
-async function sendNewUserCatchUp(supabase, { days = NEW_USER_DAYS, dry = false, testUserId = null } = {}) {
+// the FIRST nudge of the sequence ("Did you watch anything today?",
+// title-only), because these accounts predate the day-two nudge and never
+// got it. message: "popcorn" sends the second, playful one instead.
+// testUserId sends it to that one user only (to see how it looks on a real
+// device), ignoring the other conditions.
+async function sendNewUserCatchUp(supabase, { days = NEW_USER_DAYS, dry = false, testUserId = null, message = "first" } = {}) {
   ensureInitialized();
+  const title = message === "popcorn" ? PLAYFUL_TITLE : DAY_TWO_TITLE;
   if (testUserId) {
-    return sendPushToUser(supabase, testUserId, { title: PLAYFUL_TITLE });
+    return sendPushToUser(supabase, testUserId, { title });
   }
   const { rows } = await getPool().query(
     `select distinct t.token
@@ -413,7 +417,7 @@ async function sendNewUserCatchUp(supabase, { days = NEW_USER_DAYS, dry = false,
   );
   const tokens = rows.map((r) => r.token);
   if (dry || tokens.length === 0) return { dry, devicesTargeted: tokens.length };
-  return sendToTokens(supabase, tokens, { title: PLAYFUL_TITLE });
+  return sendToTokens(supabase, tokens, { title });
 }
 
 /**

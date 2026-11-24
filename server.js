@@ -3630,19 +3630,22 @@ app.get("/notifications/send-day-two-nudge", dayTwoNudgeHandler);
 app.post("/notifications/send-day-two-nudge", dayTwoNudgeHandler);
 
 // One-off catch-up: everyone who signed up in the last `days` days (default
-// 10) and has not opened the app in the last 24 hours gets the playful
-// title-only push. Manual only. Body: { "days": 10, "dry": true } to count
-// without sending, or { "testUserId": "<uuid>" } to send it to one user only.
+// 10) and has not opened the app in the last 24 hours gets the first nudge
+// of the sequence ("Did you watch anything today?", title-only). Manual
+// only. Body: { "days": 10, "dry": true } to count without sending,
+// { "testUserId": "<uuid>" } to send it to one user only, and
+// { "message": "popcorn" } to send the second, playful one instead.
 app.post("/admin/send-newuser-nudge", asyncHandler(async (req, res) => {
   const providedSecret = req.headers["x-cron-secret"];
   if (!process.env.CRON_SECRET || providedSecret !== process.env.CRON_SECRET) {
     return res.status(401).json({ error: "Unauthorized" });
   }
-  const { days, dry, testUserId } = req.body || {};
+  const { days, dry, testUserId, message } = req.body || {};
   const result = await sendNewUserCatchUp(supabase, {
     days: days === undefined ? undefined : Number(days),
     dry: dry === true,
     testUserId: testUserId || null,
+    message: message === "popcorn" ? "popcorn" : "first",
   });
   res.json(result);
 }));
