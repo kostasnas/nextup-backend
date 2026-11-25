@@ -36,7 +36,7 @@ const { getEmotionCountsForShow } = require("./episodeEmotions");
 const { createConnectUrl, handleCallback, disconnectTrakt, getTraktStatus } = require("./traktAuth");
 const { syncAllTraktUsers } = require("./traktSync");
 const { findUserByEmail, findUserByUsername, getSignupRank, getPioneerNumber, getStatsRows, getPool } = require("./db");
-const { buildOverview } = require("./statsOverview");
+const { buildOverview, buildYear } = require("./statsOverview");
 const { getShowCommunityRating } = require("./showRatings");
 const { createNotification, syncImportReviewNotification, notifyEpisodeWatchersOfComment, notifyMovieWatchersOfComment, listNotifications, getUnreadCount, markAllRead, markRead } = require("./notifications");
 const { runSmokeTest: runCommsSmokeTest } = require("./commsuni");
@@ -654,6 +654,15 @@ app.get("/stats/summary", requireAuth, asyncHandler(async (req, res) => {
 app.get("/stats/overview", requireAuth, asyncHandler(async (req, res) => {
   res.setHeader("Cache-Control", "no-store");
   res.json(buildOverview(await getStatsRows(req.userId)));
+}));
+
+// "My year on screen" share card: the person's totals for one calendar year (default: this year).
+app.get("/stats/year", requireAuth, asyncHandler(async (req, res) => {
+  res.setHeader("Cache-Control", "no-store");
+  const nowYear = new Date().getUTCFullYear();
+  const year = req.query.year === undefined ? nowYear : Number.parseInt(req.query.year, 10);
+  if (!Number.isInteger(year) || year < 2000 || year > nowYear) return res.status(400).json({ error: "Invalid year" });
+  res.json(buildYear(await getStatsRows(req.userId), year));
 }));
 
 // "Surprise Me" — picks one random title off the person's own watchlist

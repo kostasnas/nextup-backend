@@ -116,4 +116,74 @@ function buildOverview({ eps, movies, reactions = [], firstImport }, now = new D
   };
 }
 
-module.exports = { buildOverview, isDated };
+// "My year on screen" card (GET /stats/year?year=2026): the person's own totals for one calendar year.
+// Only episodes with a real watch date inside that year count (see isDated: count-based and "stamped now"
+// import rows have no real date, so they never inflate a year). Movies have no source column, so a movie
+// whose watched_at falls inside the importer's first run (first_import -1h .. +24h) is treated as undated
+// too; a movie logged by hand any other time counts. Pure function, like buildOverview.
+const YEAR_TOP = 12; // how many "My year" posters the picker can offer
+const MIN_EPISODES_FOR_CARD = 10;
+
+function buildYear({ eps, movies, firstImport }, year, now = new Date()) {
+  const inYear = (d) => d && !Number.isNaN(d.getTime()) && d.getUTCFullYear() === year;
+  const dated = eps
+    .filter((r) => isDated(r, firstImport))
+    .map((r) => ({ t: new Date(r.watched_at), r }))
+    .filter((x) => inYear(x.t));
+
+  const importFrom = firstImport ? new Date(firstImport).getTime() - 3600000 : null;
+  const importTo = firstImport ? new Date(firstImport).getTime() + DAY : null;
+  const yearMovies = movies.filter((m) => {
+    if (!m.watched_at) return false;
+    const t = new Date(m.watched_at);
+    if (!inYear(t)) return false;
+    if (importFrom !== null && t.getTime() >= importFrom && t.getTime() <= importTo) return false;
+    return true;
+  });
+
+  const episodeMinutes = dated.reduce((n, x) => n + Number(x.r.rt), 0);
+  const movieMinutes = yearMovies.reduce((n, m) => n + Number(m.runtime || 0), 0);
+
+  const byShow = new Map();
+  for (const { t, r } of dated) {
+    const s = byShow.get(r.show_id) || { title: r.title, posterPath: r.poster_path, genres: r.genres, episodes: 0, minutes: 0, last: 0 };
+    s.episodes += 1; s.minutes += Number(r.rt); s.last = Math.max(s.last, t.getTime());
+    byShow.set(r.show_id, s);
+  }
+  // Most time first; ties: more episodes, then watched most recently.
+  const ranked = [...byShow.values()].sort((a, b) => b.minutes - a.minutes || b.episodes - a.episodes || b.last - a.last);
+  const topShows = ranked.filter((s) => s.posterPath).slice(0, YEAR_TOP)
+    .map((s) => ({ title: s.title, posterPath: s.posterPath, episodes: s.episodes, hours: Math.round(s.minutes / 6) / 10 }));
+
+  // Genre = the one with the most distinct shows this year (ties: the one met first in the ranking).
+  const gc = new Map();
+  for (const s of ranked) for (const g of s.genres || []) gc.set(g, (gc.get(g) || 0) + 1);
+  const topGenre = [...gc.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] || null;
+
+  const months = new Map(); // yyyy-mm -> minutes
+  for (const { t, r } of dated) {
+    const k = t.toISOString().slice(0, 7);
+    months.set(k, (months.get(k) || 0) + Number(r.rt));
+  }
+  for (const m of yearMovies) {
+    const k = new Date(m.watched_at).toISOString().slice(0, 7);
+    months.set(k, (months.get(k) || 0) + Number(m.runtime || 0));
+  }
+  const busiest = [...months.entries()].sort((a, b) => b[1] - a[1] || (a[0] < b[0] ? -1 : 1))[0] || null;
+
+  return {
+    year,
+    episodes: dated.length,
+    shows: byShow.size,
+    movies: yearMovies.length,
+    totalMinutes: Math.round(episodeMinutes + movieMinutes),
+    topShows,
+    mostWatched: ranked[0]?.title || null,
+    topGenre,
+    busiestMonth: busiest ? busiest[0] : null, // "2026-10"
+    eligible: dated.length >= MIN_EPISODES_FOR_CARD,
+    minEpisodes: MIN_EPISODES_FOR_CARD,
+  };
+}
+
+module.exports = { buildOverview, buildYear, isDated };

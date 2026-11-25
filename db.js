@@ -91,7 +91,7 @@ async function getStatsRows(userId) {
   const [{ rows: eps }, { rows: movies }, { rows: jobs }, { rows: reactions }] = await Promise.all([
     epsP,
     pool.query(
-      `select coalesce(m.runtime, 0) as runtime, nullif(left(m.release_date::text, 4), '')::int as year from user_movie_watchlist w
+      `select coalesce(m.runtime, 0) as runtime, nullif(left(m.release_date::text, 4), '')::int as year, w.watched_at from user_movie_watchlist w
          join movies m on m.id = w.movie_id where w.user_id = $1 and w.status = 'watched'`, [userId]),
     pool.query(`select min(created_at) as first_import from import_jobs where user_id = $1`, [userId]),
     pool.query(`select reaction, count(*)::int as count from watched_episodes where user_id = $1 and reaction is not null group by reaction`, [userId]),
