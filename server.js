@@ -3150,6 +3150,7 @@ require("./pendingTitles").mountPendingTitles({
 require("./lists").mountLists(app, { supabase, requireAuth, asyncHandler });
 // My Top 10 movies per year (needs migrations/top_movies.sql).
 require("./topMovies").mountTopMovies(app, { requireAuth, asyncHandler });
+require("./communitySuggest").mountCommunitySuggest(app, { requireAuth, asyncHandler });
 // Soundtrack songs of a title + the ones a person saved (needs migrations/user_saved_tracks.sql for saving).
 require("./soundtracks").mountSoundtracks(app, { requireAuth, asyncHandler });
 
