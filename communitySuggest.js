@@ -3,7 +3,8 @@
 // everyone"); everyone else gets a weekly set of picks, can add titles to planned, hide them, and rate them. A rating
 // is seen only by the people who suggested the title; the score and level show on their profile.
 //
-//   POST   /community/suggest              { kind, tmdbId, title, posterPath, releaseYear }  (max 10 a day)
+//   POST   /community/suggest              { kind, tmdbId, title, posterPath, releaseYear, showName }  (max 10 a day; showName = the
+//                                          suggester chose to be shown: name, avatar and their own rating are then public)
 //   DELETE /community/suggest/:kind/:tmdbId  take my suggestion back
 //   GET    /community/suggested?kind&tmdbId  did I suggest this title?
 //   GET    /community/picks?kind             this week's picks for me (frozen per week)
@@ -80,6 +81,35 @@ const shape = (r) => ({
   id: Number(r.id), kind: r.kind, tmdbId: r.tmdb_id, title: r.title, posterPath: r.poster_path, releaseYear: r.release_year,
   suggestCount: r.suggest_count, added: !!r.added, inList: !!r.in_list, listStatus: r.list_status || null, myRating: r.my_rating || null,
 });
+
+// The people who chose "Show my name" (first one only) with their own rating of the title, for the given items.
+// Without the show_name column (migration not run yet) or any named suggester the items simply stay anonymous.
+async function withSuggesters(items) {
+  if (!items.length) return items;
+  try {
+    const { rows } = await getPool().query(
+      `select distinct on (c.suggestion_id) c.suggestion_id, c.user_id,
+              coalesce(nullif(u.raw_user_meta_data->>'display_name', ''), p.username, 'Someone') as name,
+              u.raw_user_meta_data->>'avatar_url' as avatar_url,
+              case when s.kind = 'tv'
+                then (select w.rating from user_watchlist w join shows sh on sh.id = w.show_id where w.user_id = c.user_id and sh.tmdb_id = s.tmdb_id limit 1)
+                else (select w.rating from user_movie_watchlist w join movies m on m.id = w.movie_id where w.user_id = c.user_id and m.tmdb_id = s.tmdb_id limit 1)
+              end as rating
+         from community_suggesters c
+         join community_suggestions s on s.id = c.suggestion_id
+         left join auth.users u on u.id = c.user_id
+         left join user_profiles p on p.user_id = c.user_id
+        where c.suggestion_id = any($1::bigint[]) and c.show_name
+        order by c.suggestion_id, c.created_at`,
+      [items.map((i) => i.id)]
+    );
+    const by = new Map(rows.map((r) => [Number(r.suggestion_id), { userId: r.user_id, name: r.name, avatarUrl: r.avatar_url || null, rating: r.rating || null }]));
+    return items.map((i) => ({ ...i, suggester: by.get(i.id) || null }));
+  } catch (e) {
+    if (!e || (e.code !== "42703" && e.code !== "42P01")) console.warn("community suggesters lookup failed:", e && e.message);
+    return items;
+  }
+}
 
 function nextMonday() {
   const now = new Date();
@@ -221,7 +251,10 @@ function mountCommunitySuggest(app, { requireAuth, asyncHandler }) {
       );
       const id = ins.rows[0] ? Number(ins.rows[0].id)
         : Number((await client.query("select id from community_suggestions where kind = $1 and tmdb_id = $2", [kind, tmdbId])).rows[0].id);
-      const mine = await client.query("insert into community_suggesters (suggestion_id, user_id) values ($1, $2) on conflict do nothing returning user_id", [id, req.userId]);
+      const showName = req.body?.showName === true;
+      const mine = showName
+        ? await client.query("insert into community_suggesters (suggestion_id, user_id, show_name) values ($1, $2, true) on conflict do nothing returning user_id", [id, req.userId])
+        : await client.query("insert into community_suggesters (suggestion_id, user_id) values ($1, $2) on conflict do nothing returning user_id", [id, req.userId]);
       if (mine.rows.length > 0 && ins.rows.length === 0) {
         await client.query("update community_suggestions set suggest_count = suggest_count + 1, last_suggested_at = now() where id = $1", [id]);
       }
@@ -322,7 +355,7 @@ function mountCommunitySuggest(app, { requireAuth, asyncHandler }) {
       [req.userId, ids]
     );
     const byId = new Map(rows.filter((r) => !r.in_list).map((r) => [Number(r.id), shape(r)]));
-    const items = ids.map((id) => byId.get(id)).filter(Boolean);
+    const items = await withSuggesters(ids.map((id) => byId.get(id)).filter(Boolean));
     return { items, left: items.length, total, refreshInDays: daysLeft };
   }));
 
@@ -341,7 +374,7 @@ function mountCommunitySuggest(app, { requireAuth, asyncHandler }) {
         order by ${order}, s.id desc limit ${BROWSE_PAGE + 1} offset ${offset}`,
       [req.userId, kind]
     );
-    return { items: rows.slice(0, BROWSE_PAGE).map(shape), hasMore: rows.length > BROWSE_PAGE };
+    return { items: await withSuggesters(rows.slice(0, BROWSE_PAGE).map(shape)), hasMore: rows.length > BROWSE_PAGE };
   }));
 
   const respond = async (userId, suggestionId, set) => {
