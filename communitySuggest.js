@@ -57,19 +57,28 @@ async function onMyList(userId, kind, tmdbId) {
 }
 
 // Adds "inList" / my response to suggestion rows. Column names are fixed here, never user input.
+const IN_LIST_SQL = `case when s.kind = 'tv'
+    then exists(select 1 from user_watchlist w join shows sh on sh.id = w.show_id where w.user_id = $1 and sh.tmdb_id = s.tmdb_id)
+    else exists(select 1 from user_movie_watchlist w join movies m on m.id = w.movie_id where w.user_id = $1 and m.tmdb_id = s.tmdb_id)
+  end`;
+const LIST_COLUMNS_IN_LIST = IN_LIST_SQL;
 const LIST_COLUMNS = `s.id, s.kind, s.tmdb_id, s.title, s.poster_path, s.release_year, s.suggest_count,
   coalesce(r.added, false) as added, coalesce(r.dismissed, false) as dismissed, r.rating as my_rating,
   case when s.kind = 'tv'
     then exists(select 1 from user_watchlist w join shows sh on sh.id = w.show_id where w.user_id = $1 and sh.tmdb_id = s.tmdb_id)
     else exists(select 1 from user_movie_watchlist w join movies m on m.id = w.movie_id where w.user_id = $1 and m.tmdb_id = s.tmdb_id)
-  end as in_list`;
+  end as in_list,
+  case when s.kind = 'tv'
+    then (select w.status from user_watchlist w join shows sh on sh.id = w.show_id where w.user_id = $1 and sh.tmdb_id = s.tmdb_id limit 1)
+    else (select w.status from user_movie_watchlist w join movies m on m.id = w.movie_id where w.user_id = $1 and m.tmdb_id = s.tmdb_id limit 1)
+  end as list_status`;
 const LIST_FROM = "community_suggestions s left join community_responses r on r.suggestion_id = s.id and r.user_id = $1";
 // Titles I did not suggest myself.
 const NOT_MINE = "not exists (select 1 from community_suggesters x where x.suggestion_id = s.id and x.user_id = $1)";
 
 const shape = (r) => ({
   id: Number(r.id), kind: r.kind, tmdbId: r.tmdb_id, title: r.title, posterPath: r.poster_path, releaseYear: r.release_year,
-  suggestCount: r.suggest_count, added: !!r.added, inList: !!r.in_list, myRating: r.my_rating || null,
+  suggestCount: r.suggest_count, added: !!r.added, inList: !!r.in_list, listStatus: r.list_status || null, myRating: r.my_rating || null,
 });
 
 function nextMonday() {
@@ -251,6 +260,25 @@ function mountCommunitySuggest(app, { requireAuth, asyncHandler }) {
     }
   }));
 
+  // How many more titles this person can suggest right now (same rolling 24 hours as POST /community/suggest).
+  app.get("/community/limit", requireAuth, guard(async (req) => {
+    const { rows } = await getPool().query("select count(*)::int as n from community_suggesters where user_id = $1 and created_at > now() - interval '1 day'", [req.userId]);
+    return { limit: DAILY_LIMIT, left: Math.max(0, DAILY_LIMIT - rows[0].n) };
+  }));
+
+  // Which of these titles has this person already suggested? (the bulk picker greys those out)
+  app.post("/community/suggested-many", requireAuth, guard(async (req) => {
+    const kind = parseKind(req.body?.kind);
+    const ids = (Array.isArray(req.body?.tmdbIds) ? req.body.tmdbIds : []).slice(0, 100).map((x) => parseInt(x, 10)).filter((x) => Number.isInteger(x) && x > 0);
+    if (!ids.length) return { suggested: [] };
+    const { rows } = await getPool().query(
+      `select s.tmdb_id from community_suggesters c join community_suggestions s on s.id = c.suggestion_id
+        where c.user_id = $1 and s.kind = $2 and s.tmdb_id = any($3::int[])`,
+      [req.userId, kind, ids]
+    );
+    return { suggested: rows.map((r) => r.tmdb_id) };
+  }));
+
   app.get("/community/suggested", requireAuth, guard(async (req) => {
     const kind = parseKind(req.query.kind);
     const tmdbId = parseId(req.query.tmdbId);
@@ -302,11 +330,14 @@ function mountCommunitySuggest(app, { requireAuth, asyncHandler }) {
     const kind = parseKind(req.query.kind);
     const filter = req.query.filter === "new" ? "new" : "popular";
     const offset = Math.max(0, Math.min(parseInt(req.query.offset, 10) || 0, 1000));
+    // "no" = only titles that are not on my list, "yes" = only the ones that are, anything else = all.
+    const mine = req.query.mine === "no" || req.query.mine === "yes" ? req.query.mine : "all";
+    const mineSql = mine === "all" ? "" : `and ${mine === "yes" ? "" : "not "}(${LIST_COLUMNS_IN_LIST})`;
     const order = filter === "new" ? "s.first_suggested_at desc" : "s.suggest_count desc, s.last_suggested_at desc";
     const { rows } = await getPool().query(
       `select ${LIST_COLUMNS} from ${LIST_FROM}
         where s.kind = $2 and s.last_suggested_at > now() - interval '${WINDOW_DAYS} days' and ${NOT_MINE}
-          and coalesce(r.dismissed, false) = false and r.rating is null
+          and coalesce(r.dismissed, false) = false and r.rating is null ${mineSql}
         order by ${order}, s.id desc limit ${BROWSE_PAGE + 1} offset ${offset}`,
       [req.userId, kind]
     );

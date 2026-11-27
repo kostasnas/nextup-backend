@@ -562,6 +562,15 @@ app.get("/movies/sagas", requireAuth, asyncHandler(async (req, res) => {
 app.post("/movies/watchlist", requireAuth, asyncHandler(async (req, res) => {
   const { tmdb_id, title, poster_path, release_date, runtime, overview, status } = req.body;
   if (!tmdb_id || !title || !status) return res.status(400).json({ error: "tmdb_id, title, and status are required" });
+  // keep_existing: a movie that is already on the list keeps its status (the community list adds to "planned" with this,
+  // so a movie you already watched is never moved back).
+  if (req.body.keep_existing) {
+    const { data: mv } = await supabase.from("movies").select("id").eq("tmdb_id", tmdb_id).maybeSingle();
+    if (mv) {
+      const { data: have } = await supabase.from("user_movie_watchlist").select("status").eq("user_id", req.userId).eq("movie_id", mv.id).maybeSingle();
+      if (have) return res.json({ ok: true, movieId: mv.id, kept: have.status });
+    }
+  }
   const result = await setMovieStatus(supabase, req.userId, { tmdb_id, title, poster_path, release_date, runtime, overview }, status);
   // Learn which franchise this movie belongs to (best effort, after the answer is sent; imports do not go through here).
   fillMovieCollection(supabase, { id: result.movieId, tmdb_id }).catch(() => {});
